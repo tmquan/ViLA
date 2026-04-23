@@ -1,0 +1,28 @@
+_base: default.yaml
+
+# Named config for the full congbobanan crawl.
+#
+# Scraping the complete corpus (~2.1M candidate IDs) takes days on a
+# single VN-hosted worker. In practice operators either:
+#   - run end-to-end with `num_workers: 8, qps: 4.0` on a dedicated VPS;
+#   - run a category-scoped subset (e.g. `categories: [fraud]`) to pull
+#     only the PDFs that match a target offence class.
+#
+# Override ranges per-run via:
+#   --override scraper.start_id=1000000 scraper.end_id=1100000
+# or point at a different URL template via:
+#   --override scraper.detail_url_template='https://...'
+
+scraper:
+  num_workers: 8
+  qps: 4.0
+  batch_size: 200
+
+  # Defaults cover the full range; restrict on the CLI when sharding.
+  start_id: 1
+  end_id: 2100400
+
+  # No filter by default; set e.g. `categories: [fraud, murder]` to
+  # focus a large crawl on a single subset.
+  categories: []
+  keywords: []

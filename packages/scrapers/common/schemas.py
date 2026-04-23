@@ -79,6 +79,25 @@ class ScraperCfg:
     fetch_head_before_download: bool = True
     selectors: dict[str, list[str]] = field(default_factory=dict)
 
+    # ---- integer-ID range crawlers (congbobanan) -------------------
+    # For sites that expose documents as /.../<numeric_id>/... rather
+    # than a listing page, the scraper walks [start_id, end_id]
+    # inclusive. Unused (defaults) for anle / nguonanle which have a
+    # walkable listing.
+    pdf_url_template_id: str = ""  # placeholder reserved for symmetry
+    start_id: int = 0
+    end_id: int = 0
+    batch_size: int = 100
+    metadata_only: bool = False
+    retry_empty_detail: bool = True
+    test_id: int | None = None
+    # Simple offence-class filter. When set, non-matching cases still
+    # get their metadata/<id>.json written (and are checkpointed) but
+    # their PDF is skipped and they are omitted from the aggregate
+    # data.csv / data.jsonl. Known presets depend on the site module.
+    categories: list[str] = field(default_factory=list)
+    keywords: list[str] = field(default_factory=list)
+
 
 @dataclass
 class ParserCfg:

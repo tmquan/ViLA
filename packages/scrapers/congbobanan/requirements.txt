@@ -1,0 +1,16 @@
+# Runtime dependencies for the congbobanan scraper stage.
+#
+# Install for local development:
+#     pip install -r packages/scrapers/congbobanan/requirements.txt
+#
+# The downstream pipeline stages (parse / extract / embed / reduce /
+# visualize) reuse the anle implementations -- those deps live in
+# packages/scrapers/anle/requirements.txt. This file only pins what the
+# scraper itself needs.
+
+# --- config + CLI ---------------------------------------------------
+omegaconf>=2.3
+
+# --- HTTP -----------------------------------------------------------
+requests>=2.31
+requests[socks]>=2.31      # SOCKS5 proxy support for VN-only endpoints
