@@ -1,0 +1,50 @@
+# Runtime dependencies for the anle 6-stage pipeline.
+#
+# Install for local development:
+#     pip install -r packages/scrapers/anle/requirements.txt
+#
+# Optional GPU extras (rapids / cuml / umap) are kept commented out;
+# uncomment on a CUDA host to enable GPU paths in the reducer.
+
+# --- config + CLI ---------------------------------------------------
+omegaconf>=2.3
+
+# --- HTTP + HTML ----------------------------------------------------
+requests>=2.31
+requests[socks]>=2.31      # SOCKS5 proxy support for Vietnam-geo hosts
+beautifulsoup4>=4.12
+tqdm>=4.66
+
+# --- data I/O -------------------------------------------------------
+pandas>=2.1
+pyarrow>=15.0
+pyyaml>=6.0
+
+# --- NIM / NVIDIA endpoints ----------------------------------------
+openai>=1.30               # OpenAI-compatible NIM client
+
+# --- HF embedder (optional; required only if runtime=hf) -----------
+transformers>=4.43
+torch>=2.2
+
+# --- reducer (CPU fallback) ----------------------------------------
+scikit-learn>=1.3
+umap-learn>=0.5
+
+# --- visualizer -----------------------------------------------------
+plotly>=5.20
+kaleido>=0.2               # static image export (PNG)
+networkx>=3.2
+nbformat>=5.9
+
+# --- optional GPU acceleration -------------------------------------
+# Uncomment on a CUDA host; requires the NVIDIA rapids conda channel
+# or the matching cu13 wheel index.
+# cudf-cu13
+# cuml-cu13
+# cugraph-cu13
+# cupy-cuda12x
+
+# --- tests (dev only) ----------------------------------------------
+# pytest>=8.0
+# pytest-asyncio>=0.23

@@ -1,0 +1,59 @@
+# Embedding model registry (extendable).
+#
+# Every row declares a model_id, runtime (nim | hf), its native
+# embedding_dim (when known ahead of time), whether it supports the
+# pipeline-wide full_text_context (32k), and human-readable notes.
+#
+# The embedder (packages/scrapers/anle/embedder.py) reads this file,
+# finds the row matching cfg.embedder.model_id, and instantiates the
+# correct backend. If `supports_32k: false`, the embedder uses
+# `cfg.embedder.chunking` to aggregate across multiple windows.
+#
+# Adding a model: append a new entry below. The pipeline will route to
+# the declared runtime automatically; no code change required.
+
+models:
+  # ---- Default: NVIDIA Nemotron-flavored embedding, 8k native window ----
+  - model_id: nvidia/llama-nemotron-embed-1b-v2
+    runtime: nim
+    embedding_dim: 2048         # observed from NIM response; not 1024
+    supports_32k: false
+    native_max_seq: 8192
+    notes: Default. 1B parameters, 8k context; chunking:sliding needed for 32k docs.
+
+  # ---- NVIDIA alternatives ----
+  - model_id: nvidia/llama-3.2-nv-embedqa-1b-v2
+    runtime: nim
+    embedding_dim: 1024
+    supports_32k: false
+    native_max_seq: 512
+    notes: Previous ViLA default (retrieval-focused, short window).
+
+  - model_id: nvidia/llama-embed-nemotron-8b
+    runtime: nim
+    embedding_dim: 4096
+    supports_32k: false
+    native_max_seq: 8192
+    notes: hfdata reference; larger 8B parameters, 4096-dim output.
+
+  # ---- Microsoft Harrier-OSS family (HuggingFace) ----
+  - model_id: microsoft/harrier-oss-v1-270m
+    runtime: hf
+    embedding_dim: null          # autodetect
+    supports_32k: true
+    native_max_seq: 32768
+    notes: Minimal footprint; handles full_text_context without chunking.
+
+  - model_id: microsoft/harrier-oss-v1-0.6b
+    runtime: hf
+    embedding_dim: null
+    supports_32k: true
+    native_max_seq: 32768
+    notes: Lightweight default for HF runtime; 32k native.
+
+  - model_id: microsoft/harrier-oss-v1-27b
+    runtime: hf
+    embedding_dim: null
+    supports_32k: true
+    native_max_seq: 32768
+    notes: Highest quality in the harrier-oss family; requires GPU.

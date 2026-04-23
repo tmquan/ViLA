@@ -55,3 +55,17 @@ Thumbs.db
 # Logs
 logs/
 *.log
+
+# Misc
+data/
+data/*.*
+data/**/*.zip
+data/**/*.json
+data/**/*.jsonl
+data/**/*.parquet
+data/**/*.csv
+data/**/*.html
+data/**/*.ipynb
+data/**/*.md
+data/**/*.pdf
+data/**/*.txt

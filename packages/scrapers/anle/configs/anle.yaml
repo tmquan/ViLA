@@ -1,0 +1,45 @@
+_base: default.yaml
+
+# anle.toaan.gov.vn has TWO listings surface:
+#
+#   /webcenter/portal/anle/anle          (no pagination, ~66 docs)
+#       Formal Án lệ + drafts + foreign precedents -- a small curated
+#       set, exposed as filter-variant URLs (hieuLuc / linhVuc / etc.).
+#
+#   /webcenter/portal/anle/nguonanle?selectedPage=N&docType=NguonAnLe&mucHienThi=9015
+#       "Nguồn án lệ" -- precedent SOURCE materials (the bulk judgments
+#       that feed formal precedent selection). ~197 pages × 10 rows each
+#       (~1970 documents). This is the corpus where the "~2K PDFs" lives.
+#
+# The default configuration below targets `nguonanle` (the 2K source
+# material corpus). To scrape only the formal precedent set instead,
+# override `scraper.listing_url` to `.../anle` and set `paginated: false`.
+
+scraper:
+  num_workers: 8
+  qps: 2.0                  # ~2 req/s is well within polite envelope
+  verify_tls: false         # anle's cert is signed by a VN CA not in Mozilla bundle
+
+  # Target nguonanle (paginated bulk corpus).
+  listing_url: https://anle.toaan.gov.vn/webcenter/portal/anle/nguonanle
+  detail_url_template: https://anle.toaan.gov.vn/webcenter/portal/anle/chitietnguonanle?dDocName={doc_name}
+  pdf_url_template: "https://anle.toaan.gov.vn/webcenter/ShowProperty?nodeId=/UCMServer/{doc_name}"
+
+  paginated: true
+  page_param: selectedPage
+  start_page: 1
+  # max_pages: null  -> auto-detect via binary search (~200 pages observed)
+  extra_params:
+    docType: NguonAnLe
+    mucHienThi: "9015"
+  extra_headers:
+    # Oracle ADF returns a JS loopback page for browser-like Accept
+    # headers; `Accept: */*` bypasses that and returns full HTML.
+    Accept: "*/*"
+    User-Agent: anle-scraper/1.0
+
+  # nguonanle rows already carry title/date/summary/court, so skip the
+  # detail GET and the HEAD probe for download to avoid N+1 overhead
+  # on a ~2K corpus (saves ~2K extra requests total).
+  fetch_detail_page: false
+  fetch_head_before_download: false

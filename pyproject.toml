@@ -1,0 +1,76 @@
+# Workspace-level pyproject.toml.
+#
+# Keeps the monorepo runnable with `python -m packages.scrapers.anle.*`
+# from the repo root. Each package under `packages/` is a plain
+# namespace package (no per-package pyproject is required).
+#
+# Install dev/test deps with:
+#     pip install -e ".[dev]"
+#
+# Install a pipeline's runtime deps with:
+#     pip install -r packages/scrapers/anle/requirements.txt
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vila"
+version = "0.1.0"
+description = "Vietnamese Legal Assistant: data, curation, agent, UI"
+requires-python = ">=3.11"
+readme = "README.md"
+license = { file = "LICENSE" }
+classifiers = [
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+
+# The anle pipeline has its own requirements.txt; the workspace-level
+# pyproject only pins shared tooling. Any runtime dep belonging to a
+# specific package belongs in that package's requirements.txt or
+# pyproject.toml, not here.
+dependencies = [
+  "omegaconf>=2.3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+  "ruff>=0.6",
+  "mypy>=1.11",
+]
+
+[tool.setuptools.packages.find]
+# Discover every `packages/*` namespace package without declaring each.
+where = ["."]
+include = ["packages*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = [
+  "-ra",
+  "--strict-markers",
+  "--strict-config",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "SIM", "RUF"]
+ignore = [
+  "E501",   # line too long - handled by formatter
+  "B008",   # function call in default arg - used in CLI/OmegaConf builders
+]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+exclude = ["tests/fixtures"]

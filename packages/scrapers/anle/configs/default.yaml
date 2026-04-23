@@ -1,0 +1,92 @@
+# Default config for the anle pipeline.
+#
+# OmegaConf-based. Use `_base: default.yaml` from a sibling file to
+# override any subset of this; lists are REPLACED, mappings are
+# DEEP-MERGED. Hydra-style dotlist overrides are accepted on the CLI
+# via `--override path.to.key=value`.
+#
+# `full_text_context` is the pipeline-wide token budget for stages that
+# must read a full Vietnamese legal document in one pass (bản án / cáo
+# trạng / án lệ are long). Stages that care reference it via
+# `${..full_text_context}` so a single override propagates everywhere.
+
+host: anle.toaan.gov.vn
+output_dir: ./data
+full_text_context: 32768
+
+scraper:
+  num_workers: 4
+  qps: 1.0
+  user_agent: "ViLA-research/0.1 (+https://example.vn/contact)"
+  proxy: null
+  timeout_s: 30.0
+  max_retries: 5
+  listing_url: https://anle.toaan.gov.vn/webcenter/portal/anle/anle
+  detail_url_template: https://anle.toaan.gov.vn/webcenter/portal/anle/chitietanle?dDocName={doc_name}
+  listing_pages: []           # override to enumerate paged listings
+  # Oracle ADF paginated-listing support (see anle.yaml for nguonanle).
+  paginated: false
+  page_param: selectedPage
+  start_page: 1
+  max_pages: null
+  page_detect_cap: 5000
+  page_detect_probes: [10, 50, 100, 200, 500, 1000, 2000, 5000]
+  extra_params: {}
+  extra_headers: {}
+  fetch_detail_page: true
+  fetch_head_before_download: true
+  selectors: {}               # override to point at custom CSS selectors
+
+parser:
+  model_id: nvidia/nemotron-parse
+  num_workers: 4
+  nim_base_url: "${oc.env:NIM_BASE_URL,https://integrate.api.nvidia.com/v1}"
+  timeout_s: 120.0
+
+extractor:
+  run_generic_layer: true
+  run_site_layer: true
+  llm_tier_for_ambiguous: fast
+  max_seq_length: "${..full_text_context}"
+
+embedder:
+  # Default: llama-nemotron-embed-1b-v2 served via NIM.
+  # 8k native context; use sliding-window chunking to cover the
+  # pipeline-wide full_text_context (32k) across multiple chunks
+  # aggregated by mean pooling. See packages/scrapers/anle/embedder.py.
+  model_id: nvidia/llama-nemotron-embed-1b-v2
+  runtime: nim
+  batch_size: 8
+  max_seq_length: 8192         # model window (not full_text_context)
+  chunking: sliding            # off | sliding | sentence
+  chunk_overlap: 256           # tokens (converted to chars internally)
+  model_dtype: bfloat16
+  device: auto
+
+reducer:
+  methods: [pca, tsne, umap]
+  n_components: 2
+  prefer_gpu: true
+
+visualizer:
+  color_by:
+    - legal_type
+    - legal_relation
+    - procedure_type
+    - legal_arc
+    - code_id
+    - cluster_id
+  distribution_enums:
+    - LegalRelation
+    - ProcedureType
+    - PenaltyType
+    - OutcomeCode
+    - ExitCode
+    - SeverityBand
+    - CourtLevel
+  dimensions: [pca, tsne, umap]
+  top_n_articles: 20
+  dashboard_title: "ViLA - anle.toaan.gov.vn exploration"
+  emit_notebook: true
+  emit_png: false
+  theme: plotly_white
