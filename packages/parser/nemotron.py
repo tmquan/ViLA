@@ -186,12 +186,20 @@ def _rasterize_pdf(pdf_bytes: bytes, *, dpi: int) -> list[bytes]:
 def _extract_page_markdown(raw_arguments: str, *, tool: str) -> str:
     """Convert the NIM tool-call arguments into one markdown string.
 
-    The shape varies by tool:
+    The observed response shape varies by tool and does NOT always
+    match the public docs' examples -- in practice, the arguments are
+    wrapped in an extra list ("list of tool-invocation results"):
 
-    * ``markdown_bbox``    -- list of ``{bbox, text, type}`` objects;
-      we concatenate every non-empty ``text`` in document order.
-    * ``markdown_no_bbox`` -- single ``{"text": "..."}`` object.
-    * ``detection_only``   -- list without ``text``; always returns ``""``.
+    * ``markdown_bbox``     docs: ``[{bbox, text, type}, ...]``
+                            real: ``[[{bbox, text, type}, ...]]``
+    * ``markdown_no_bbox``  docs: ``{"text": "..."}``
+                            real: ``[{"text": "..."}]``
+    * ``detection_only``    list without ``text``; returns ``""``.
+
+    Flatten recursively so both shapes land on the same concatenated
+    markdown string in document order. Missing / malformed payloads
+    return ``""`` rather than raising, so a single bad page does not
+    bring the whole document down.
     """
     if not raw_arguments:
         return ""
@@ -204,24 +212,33 @@ def _extract_page_markdown(raw_arguments: str, *, tool: str) -> str:
             exc,
         )
         return ""
+    return _flatten_markdown(data)
 
+
+def _flatten_markdown(data: Any) -> str:
+    """Recursively collect ``text`` fields from any nesting of lists / dicts."""
+    if data is None:
+        return ""
     if isinstance(data, dict):
-        # markdown_no_bbox
-        return str(data.get("text") or "").strip()
-    if isinstance(data, list):
+        text = data.get("text")
+        if isinstance(text, str):
+            return text.strip()
+        # No ``text`` at this level; drill into values (some tool
+        # shapes nest the regions under keys like ``markdown`` or
+        # ``regions``).
+        inner: list[str] = []
+        for v in data.values():
+            sub = _flatten_markdown(v)
+            if sub:
+                inner.append(sub)
+        return "\n\n".join(inner)
+    if isinstance(data, (list, tuple)):
         parts: list[str] = []
         for item in data:
-            if not isinstance(item, dict):
-                continue
-            text = str(item.get("text") or "").strip()
-            if text:
-                parts.append(text)
+            sub = _flatten_markdown(item)
+            if sub:
+                parts.append(sub)
         return "\n\n".join(parts)
-    logger.warning(
-        "nemoretriever-parse: unexpected tool-arguments shape (%s); "
-        "returning empty markdown",
-        type(data).__name__,
-    )
     return ""
 
 

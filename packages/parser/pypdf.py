@@ -22,6 +22,19 @@ from packages.parser.base import ParserAlgorithm
 logger = logging.getLogger(__name__)
 
 
+# pypdf emits a lot of xref-recovery chatter at WARNING level on
+# slightly malformed PDFs ("Ignoring wrong pointing object 69 0
+# (offset 0)", "Multiple definitions in dictionary", ...). None of
+# these indicate actual parse failures -- pypdf recovers and still
+# extracts text. We route them below WARNING so they do not drown
+# out real pipeline-level logs. ``--log-level DEBUG`` (or
+# ``logging.getLogger("pypdf").setLevel(logging.NOTSET)``) restores
+# the full chatter when diagnosing a specific document.
+logging.getLogger("pypdf").setLevel(logging.ERROR)
+# pypdf.generic emits a second tranche from its object-resolver layer.
+logging.getLogger("pypdf.generic").setLevel(logging.ERROR)
+
+
 class PypdfParser(ParserAlgorithm):
     """Pure-Python local parser (PDF via pypdf, DOCX via docx2txt)."""
 

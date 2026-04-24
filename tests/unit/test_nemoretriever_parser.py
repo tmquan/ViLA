@@ -47,22 +47,40 @@ def test_nemotron_parser_alias_points_at_nemoretriever_parser() -> None:
     assert NemotronParser is NemoretrieverParser
 
 
-def test_extract_page_markdown_bbox_concatenates_regions() -> None:
+def test_extract_page_markdown_bbox_flat_shape() -> None:
+    """Flat list of ``{bbox, text, type}`` as in the public docs."""
     md = _extract_page_markdown(_MARKDOWN_BBOX_FIXTURE, tool="markdown_bbox")
-    # All three region texts present, separated by blank lines.
     assert "## 1 Introduction" in md
     assert "Recurrent neural networks ..." in md
     assert "2" in md
-    # Document order is preserved.
     assert md.index("## 1 Introduction") < md.index("Recurrent neural")
 
 
-def test_extract_page_markdown_no_bbox_returns_single_text() -> None:
+def test_extract_page_markdown_bbox_nested_shape() -> None:
+    """Real-world shape the live NIM returns: the region list wrapped
+    in an outer single-element list. Used to silently return empty."""
+    nested = json.dumps([json.loads(_MARKDOWN_BBOX_FIXTURE)])
+    md = _extract_page_markdown(nested, tool="markdown_bbox")
+    assert "## 1 Introduction" in md
+    assert "Recurrent neural networks ..." in md
+    # Document order preserved through the extra nesting.
+    assert md.index("## 1 Introduction") < md.index("Recurrent neural")
+
+
+def test_extract_page_markdown_no_bbox_flat_shape() -> None:
+    """Single ``{"text": ...}`` dict as shown in the docs."""
     payload = json.dumps(
         {"text": "## Single-blob body\n\nAll paragraphs mashed together."}
     )
     md = _extract_page_markdown(payload, tool="markdown_no_bbox")
     assert md.startswith("## Single-blob body")
+
+
+def test_extract_page_markdown_no_bbox_list_shape() -> None:
+    """Real-world shape: a list wrapping the ``{"text": ...}`` dict."""
+    payload = json.dumps([{"text": "## Real body\n\nSome paragraph."}])
+    md = _extract_page_markdown(payload, tool="markdown_no_bbox")
+    assert md.startswith("## Real body")
 
 
 def test_extract_page_markdown_detection_only_returns_empty() -> None:
