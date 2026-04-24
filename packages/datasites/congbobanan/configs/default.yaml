@@ -1,0 +1,89 @@
+# Default config for the congbobanan pipeline.
+#
+# OmegaConf-based; use `_base: default.yaml` from a sibling file to
+# override any subset. Hydra-style dotlist overrides accepted on the
+# CLI via `--override path.to.key=value`.
+#
+# congbobanan.toaan.gov.vn is an integer-ID portal: every published
+# judgment is addressed as /2taNt1cvn/chi-tiet-ban-an and the URL
+# generator enumerates [start_id .. end_id] without hitting the
+# network. Real crawls override start_id / end_id on the CLI.
+
+host: congbobanan.toaan.gov.vn
+output_dir: ./data
+full_text_context: 32768
+# Smoke-test default: crawl a tiny slice. Real runs override this on
+# the CLI (`--override scraper.start_id=1 scraper.end_id=2100400`).
+limit: null
+
+scraper:
+  num_workers: 4
+  qps: 1.0                  # the WAF is strict; keep polite
+  user_agent: "ViLA-research/0.1 (+https://example.vn/contact)"
+  proxy: null               # congbobanan refuses non-VN IPs; set a VN proxy
+  timeout_s: 30.0
+  max_retries: 5
+  verify_tls: false         # congbobanan's cert is not in the Mozilla bundle
+  download_max_retries: 50
+  download_retry_delay_s: 30.0
+
+  # URL templates
+  detail_url_template: "https://congbobanan.toaan.gov.vn/2ta{case_id}t1cvn/chi-tiet-ban-an"
+  pdf_url_template: "https://congbobanan.toaan.gov.vn/3ta{case_id}t1cvn/"
+
+  # Integer-ID range crawler
+  start_id: 1
+  end_id: 100               # bump to ~2_100_400 for the full corpus
+  retry_empty_detail: true  # re-fetch once if the first detail GET is a ghost
+
+  extra_headers:
+    Accept: "*/*"
+    Accept-Language: "vi-VN,vi;q=0.9,en;q=0.8"
+
+parser:
+  model_id: nvidia/nemotron-parse
+  runtime: local            # flip to `nim` with NVIDIA_API_KEY for the hosted parser
+  num_workers: 4
+  nim_base_url: "${oc.env:NIM_BASE_URL,https://integrate.api.nvidia.com/v1}"
+  timeout_s: 120.0
+
+extractor:
+  run_generic_layer: true
+  run_site_layer: false     # precedent normalization is anle-only
+  llm_tier_for_ambiguous: fast
+  max_seq_length: "${..full_text_context}"
+
+embedder:
+  model_id: nvidia/llama-nemotron-embed-1b-v2
+  runtime: nim
+  batch_size: 8
+  max_seq_length: 8192
+  chunking: sliding
+  chunk_overlap: 256
+  model_dtype: bfloat16
+  device: auto
+
+reducer:
+  methods: [pca, tsne, umap]
+  n_components: 2
+  prefer_gpu: true
+
+executor:
+  name: xenna
+  mode: streaming
+  logging_interval: 60
+  autoscale_interval_s: 180
+  cpu_allocation_percentage: 0.9
+  ignore_failures: false
+
+ray:
+  address: null             # set to "ray://head:10001" for a remote cluster
+  runtime_env: {}
+  num_cpus: null
+  num_gpus: null
+
+stage_overrides:
+  parse_files_per_partition: 32
+  extract_files_per_partition: 32
+  embed_files_per_partition: 16
+  reduce_files_per_partition: 64

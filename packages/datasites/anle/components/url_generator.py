@@ -25,29 +25,14 @@ from typing import Any, Iterator
 from bs4 import BeautifulSoup
 from nemo_curator.stages.text.download.base import URLGenerator
 
-from packages.common.http import PoliteSession
+from packages.common.http import PoliteSession, session_from_scraper_cfg
 
 logger = logging.getLogger(__name__)
 
 
-def _session_from_cfg(cfg: Any) -> PoliteSession:
-    """Build a :class:`PoliteSession` from ``cfg.scraper``.
-
-    Constructed lazily (inside ``generate_urls`` / ``_download_to_path``)
-    because :class:`PoliteSession` holds a :class:`threading.Lock` which
-    Ray cannot pickle across worker boundaries.
-    """
-    proxy = cfg.scraper.get("proxy", None)
-    return PoliteSession(
-        qps=float(cfg.scraper.qps),
-        user_agent=str(cfg.scraper.user_agent),
-        proxy=str(proxy) if proxy else None,
-        timeout=float(cfg.scraper.timeout_s),
-        max_retries=int(cfg.scraper.max_retries),
-        verify_tls=bool(cfg.scraper.verify_tls),
-        download_max_retries=int(cfg.scraper.get("download_max_retries", 50)),
-        download_retry_delay_s=float(cfg.scraper.get("download_retry_delay_s", 30.0)),
-    )
+# Back-compat alias: pre-refactor the helper lived here as a private name;
+# both names now point at the shared :func:`packages.common.http.session_from_scraper_cfg`.
+_session_from_cfg = session_from_scraper_cfg
 
 
 DEFAULT_LISTING_URL = "https://anle.toaan.gov.vn/webcenter/portal/anle/anle"

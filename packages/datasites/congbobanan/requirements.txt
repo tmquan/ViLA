@@ -1,0 +1,50 @@
+# Runtime dependencies for the congbobanan five-pipeline chain.
+#
+# Install for local development:
+#     pip install -r packages/datasites/congbobanan/requirements.txt
+
+# --- env + installer -----------------------------------------------
+# uv is the recommended installer + lockfile tool for the monorepo
+# (see docs/00-overview/repo-layout.md "Tooling"). Listing it here
+# keeps `uv pip install -r requirements.txt` a one-step bootstrap
+# on fresh hosts that only ship plain `pip`.
+uv>=0.4
+
+# --- pipeline runtime (NeMo Curator 2.x) ---------------------------
+# ProcessingStage / Pipeline / DocumentBatch + XennaExecutor +
+# RayActorPoolExecutor + RayDataExecutor all live here. Swap
+# `text_cpu` for `text_cuda12` on a CUDA host or install the `[gpu]`
+# workspace extra.
+nemo-curator[text_cpu]>=0.7
+
+# --- config + CLI --------------------------------------------------
+omegaconf>=2.3
+
+# --- HTTP + HTML ---------------------------------------------------
+requests>=2.31
+requests[socks]>=2.31      # SOCKS5 proxy support for VN-egress routing
+
+# --- data I/O ------------------------------------------------------
+pandas>=2.1
+pyarrow>=15.0
+pyyaml>=6.0
+
+# --- parser (local PDF fallback) ----------------------------------
+# Required when cfg.parser.runtime=local (packages/parser/pypdf.py).
+# The NIM path (cfg.parser.runtime=nim) does not need this locally.
+pypdf>=4.0
+
+# --- NIM / NVIDIA endpoints ---------------------------------------
+openai>=1.30               # OpenAI-compatible NIM client
+
+# --- reducer (CPU fallback) ---------------------------------------
+scikit-learn>=1.3
+umap-learn>=0.5
+
+# --- optional GPU acceleration -------------------------------------
+# Uncomment on a CUDA host; requires the NVIDIA rapids conda channel
+# or the matching cu13 wheel index.
+# cudf-cu13
+# cuml-cu13
+# cugraph-cu13
+# cupy-cuda12x

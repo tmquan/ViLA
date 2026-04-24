@@ -14,6 +14,13 @@
 # on a CUDA host or install the `[gpu]` workspace extra.
 nemo-curator[text_cpu]>=0.7
 
+# --- env + installer ------------------------------------------------
+# uv is the recommended installer + lockfile tool for the monorepo
+# (see docs/00-overview/repo-layout.md "Tooling"). Listing it here
+# keeps `uv pip install -r requirements.txt` a one-step bootstrap
+# on fresh hosts that only ship plain `pip`.
+uv>=0.4
+
 # --- config + CLI ---------------------------------------------------
 omegaconf>=2.3
 
@@ -26,6 +33,11 @@ beautifulsoup4>=4.12
 pandas>=2.1
 pyarrow>=15.0
 pyyaml>=6.0
+
+# --- parser (local PDF fallback) -----------------------------------
+# Required when cfg.parser.runtime=local (packages/parser/pypdf.py).
+# The NIM path (cfg.parser.runtime=nim) does not need this locally.
+pypdf>=4.0
 
 # --- NIM / NVIDIA endpoints ----------------------------------------
 openai>=1.30               # OpenAI-compatible NIM client

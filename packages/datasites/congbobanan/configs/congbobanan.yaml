@@ -1,0 +1,16 @@
+_base: default.yaml
+
+# Full-corpus crawl. congbobanan reports ~2.1 M IDs; at qps=1 that
+# takes ~600 h wall-time single-threaded, or ~150 h with 4 workers.
+# Increase scraper.num_workers + qps carefully -- the WAF is strict
+# and rate-limits noisy sources.
+#
+# Must run from Vietnam. Set scraper.proxy to a VN-egress SOCKS5 /
+# HTTPS proxy, or run on a VN-based VPS. The default empty proxy will
+# fail with ERR_CONNECTION_CLOSED from outside the country.
+
+scraper:
+  num_workers: 4
+  qps: 1.0
+  start_id: 1
+  end_id: 2100400
