@@ -189,11 +189,12 @@ class EmbedderCfg:
     device: str = "auto"    # auto / cuda / cpu
     # Pre-flight chunk-size heuristic. Vietnamese legal text tokenizes
     # denser than English: the nvidia/llama-nemotron-embed-1b-v2
-    # tokenizer empirically lands around 2.4 chars/token, so the old
-    # 3.0 default let oversize chunks through. Lower values produce
-    # smaller pre-flight chunks. Runtime 400 errors from the NIM
-    # endpoint are still caught and auto-split by the embedder stage.
-    chars_per_token: float = 2.4
+    # tokenizer empirically lands near 2 chars/token in the worst
+    # case, so 2.0 is the conservative default that keeps us safely
+    # below the model window without relying on the runtime
+    # split-on-400 fallback. Lower values produce smaller pre-flight
+    # chunks; bump to 2.4 for throughput if your corpus is cleaner.
+    chars_per_token: float = 2.0
     # Extra tokens subtracted from the model window before computing a
     # chunk budget. Guards against tokenizer drift + BPE merges
     # expanding chunks slightly above what the heuristic predicts.

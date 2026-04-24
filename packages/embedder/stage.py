@@ -119,7 +119,7 @@ class NimEmbedderStage(ProcessingStage[DocumentBatch, DocumentBatch]):
     # Fallback defaults if ``cfg.embedder.chars_per_token`` /
     # ``cfg.embedder.safety_tokens`` are missing from an older config.
     # Real configs override these on the cfg object.
-    _DEFAULT_CHARS_PER_TOKEN: float = 2.4
+    _DEFAULT_CHARS_PER_TOKEN: float = 2.0
     _DEFAULT_SAFETY_TOKENS: int = 512
     # Recursion bound for :meth:`_embed_one_defensive`. Each step halves
     # the input, so 6 levels accommodates a 64x overshoot of the
