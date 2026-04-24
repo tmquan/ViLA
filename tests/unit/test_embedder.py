@@ -145,3 +145,91 @@ def test_nim_embedder_stage_declares_input_text_field() -> None:
     assert "markdown" in in_cols
     out_attrs, out_cols = stage.outputs()
     assert "embedding" in out_cols
+
+
+# --------------------------------------------------- defensive oversize retry
+
+
+class _OversizeOnLongBackend:
+    """Fake backend that 400s the way NIM does when an input is too long.
+
+    Rejects the whole batch if any single text exceeds ``limit`` chars,
+    otherwise returns a constant one-hot-per-position vector.
+    """
+
+    model_id = "fake/oversize-sim"
+    embedding_dim = 4
+    max_seq_length = 128
+
+    def __init__(self, limit: int = 300) -> None:
+        self.limit = limit
+        self.calls: list[list[str]] = []
+
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        self.calls.append(list(texts))
+        if any(len(t) > self.limit for t in texts):
+            raise RuntimeError(
+                "Error code: 400 - {'error': 'Input length 8753 "
+                "exceeds maximum allowed token size 8192'}"
+            )
+        out: list[list[float]] = []
+        for i, _ in enumerate(texts):
+            v = [0.0] * 4
+            v[i % 4] = 1.0
+            out.append(v)
+        return out
+
+
+def test_safe_embed_batch_recovers_on_oversize(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stage = NimEmbedderStage(cfg=_cfg())
+    stage._entry = ModelEntry("fake/oversize-sim", "nim", 4, True, None)
+    stage._backend = _OversizeOnLongBackend(limit=300)
+
+    # One oversize text in a batch of two: the whole batch 400s first,
+    # then we retry per-text and split the long one recursively.
+    short = "A" * 50
+    long_text = "B" * 700
+    out = stage._safe_embed_batch([short, long_text])
+
+    assert len(out) == 2
+    assert len(out[0]) == 4 and len(out[1]) == 4
+    # At least: one batch call (failed), two single-text retries,
+    # and at least one split on the long text.
+    assert len(stage._backend.calls) >= 3
+
+
+def test_safe_embed_batch_rethrows_non_oversize_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _AuthFailBackend(_OversizeOnLongBackend):
+        def embed_batch(self, texts: list[str]) -> list[list[float]]:
+            raise RuntimeError("Error code: 401 - unauthorized")
+
+    stage = NimEmbedderStage(cfg=_cfg())
+    stage._entry = ModelEntry("fake/oversize-sim", "nim", 4, True, None)
+    stage._backend = _AuthFailBackend()
+
+    with pytest.raises(RuntimeError, match="401"):
+        stage._safe_embed_batch(["anything"])
+
+
+def test_chars_per_token_from_cfg_controls_chunk_budget() -> None:
+    cfg = _cfg()
+    cfg.embedder.chars_per_token = 2.4
+    cfg.embedder.safety_tokens = 512
+    cfg.embedder.max_seq_length = 8192
+    stage = NimEmbedderStage(cfg=cfg)
+    stage._entry = ModelEntry("fake/backend-1", "nim", 4, True, None)
+
+    class _Backend:
+        max_seq_length = 8192
+    stage._backend = _Backend()  # type: ignore[assignment]
+
+    # budget_tokens = 8192 - 512 = 7680
+    # budget_chars = 7680 * 2.4 = 18432
+    chunks = stage._split_for_embedding("x" * 18000, "sliding", 256)
+    assert chunks == ["x" * 18000]  # fits
+    chunks = stage._split_for_embedding("x" * 20000, "sliding", 256)
+    assert len(chunks) >= 2  # splits

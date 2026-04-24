@@ -45,6 +45,32 @@ logger = logging.getLogger(__name__)
 DEFAULT_REGISTRY_PATH = Path(__file__).parent / "embedding_models.yaml"
 
 
+_OVERSIZE_SIGNATURES: tuple[str, ...] = (
+    "exceeds maximum allowed token size",
+    "exceeds maximum allowed tokens",
+    "maximum context length",
+    "input is too long",
+    "input length exceeds",
+    "string too long",
+)
+
+
+def _is_oversize_error(exc: BaseException) -> bool:
+    """Return True if ``exc`` looks like "input too long" from a NIM endpoint.
+
+    NIM / OpenAI-compatible 400 errors serialise as
+    ``openai.BadRequestError: Error code: 400 - {'error': '...'}``.
+    We match the ``400`` status and a set of known phrases rather than
+    relying on ``openai.BadRequestError`` directly so the helper also
+    handles proxied / rewrapped errors.
+    """
+    text = repr(exc)
+    if "400" not in text:
+        return False
+    lowered = text.lower()
+    return any(sig in lowered for sig in _OVERSIZE_SIGNATURES)
+
+
 # ----------------------------------------------------------- backend factory
 
 
@@ -90,12 +116,16 @@ class NimEmbedderStage(ProcessingStage[DocumentBatch, DocumentBatch]):
     _backend: EmbedderBackend | None = field(default=None, init=False, repr=False)
     _entry: ModelEntry | None = field(default=None, init=False, repr=False)
 
-    # Vietnamese char-per-token heuristic with margin. True Llama-family
-    # tokenizers produce ~3 chars/token on Vietnamese (vs ~4 on English);
-    # the 512-token safety buffer keeps the NIM endpoint from rejecting
-    # a chunk at the upper limit.
-    _CHARS_PER_TOKEN: float = 3.0
-    _SAFETY_TOKENS: int = 512
+    # Fallback defaults if ``cfg.embedder.chars_per_token`` /
+    # ``cfg.embedder.safety_tokens`` are missing from an older config.
+    # Real configs override these on the cfg object.
+    _DEFAULT_CHARS_PER_TOKEN: float = 2.4
+    _DEFAULT_SAFETY_TOKENS: int = 512
+    # Recursion bound for :meth:`_embed_one_defensive`. Each step halves
+    # the input, so 6 levels accommodates a 64x overshoot of the
+    # pre-flight heuristic while still bounding worst-case API fan-out.
+    _MAX_SPLIT_DEPTH: int = 6
+    _MIN_SPLIT_CHARS: int = 200
 
     def inputs(self) -> tuple[list[str], list[str]]:
         text_field = str(self.cfg.embedder.get("text_field", "markdown"))
@@ -181,19 +211,29 @@ class NimEmbedderStage(ProcessingStage[DocumentBatch, DocumentBatch]):
 
     # ---------------------------------------------------- internals
 
+    def _chars_per_token(self) -> float:
+        return float(
+            self.cfg.embedder.get("chars_per_token", self._DEFAULT_CHARS_PER_TOKEN)
+        )
+
+    def _safety_tokens(self) -> int:
+        return int(
+            self.cfg.embedder.get("safety_tokens", self._DEFAULT_SAFETY_TOKENS)
+        )
+
     def _split_for_embedding(
         self, text: str, chunking_mode: str, chunk_overlap_tokens: int
     ) -> list[str]:
         assert self._backend is not None
         budget_tokens = max(
-            256, int(self._backend.max_seq_length) - self._SAFETY_TOKENS
+            256, int(self._backend.max_seq_length) - self._safety_tokens()
         )
-        budget_chars = int(budget_tokens * self._CHARS_PER_TOKEN)
+        budget_chars = int(budget_tokens * self._chars_per_token())
         if len(text) <= budget_chars:
             return [text]
         if chunking_mode == "off":
             return [text]
-        overlap_chars = int(chunk_overlap_tokens * self._CHARS_PER_TOKEN)
+        overlap_chars = int(chunk_overlap_tokens * self._chars_per_token())
         if chunking_mode == "sentence":
             return chunk_sentence(
                 text, target_chars=budget_chars, overlap_chars=overlap_chars
@@ -207,8 +247,53 @@ class NimEmbedderStage(ProcessingStage[DocumentBatch, DocumentBatch]):
         out: list[list[float]] = []
         for i in range(0, len(chunks), batch_size):
             sub = chunks[i : i + batch_size]
-            out.extend(self._backend.embed_batch(sub))
+            out.extend(self._safe_embed_batch(sub))
         return out
+
+    def _safe_embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """Embed a batch; recover from NIM's 400 "exceeds max tokens" errors.
+
+        The pre-flight ``_split_for_embedding`` heuristic is coarse:
+        Vietnamese legal text tokenizes denser than the default
+        ``chars_per_token`` predicts, so the NIM endpoint occasionally
+        rejects a chunk with ``Input length N exceeds maximum allowed
+        token size``. Rather than crash the whole pipeline on one
+        outlier, split the offending text in half and retry. Each
+        recursion level halves the input, so the worst-case fan-out is
+        bounded by ``_MAX_SPLIT_DEPTH``. Sub-embeddings are mean-pooled
+        back to one vector per original chunk slot so the caller keeps
+        the ``one-vector-per-chunk`` invariant.
+        """
+        assert self._backend is not None
+        try:
+            return self._backend.embed_batch(texts)
+        except Exception as exc:  # noqa: BLE001 - caller's scope guard
+            if not _is_oversize_error(exc):
+                raise
+            logger.warning(
+                "NIM embedder: batch of %d rejected as oversize; "
+                "splitting per-text and retrying",
+                len(texts),
+            )
+            return [self._embed_one_defensive(t) for t in texts]
+
+    def _embed_one_defensive(
+        self, text: str, depth: int = 0
+    ) -> list[float]:
+        assert self._backend is not None
+        try:
+            return self._backend.embed_batch([text])[0]
+        except Exception as exc:  # noqa: BLE001
+            if (
+                not _is_oversize_error(exc)
+                or len(text) < self._MIN_SPLIT_CHARS
+                or depth >= self._MAX_SPLIT_DEPTH
+            ):
+                raise
+        half = len(text) // 2
+        left = self._embed_one_defensive(text[:half], depth + 1)
+        right = self._embed_one_defensive(text[half:], depth + 1)
+        return mean_pool([left, right])
 
 
 # ----------------------------------------------------------- HF stage (Curator)
