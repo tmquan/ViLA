@@ -1,14 +1,26 @@
 # Workspace-level pyproject.toml.
 #
-# Keeps the monorepo runnable with `python -m packages.scrapers.anle.*`
-# from the repo root. Each package under `packages/` is a plain
-# namespace package (no per-package pyproject is required).
+# Keeps the monorepo runnable with `python -m packages.datasites.<site>`
+# and `python -m packages.<stage> ...` from the repo root. Each package
+# under `packages/` is a plain namespace package (no per-package
+# pyproject is required).
+#
+#   packages/common/          - shared infrastructure (SiteLayout, StageBase)
+#   packages/parser/          - stage 2 (site-agnostic)
+#   packages/extractor/       - stage 3 (generic + precedent layer)
+#   packages/embedder/        - stage 4 (site-agnostic)
+#   packages/reducer/         - stage 5 (site-agnostic)
+#   packages/visualizer/      - stage 6 (site-agnostic, ontology-driven)
+#   packages/runner/          - PipelineRunner base class
+#   packages/datasites/<site>/ - site-specific scraper + runner subclass
+#                                + configs; the single home for anything
+#                                site-specific
 #
 # Install dev/test deps with:
 #     pip install -e ".[dev]"
 #
 # Install a pipeline's runtime deps with:
-#     pip install -r packages/scrapers/anle/requirements.txt
+#     pip install -r packages/datasites/anle/requirements.txt
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -33,6 +45,14 @@ classifiers = [
 # pyproject.toml, not here.
 dependencies = [
   "omegaconf>=2.3",
+  # NeMo Curator 2.x is the pipeline runtime: ProcessingStage base class,
+  # Pipeline orchestrator, XennaExecutor / RayActorPoolExecutor /
+  # RayDataExecutor. `text_cpu` pulls the text-domain readers/writers
+  # (ParquetReader, ParquetWriter, JsonlReader, ...) plus the download
+  # composite (DocumentDownloadExtractStage). GPU stages (cuML reducer,
+  # HuggingFace embedder) pick up the heavy deps via the optional
+  # `gpu` extras-group below.
+  "nemo-curator[text_cpu]>=0.7",
 ]
 
 [project.optional-dependencies]
@@ -41,6 +61,12 @@ dev = [
   "pytest-cov>=5.0",
   "ruff>=0.6",
   "mypy>=1.11",
+]
+# GPU / Ray-Data backend extras. The core install is CPU-only and can
+# still run the pipeline against a remote Ray cluster via `--executor
+# ray_actor_pool --ray-address ray://<head>:10001`.
+gpu = [
+  "nemo-curator[text_cuda12]>=0.7",
 ]
 
 [tool.setuptools.packages.find]

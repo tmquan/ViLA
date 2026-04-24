@@ -15,13 +15,13 @@ from pathlib import Path
 import pytest
 from omegaconf import OmegaConf
 
-from packages.scrapers.common.config import (
+from packages.common.config import (
     apply_overrides,
     load_config,
     structured_config,
     to_container,
 )
-from packages.scrapers.common.schemas import PipelineCfg
+from packages.common.schemas import PipelineCfg
 
 
 def _write(path: Path, text: str) -> Path:

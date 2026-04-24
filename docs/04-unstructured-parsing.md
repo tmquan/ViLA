@@ -5,6 +5,31 @@ Goal: convert unstructured legal PDFs (cáo trạng, đơn khởi kiện, hồ s
 Postgres / MongoDB / Milvus. Target throughput is 5000 PDFs / hour / GPU
 node.
 
+## Implementation status
+
+This document is a forward-looking spec for the parsing subsystem. Its
+scope is larger than the current code base. The table below maps each
+stage in §1 to what exists today.
+
+| Stage                       | Current status                                                                                              |
+|---                          |---                                                                                                          |
+| [1] format detection        | **Not implemented.** `PdfParseStage` currently trusts the downloader's MIME-derived extension.              |
+| [2] nemo-parse              | **Implemented** as [`packages/parser/nemotron.py`](../packages/parser/nemotron.py) (NIM client) + [`packages/parser/pypdf.py`](../packages/parser/pypdf.py) (local fallback), wrapped by [`PdfParseStage`](../packages/parser/stage.py). |
+| [3] OCR fallback            | **Not implemented.** Scanned PDFs currently fall through the local pypdf path with degraded output.          |
+| [4] Section tagger          | **Not implemented.** No `packages/parser/rules/*.yaml` files yet.                                           |
+| [5] cuDF feature frame      | **Not implemented.**                                                                                         |
+| [6] cuML preprocessing      | **Not implemented.**                                                                                         |
+| [7] Entity + relation       | Partially: regex-based [`GenericExtractor`](../packages/extractor/generic.py) + [`PrecedentExtractor`](../packages/extractor/precedent.py) run in [`LegalExtractStage`](../packages/extractor/stage.py). No ML-based NER yet. |
+| [8] Validation              | **Not implemented** as a stage. Curator's per-stage `inputs()`/`outputs()` cross-check is the only guard.    |
+| [9] Persist                 | Terminates at `JsonlWriter` / `ParquetWriter` (see [`03-curation-pipeline.md`](03-curation-pipeline.md) §7). Postgres / Mongo / Milvus sinks are **not implemented** -- planned follow-up PRs. |
+
+Paths referenced later in this document (`packages/parsers/...` with an
+`s`, `vila_parsers/common/*`, `packages/parsers/rules/*`) are
+aspirational and do not exist in the current tree. The actual
+implemented code lives under `packages/parser/` (singular). Where this
+doc says "packages/parsers", read it as the target layout for the full
+parsing subsystem once stages 3-6 and 8 are built out.
+
 ## 1. Pipeline
 
 ```

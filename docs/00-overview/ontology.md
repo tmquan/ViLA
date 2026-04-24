@@ -53,50 +53,50 @@ glossary groupings. Every leaf class is mapped to a Postgres table,
 Pydantic/Zod model, and KG node type.
 
 ```
-vn-legal:Thing                            (abstract)
+vn-legal:Thing                              (abstract)
   |
-  +- vn-legal:LegalType                   (artifacts of the legal process)
-  |    +- vn-legal:LegalSituation         <=> legal_situations
-  |    +- vn-legal:CaseFile               <=> case_files
-  |    +- vn-legal:Indictment             <=> indictments
-  |    +- vn-legal:Lawsuit                <=> lawsuits
-  |    +- vn-legal:InvestigationConclusion <=> investigation_conclusions
-  |    +- vn-legal:Ruling                 <=> rulings
-  |    +- vn-legal:Verdict                <=> verdicts
-  |    +- vn-legal:Precedent              <=> precedents
+  +- vn-legal:LegalType                     (artifacts of the legal process)
+  |    +- vn-legal:LegalSituation           <=> legal_situations
+  |    +- vn-legal:CaseFile                 <=> case_files
+  |    +- vn-legal:Indictment               <=> indictments
+  |    +- vn-legal:Lawsuit                  <=> lawsuits
+  |    +- vn-legal:InvestigationConclusion  <=> investigation_conclusions
+  |    +- vn-legal:Ruling                   <=> rulings
+  |    +- vn-legal:Verdict                  <=> verdicts
+  |    +- vn-legal:Precedent                <=> precedents
   |
-  +- vn-legal:Participant                 (who appears in a LegalType)
-  |    +- vn-legal:Person                 <=> persons
-  |    +- vn-legal:Defendant              <=> defendants            (refines Person)
-  |    +- vn-legal:Plaintiff              <=> (attribute on lawsuit)
-  |    +- vn-legal:CivilDefendant         <=> (attribute on lawsuit)
-  |    +- vn-legal:Victim                 <=> victims (future table)
-  |    +- vn-legal:Witness                <=> witnesses (future table)
+  +- vn-legal:Participant                   (who appears in a LegalType)
+  |    +- vn-legal:Person                   <=> persons
+  |    +- vn-legal:Defendant                <=> defendants            (refines Person)
+  |    +- vn-legal:Plaintiff                <=> (attribute on lawsuit)
+  |    +- vn-legal:CivilDefendant           <=> (attribute on lawsuit)
+  |    +- vn-legal:Victim                   <=> victims (future table)
+  |    +- vn-legal:Witness                  <=> witnesses (future table)
   |    +- vn-legal:Organization
-  |         +- vn-legal:Court             <=> courts
-  |         +- vn-legal:Procuracy         <=> procuracies
-  |         +- vn-legal:InvestigationBody <=> investigation_bodies
+  |         +- vn-legal:Court               <=> courts
+  |         +- vn-legal:Procuracy           <=> procuracies
+  |         +- vn-legal:InvestigationBody   <=> investigation_bodies
   |
-  +- vn-legal:LegalSource                 (normative materials)
-  |    +- vn-legal:Code                   <=> codes
-  |    +- vn-legal:StatuteArticle         <=> statute_articles
-  |    +- vn-legal:HistoricalCode         <=> historical_codes   (documentary-only; pre-1985)
+  +- vn-legal:LegalSource                   (normative materials)
+  |    +- vn-legal:Code                     <=> codes
+  |    +- vn-legal:StatuteArticle           <=> statute_articles
+  |    +- vn-legal:HistoricalCode           <=> historical_codes   (documentary-only; pre-1985)
   |
-  +- vn-legal:ConstituentAttribute        (attached to one or more LegalType)
-  |    +- vn-legal:Charge                 <=> charges
-  |    +- vn-legal:Sentence               <=> sentences
-  |    +- vn-legal:EvidenceItem           <=> evidence_items
-  |    +- vn-legal:CaseEvent              <=> case_events
-  |    +- vn-legal:Factor                 <=> case_factors
-  |    +- vn-legal:Determination          <=> (columns on verdict)
+  +- vn-legal:ConstituentAttribute          (attached to one or more LegalType)
+  |    +- vn-legal:Charge                   <=> charges
+  |    +- vn-legal:Sentence                 <=> sentences
+  |    +- vn-legal:EvidenceItem             <=> evidence_items
+  |    +- vn-legal:CaseEvent                <=> case_events
+  |    +- vn-legal:Factor                   <=> case_factors
+  |    +- vn-legal:Determination            <=> (columns on verdict)
   |
-  +- vn-legal:Classifier                  (enumerated vocabularies)
-       +- vn-legal:LegalRelation          (criminal / civil / ...)
-       +- vn-legal:ProcedureType          (sơ thẩm / phúc thẩm / ...)
-       +- vn-legal:PenaltyType            (tù có thời hạn / ...)
+  +- vn-legal:Classifier                    (enumerated vocabularies)
+       +- vn-legal:LegalRelation            (criminal / civil / ...)
+       +- vn-legal:ProcedureType            (sơ thẩm / phúc thẩm / ...)
+       +- vn-legal:PenaltyType              (tù có thời hạn / ...)
        +- vn-legal:OutcomeCode
-       +- vn-legal:ExitCode               (EX-01 .. EX-11 from Phase 7)
-       +- vn-legal:CasePhase              (entry / prosecution_pretrial / ...)
+       +- vn-legal:ExitCode                 (EX-01 .. EX-11 from Phase 7)
+       +- vn-legal:CasePhase                (entry / prosecution_pretrial / ...)
 ```
 
 Equivalences to external vocabularies are declared once here; the KG
@@ -813,9 +813,10 @@ Every axiom AX-01..AX-18 has at least one primary enforcement location
 (belt-and-braces). "DB CHECK" = inline CHECK constraint in Phase 5 DDL;
 "DB trigger" = a Postgres trigger (listed in
 `services/api/migrations/0003_triggers.sql`); "Validator" = runtime
-assertion in `packages/curator/src/vila_curator/validators.py` or
-equivalent; "Test" = `tests/contracts/ontology_axioms_test.py` fixture
-case.
+assertion invoked from a Curator `ProcessingStage` (per-site
+`LegalExtractStage` subclass for case-scope axioms, or a future
+`packages/validators/` module for cross-entity axioms); "Test" =
+`tests/contracts/ontology_axioms_test.py` fixture case.
 
 | Axiom | Primary | Secondary | Notes |
 |---|---|---|---|

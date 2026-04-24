@@ -19,7 +19,7 @@ Public surface:
     resolve_config_path(...)          -> pick a file from --config / --config-name
 
 Example:
-    cfg = load_config("packages/scrapers/anle/configs/anle.yaml")
+    cfg = load_config("packages/datasites/anle/configs/anle.yaml")
     cfg = apply_overrides(cfg, ["embedder.batch_size=16"])
     print(cfg.embedder.model_id)
 """
@@ -98,3 +98,51 @@ def resolve_config_path(
         return Path(config).expanduser().resolve()
     name = config_name or default_name
     return (configs_dir / f"{name}.yaml").resolve()
+
+
+# Repo root: packages/common/config.py -> parents[2] == repo root.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_DATASITES_ROOT = _REPO_ROOT / "packages" / "datasites"
+
+
+def find_site_config(name: str, *, repo_root: Path | None = None) -> Path:
+    """Resolve ``--config-name NAME`` to a site-package config path.
+
+    Returns ``packages/datasites/<name>/configs/<name>.yaml``. Raises
+    ``FileNotFoundError`` if the file does not exist so that operators
+    get a clear error rather than a later OmegaConf parse failure.
+
+    Used by every site-agnostic stage CLI (parser, extractor, embedder,
+    reducer, visualizer) and by :class:`packages.runner.PipelineRunner`
+    so operators can say ``--config-name anle`` from the repo root
+    without knowing exactly where the YAML lives under
+    ``packages/datasites/``.
+    """
+    root = (repo_root / "packages" / "datasites") if repo_root else _DATASITES_ROOT
+    path = (root / name / "configs" / f"{name}.yaml").resolve()
+    if not path.exists():
+        raise FileNotFoundError(
+            f"--config-name {name} resolved to {path} which does not exist. "
+            f"Expected a site config at packages/datasites/{name}/configs/{name}.yaml "
+            f"or pass --config <path> with an absolute YAML path."
+        )
+    return path
+
+
+def resolve_stage_config(
+    config: Path | None,
+    config_name: str | None,
+) -> Path:
+    """Resolve a config path for a site-agnostic stage (no local configs).
+
+    Precedence: explicit --config > --config-name (looked up via
+    :func:`find_site_config`). At least one must be provided.
+    """
+    if config is not None:
+        return Path(config).expanduser().resolve()
+    if config_name:
+        return find_site_config(config_name)
+    raise SystemExit(
+        "Stage requires --config <path> or --config-name <site-name>. "
+        "Site configs live under packages/datasites/<name>/configs/<name>.yaml."
+    )

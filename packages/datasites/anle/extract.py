@@ -1,0 +1,55 @@
+"""Extractor pipeline: Markdown -> JSONL.
+
+Stage chain::
+
+    MarkdownReader(md_dir)
+    -> LegalExtractStage
+    -> JsonlWriter(jsonl_dir)
+
+Reads: ``data/<host>/md/*.md`` (+ sibling ``<doc_name>.meta.json``).
+Writes: ``data/<host>/jsonl/*.jsonl`` with text + entities + precedent
+metadata (see :data:`EXTRACTOR_JSONL_FIELDS`).
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from nemo_curator.pipeline import Pipeline
+from nemo_curator.stages.text.io.writer import JsonlWriter
+
+from packages.datasites.anle._shared import (
+    EXTRACTOR_JSONL_FIELDS,
+    build_layout,
+)
+from packages.extractor.stage import LegalExtractStage
+from packages.pipeline.io import MarkdownReader
+
+
+def build_extract_pipeline(cfg: Any) -> Pipeline:
+    """Return the Extractor :class:`Pipeline`."""
+    layout = build_layout(cfg)
+    return Pipeline(
+        name=f"{cfg.host}-extract",
+        description="anle Extractor: markdown -> JSONL (legal extract).",
+        stages=[
+            MarkdownReader(
+                file_paths=str(layout.md_dir),
+                files_per_partition=int(
+                    cfg.get("stage_overrides", {}).get(
+                        "extract_files_per_partition", 8
+                    )
+                ),
+            ),
+            LegalExtractStage(cfg=cfg),
+            JsonlWriter(
+                path=str(layout.jsonl_dir),
+                fields=list(EXTRACTOR_JSONL_FIELDS),
+                mode="ignore",
+            ),
+        ],
+        config={"host": str(cfg.host), "jsonl_dir": str(layout.jsonl_dir)},
+    )
+
+
+__all__ = ["build_extract_pipeline"]

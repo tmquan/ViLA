@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from packages.scrapers.common.ontology import (
+from packages.common.ontology import (
     LEGAL_ARCS,
     Ontology,
     arc_for_code_id,

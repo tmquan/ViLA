@@ -1,412 +1,372 @@
-# Phase 3 — Data Curation Pipeline (Nemo Curator)
+# Phase 3 - Data Curation Pipeline (NeMo Curator)
 
-Deliverable 2b: automated curation and update strategy using Nemo Curator.
-This document defines the five core operators, their contracts, the pipeline
-wiring, update cadence, and quality assurance, with explicit references to
-the scraping patterns adopted from `tmquan/datascraper` and the dataset
-patterns adopted from `tmquan/hfdata` (see `02-data-sources.md` section 4).
+Implementation of Deliverable 2b. Every stage is a real
+[`ProcessingStage`](https://docs.nvidia.com/nemo/curator/api/reference/api-reference/processing-stage)
+(or a `CompositeStage` that decomposes into them), the task type is
+[`DocumentBatch`](https://docs.nvidia.com/nemo/curator/api/reference/api-reference/document-batch),
+orchestration is
+[`nemo_curator.pipeline.Pipeline`](https://docs.nvidia.com/nemo/curator/api/reference/api-reference/pipeline),
+and execution is one of three Curator-shipped Ray backends:
+`XennaExecutor` (default, Cosmos-Xenna streaming), `RayActorPoolExecutor`,
+or `RayDataExecutor`.
 
 ## 1. Pipeline overview
 
+The curation flow is split into five independent Curator pipelines
+chained via disk. Each pipeline owns a single IO contract and can be
+restarted, rerun, or scaled onto a different executor without touching
+the others.
+
 ```
-  +------------+    +----------+    +-------------+    +------------+    +-----------+
-  | Downloader |--> | Parser   |--> | Extractor   |--> | Embedder   |--> | Reducer   |
-  +------+-----+    +-----+----+    +------+------+    +-----+------+    +-----+-----+
-         |                |                |                 |                 |
-         v                v                v                 v                 v
-   raw_documents   parsed_documents   entities,         vectors            2d/3d
-   object store   markdown + layout   relations         Milvus + cuVS     coords
-   + Postgres row + Mongo doc         + Postgres        index             + sidecar
-                                                                          for UI
+  Downloader                     Parser                              Extractor                 Embedder                     Reducer
+  ==========                     ======                              =========                 ========                     =======
+
+  URLGenerationStage             FilePartitioningStage               MarkdownReader            JsonlReader                  ParquetReader
+         |                              |                                   |                         |                            |
+         v                              v                                   v                         v                            v
+  DocumentDownloadStage          DocumentIterateExtractStage          LegalExtractStage         NimEmbedderStage             ReducerStage
+         |                        (AnleIterator +                           |                   or EmbeddingCreatorStage    (+HDBSCAN)
+         v                         AnleExtractor)                           v                         |                            |
+  pdf/<doc_name>.pdf                    |                             JsonlWriter                     v                            v
+  pdf/<doc_name>.html                   v                                   |                   ParquetWriter                ParquetWriter
+  pdf/<doc_name>.url              PdfParseStage                             v                         |                            |
+                                        |                              jsonl/*.jsonl                  v                            v
+                                        v                                                     parquet/embeddings/*         parquet/reduced/*
+                                  MarkdownPerDocWriter
+                                        |
+                                        v
+                                  md/<doc_name>.md
+                                  md/<doc_name>.meta.json
 ```
 
-Each operator is a Nemo Curator `Operator` subclass. Data flows through the
-Curator `Dataset` abstraction. Every operator is (a) deterministic,
-(b) idempotent on `content_hash`, (c) writes a lineage record to
-`document_lineage`, and (d) reports metrics to Prometheus.
+All in-pipeline stages are Curator
+`ProcessingStage[InputT, OutputT]` subclasses; the download composite
+and readers are `CompositeStage[_EmptyTask, DocumentBatch]`. Writers
+are `ProcessingStage[DocumentBatch, FileGroupTask]`. Idempotency comes
+from the writer's content-hash filenames and `mode="ignore"`; lineage
+is exposed via each task's `_stage_perf` attribute (Curator built-in).
 
-## 2. Stage 1 — `Downloader`
+## 1a. Why five pipelines and not one?
 
-### Responsibility
-Fetch source documents (PDFs, HTML, JSON) and register them in storage.
+A single monolithic pipeline terminating at one writer couples every
+stage's failure modes. The five-pipeline chain lets the operator:
 
-### Sources handled
-Separate concrete subclass per site, registered under
-`packages/scrapers/<site>` and wrapped as a Curator Downloader operator
-for orchestration:
+* rerun a single step against last-known-good inputs
+  (e.g. `--pipeline embed` after swapping `cfg.embedder.model_id`,
+  or `--pipeline parse` after a parser regression without re-downloading
+  the PDFs);
+* scale each step on a different cluster
+  (`parse` on CPU, `embed` on GPU, `reduce` on a fat GPU node);
+* keep the text artifacts (`md/*.md` + `jsonl/*.jsonl`) separate from
+  the vector artifacts (`parquet/{embeddings,reduced}/*.parquet`) so
+  consumers can load only what they need.
 
-- `CongbobananDownloader` (`congbobanan.toaan.gov.vn`)
-- `AnleDownloader` (`anle.toaan.gov.vn`)
-- `VbplDownloader` (`vbpl.vn` / `vanban.chinhphu.vn`)
-- `UploadDownloader` (pass-through for user uploads via `services/ingest`)
-- `LocalCorpusDownloader` (`data/pdf/<collection>/<charge>/<doc_type>/*.pdf`;
-  see `00-overview/repo-layout.md` "Sample corpus layout" and
-  `02-data-sources.md` §3.1). Emits `DocumentRef` records whose
-  `metadata` carries `{collection, charge_name, document_type}`.
+## 2. Stage 1 - Download composite
 
-### Import procedure (congbobanan, authoritative example)
+`nemo_curator.stages.text.download.base.DocumentDownloadExtractStage`
+is a Curator composite. It decomposes into three execution stages at
+`Pipeline.build()` time: `URLGenerationStage`, `DocumentDownloadStage`,
+`DocumentIterateExtractStage`.
 
-1. Read `scraper_state(site='congbobanan')` for `last_publish_date`.
-2. Page through the listing endpoint in descending `publish_date` until an
-   item older than `last_publish_date` is encountered.
-3. For each listing row emit a `DocumentRef` carrying metadata.
-4. For each `DocumentRef`:
-   - Resolve the PDF URL from the detail page.
-   - Respect QPS throttling and backoff (pattern adopted from
-     `tmquan/datascraper`).
-   - Stream the PDF to object storage at
-     `congbobanan/{year}/{month}/{external_id_slug}.pdf`.
-   - Compute `content_hash = sha256(bytes)`.
-   - Upsert `raw_documents(source, external_id, content_hash, storage_uri,
-     fetched_at, metadata JSONB)`.
-   - Append a row to `document_lineage(stage='download', status, error)`.
-5. Update `scraper_state.last_publish_date` to the max `publish_date`
-   observed in the run.
+Per-site code provides one subclass of each abstract base, all under
+`packages/datasites/anle/components/`:
 
-### Import procedure (anle)
+| Curator base            | anle subclass (`packages/datasites/anle/components/...`) |
+|---                      |---                                                        |
+| `URLGenerator`          | `AnleURLGenerator.generate_urls() -> list[str]` (`url_generator.py`) |
+| `DocumentDownloader`    | `AnleDocumentDownloader.download(url)` (`downloader.py`; overrides the base class's `_download_to_path` contract to avoid the `.pdf.pdf` double-suffix bug) |
+| `DocumentIterator`      | `AnleDocumentIterator.iterate(file_path)` (`iterator.py`) |
+| `DocumentExtractor`     | `AnleDocumentExtractor.extract(record)` (`extractor.py`) |
 
-Same shape with these differences:
+The URL generator returns detail-page URLs only. The downloader
+fetches both the detail HTML (cached as a sibling `<stem>.html`) and
+the binary (PDF/DOCX/DOC, extension picked from HEAD MIME). The
+iterator emits one record per document with the binary as
+`pdf_bytes` plus the cached HTML as `detail_html`; the extractor
+parses the HTML into structured row fields
+(`precedent_number`, `adopted_date`, `applied_article`, `court`,
+`pdf_url`, `source`).
 
-- Full-corpus pagination is small (~100 items); always refresh the full
-  listing weekly and compare hashes.
-- Keep both `html_url` and `pdf_url`; prefer HTML for structured extraction,
-  keep PDF for archival.
-
-### Operator interface (Python, sketch)
+The `download` pipeline uses only the first two stages of the
+`DocumentDownloadExtractStage` composite; the iterator + extractor are
+invoked later by the `parse` pipeline via `DocumentIterateExtractStage`
+after `FilePartitioningStage` enumerates the PDFs on disk.
 
 ```python
-# packages/curator/src/vila_curator/operators/downloader.py
-from __future__ import annotations
-from typing import Iterable
-from nemo_curator import Operator, Dataset, Record
-from vila_scrapers.base import SiteScraper
+# packages/datasites/anle/pipeline.py (Downloader factory)
+from nemo_curator.pipeline import Pipeline
+from nemo_curator.stages.text.download.base.url_generation import URLGenerationStage
+from nemo_curator.stages.text.download.base.download import DocumentDownloadStage
 
-class Downloader(Operator):
-    """Fetch documents from a configured site and register them.
-
-    Idempotent on (source, external_id, content_hash). Safe to re-run.
-    """
-
-    def __init__(self, scraper: SiteScraper, limit: int | None = None) -> None:
-        self._scraper = scraper
-        self._limit = limit
-
-    def run(self, _: Dataset | None = None) -> Dataset:
-        refs: Iterable[Record] = self._scraper.iter_new(limit=self._limit)
-        out: list[Record] = []
-        for ref in refs:
-            result = self._scraper.fetch_and_store(ref)
-            out.append(result)
-        return Dataset(out)
-```
-
-### Quality checks
-
-- `content_hash` must be non-empty and unique per `(source, external_id,
-  version)`.
-- If the same `(source, external_id)` reappears with a new `content_hash`,
-  mark the prior version superseded and store the diff size for review.
-- Reject items whose `Content-Type` is not `application/pdf`, `text/html`,
-  or declared JSON.
-
-## 3. Stage 2 — `Parser`
-
-### Responsibility
-Convert raw bytes into structured (markdown + layout) form.
-
-### Strategy
-
-- PDFs: delegate to **nemo-parse** (Phase 4). Output markdown with preserved
-  headings, tables, and inline footnote references.
-- HTML: readability extraction (boilerplate stripped), then convert to
-  markdown.
-- JSON (statutes): mapped directly to `parsed_documents.structured`.
-
-### Operator interface
-
-```python
-# packages/curator/src/vila_curator/operators/parser.py
-from nemo_curator import Operator, Dataset
-from vila_parsers import route_parser
-
-class Parser(Operator):
-    """Convert raw documents to normalized markdown + layout hints."""
-
-    def run(self, data: Dataset) -> Dataset:
-        out = []
-        for record in data:
-            parser = route_parser(record.metadata["mime_type"])
-            result = parser.parse(record.storage_uri)
-            record.body_markdown = result.markdown
-            record.layout = result.layout
-            out.append(record)
-        return Dataset(out)
-```
-
-### Outputs
-
-- `parsed_documents(document_id, markdown, layout_json, page_count,
-  ocr_used, parser_version, parsed_at)`.
-- Markdown body is stored in MongoDB (`raw_bodies` collection keyed by
-  `document_id`). The Postgres row holds only metadata.
-
-### Quality checks
-
-- Non-zero page count.
-- Heading count vs expected (indictments should contain the headings
-  enumerated in the taxonomy: Thông tin chung, Danh sách bị can, Tóm tắt vụ
-  việc, Căn cứ pháp luật, Mức hình phạt).
-- `parser_confidence` surfaced by nemo-parse is recorded; below-threshold
-  items go to a manual review queue.
-
-## 4. Stage 3 — `Extractor`
-
-### Responsibility
-Pull specific structured fields from parsed documents and populate the
-relational and graph layers.
-
-### Extraction units
-
-Derived from the canonical taxonomy (`00-overview/glossary.md`):
-
-1. `case_file` — top-level case record.
-2. `indictment` / `lawsuit` — whichever applies.
-3. `defendant` list.
-4. `charge` list with links to `statute_article`.
-5. `statute_article` references with version resolution (see Phase 2 §2.6).
-6. `case_event` timeline entries (Diễn biến vụ việc).
-7. `evidence_item` list (Vật chứng).
-8. `sentence` entries with `penalty_type`, `sentence_term`, factor tags.
-9. `legal_relation` classification.
-10. `procedure_type`.
-11. `determination` (age determination, mental-health assessment,
-    aggravating / mitigating factors).
-
-### Techniques
-
-- Rule-based sectionizer on markdown headings and Vietnamese cue phrases
-  (`Điều tra viên…`, `Hội đồng xét xử…`, `Quyết định…`).
-- Vietnamese NER (`packages/nlp/ner.py`) trained/fine-tuned on a labeled
-  subset. Model backbone: an embedding-sized transformer suitable for
-  Vietnamese (for example `vinai/phobert-base` or a NIM-hosted NER model
-  if available).
-- Statute linker (`packages/nlp/statute_linker.py`): pattern + dictionary +
-  fuzzy match against `statute_article` versions effective at case date.
-- LLM-assisted extraction for ambiguous passages via the Phase 9 LLM, with
-  **citation binding** (the LLM may only fill fields whose source span it
-  also cites).
-
-### Operator interface
-
-```python
-# packages/curator/src/vila_curator/operators/extractor.py
-from nemo_curator import Operator, Dataset
-from vila_nlp import ner, statute_linker, charge_classifier
-from vila_schemas import CaseFile, Indictment, Defendant, Charge
-
-class Extractor(Operator):
-    """Extract structured fields from parsed documents."""
-
-    def run(self, data: Dataset) -> Dataset:
-        out = []
-        for record in data:
-            entities = ner.extract(record.body_markdown)
-            charges = charge_classifier.classify(record.body_markdown, entities)
-            statutes = statute_linker.link(charges, record.metadata["case_date"])
-            record.extracted = {
-                "entities": entities,
-                "charges": charges,
-                "statutes": statutes,
-            }
-            out.append(record)
-        return Dataset(out)
-```
-
-### Quality checks
-
-- Per-document: every `charge` must link to at least one `statute_article`.
-- Per-document: `defendant` count agrees with the count stated in the
-  "Danh sách bị can" heading (where present).
-- Dataset-level: distribution of extracted charges per month smooth
-  against the prior month (z-score alert in Grafana).
-
-## 5. Stage 4 — `Embedder`
-
-### Responsibility
-Generate dense vectors for searchable text units.
-
-### Unit of embedding
-
-- One vector per `case_file` summary (800–1500 token window).
-- One vector per `case_event` narrative.
-- One vector per `statute_article`.
-- One vector per `precedent.applied_principle`.
-
-### Model
-
-`nvidia/llama-3.2-nv-embedqa-1b-v2` from `build.nvidia.com` NIM. 1024-dim
-float embeddings. Client code uses the OpenAI-compatible endpoint.
-
-### Operator interface
-
-```python
-# packages/curator/src/vila_curator/operators/embedder.py
-from nemo_curator import Operator, Dataset
-from vila_curator.clients.nim_embed import NimEmbeddings
-
-class Embedder(Operator):
-    """Generate dense vectors for retrievable passages."""
-
-    def __init__(self, model: str = "nvidia/llama-3.2-nv-embedqa-1b-v2") -> None:
-        self._client = NimEmbeddings(model=model)
-
-    def run(self, data: Dataset) -> Dataset:
-        passages = [(rec.id, txt) for rec in data for txt in rec.passages()]
-        vectors = self._client.embed_batch([p[1] for p in passages])
-        for (rec_id, _), vec in zip(passages, vectors, strict=True):
-            yield_vector(rec_id, vec)
-        return data
-```
-
-### Quality checks
-
-- Unit-norm check per vector.
-- Dimension check equals 1024.
-- Cosine-similarity of a fixed canary passage to itself == 1.0 +- eps; drift
-  triggers model-version alert.
-
-## 6. Stage 5 — `Reducer`
-
-### Responsibility
-Produce low-dimensional projections for visualization and clustering.
-
-### Technique
-
-- UMAP (via `cuml.UMAP` on GPU) to 2-d and 3-d, stored as sidecar columns
-  on the case vectors.
-- HDBSCAN (via `cuml.HDBSCAN`) to assign cluster IDs. Clusters are exposed
-  as an unsupervised `case_cluster_id` used by the UI and by the KG
-  visualization layer (Phase 6).
-
-### Operator interface
-
-```python
-# packages/curator/src/vila_curator/operators/reducer.py
-from nemo_curator import Operator, Dataset
-import cupy as cp
-from cuml.manifold import UMAP
-from cuml.cluster import HDBSCAN
-
-class Reducer(Operator):
-    """Project embeddings to 2D and cluster."""
-
-    def __init__(self, n_components: int = 2, n_neighbors: int = 30) -> None:
-        self._n_components = n_components
-        self._n_neighbors = n_neighbors
-
-    def run(self, data: Dataset) -> Dataset:
-        matrix = cp.asarray([r.embedding for r in data], dtype=cp.float32)
-        reducer = UMAP(n_components=self._n_components, n_neighbors=self._n_neighbors)
-        projected = reducer.fit_transform(matrix)
-        clusters = HDBSCAN(min_cluster_size=20).fit_predict(matrix)
-        for rec, coord, c in zip(data, projected.tolist(), clusters.tolist(), strict=True):
-            rec.coords_2d = coord
-            rec.cluster_id = int(c)
-        return data
-```
-
-### Quality checks
-
-- Cluster count stays within a plausible band (for example 50–500).
-- Reducer is re-trained quarterly or when more than 5% new embeddings have
-  been added since last fit.
-
-## 7. Pipeline wiring
-
-```python
-# packages/curator/src/vila_curator/pipeline.py
-from nemo_curator import Pipeline
-from vila_curator.operators.downloader import Downloader
-from vila_curator.operators.parser import Parser
-from vila_curator.operators.extractor import Extractor
-from vila_curator.operators.embedder import Embedder
-from vila_curator.operators.reducer import Reducer
-from vila_scrapers.congbobanan import CongbobananScraper
-
-def build_congbobanan_pipeline() -> Pipeline:
-    """Daily incremental pipeline for congbobanan.toaan.gov.vn."""
+def build_download_pipeline(cfg):
     return Pipeline(
-        steps=[
-            Downloader(CongbobananScraper()),
-            Parser(),
-            Extractor(),
-            Embedder(),
-            Reducer(),
+        name=f"{cfg.host}-download",
+        stages=[
+            URLGenerationStage(url_generator=AnleURLGenerator(cfg),
+                               limit=cfg.limit),
+            DocumentDownloadStage(
+                downloader=AnleDocumentDownloader(cfg,
+                                                  download_dir=layout.pdf_dir)),
         ],
-        name="congbobanan_daily",
     )
 ```
 
-A separate pipeline is built per source with identical stages but different
-Downloader configuration. The Reducer step is usually run **globally**
-(across all sources) on a nightly schedule, not per source.
+The URL generator and downloader both construct their
+:class:`PoliteSession` lazily (inside `generate_urls()` /
+`_download_to_path`) because `threading.Lock` is not serialisable
+across Ray workers.
 
-## 8. Update frequency
+### Quality checks
 
-| Pipeline | Cadence | Trigger |
-|---|---|---|
-| congbobanan daily | every 24h | cron |
-| anle weekly | every 7d | cron |
-| vbpl / statutes | on-change | RSS / diff poll |
-| user-upload | on-demand | API event |
-| global reducer | nightly | cron (after all sources ingested) |
-| full re-embed | on model-version change | manual |
+* `DocumentDownloader.download()` atomically moves `<path>.tmp -> <path>`;
+  partial downloads never surface to the iterator.
+* `num_workers_per_node()` caps per-node downloader concurrency so the
+  polite HTTP session's QPS bucket is not the contention point.
+* MIME mismatch (`application/pdf` expected, HTML served) retries with
+  the session's `download_retry_delay_s` flat backoff.
 
-## 9. Quality assurance summary
+## 3. Stage 2 - PdfParseStage
 
-- **Schema validation** (Pydantic) at every stage boundary. Invalid records
-  park in a `quarantine` MongoDB collection with reason.
-- **Document-level dashboards** in Grafana:
-  - Daily download count per source
-  - Parse success rate
-  - Extract completeness per field (% non-null)
-  - Embed success rate
-  - Quarantine count with root-cause category
-- **Contract tests** in `tests/contracts/`:
-  - Pydantic schema round-trip equivalence with Zod
-  - Statute linker over a frozen gold set
-  - NER F1 over a frozen gold set
-- **Fairness / leakage checks** (weekly):
-  - Court distribution stability
-  - Year/month distribution smoothness
-  - Post-cutoff holdout preserved in SFT data (pattern from `tmquan/hfdata`)
+```python
+# packages/parser/stage.py
+@dataclass
+class PdfParseStage(ProcessingStage[DocumentBatch, DocumentBatch]):
+    cfg: Any
+    name: str = "pdf_parse"
+    resources: Resources = Resources(cpus=1.0)
 
-## 10. Handling deprecated or corrected legal information
+    def inputs(self):  return (["data"], ["pdf_bytes"])
+    def outputs(self): return (["data"], ["markdown", "pages", "confidence",
+                                          "num_pages", "parser_model", "parsed_at"])
 
-| Event | Detection | Action |
-|---|---|---|
-| Verdict rectified (`đính chính`) | new `content_hash` for same `external_id` | mark prior `raw_documents.version` superseded, re-run downstream stages, emit `case_file.history` entry |
-| Statute amended | vbpl diff detector | close prior `statute_article.effective_to`, insert new version, re-link active cases **only** if `incident_date > effective_from(new)` |
-| Precedent replaced | anle crawl detects supersession link | add `document_supersession` edge, update embeddings; precedent retrieval ranks newer versions higher |
-| Source retraction | manual flag | tombstone the record; remove from retrieval + KG. Keep in lineage for audit. |
+    def setup(self, _=None):
+        self._client = build_parser(self.cfg)   # NemotronParser or PypdfParser
 
-## 11. Lineage
-
-Every operator writes to `document_lineage`:
-
+    def process(self, task: DocumentBatch) -> DocumentBatch:
+        df = task.to_pandas().copy()
+        df["markdown"]   = [self._client.parse(b)["markdown"] for b in df["pdf_bytes"]]
+        ...
+        return DocumentBatch(task_id=task.task_id, data=df.drop(columns=["pdf_bytes"]),
+                             dataset_name=task.dataset_name,
+                             _metadata=task._metadata, _stage_perf=task._stage_perf)
 ```
-document_lineage(
-  lineage_id      uuid pk,
-  document_id     uuid,
-  stage           enum('download','parse','extract','embed','reduce','quarantine'),
-  status          enum('ok','error','superseded','quarantined'),
-  started_at      timestamp,
-  finished_at     timestamp,
-  operator_version text,
-  model_version   text,
-  error           jsonb
+
+### Quality checks
+
+* Non-zero `num_pages` (pages from the nemotron response, or a form-feed count
+  on the generated markdown as fallback).
+* `confidence` surfaced from nemotron-parse is kept on the row; rows below
+  threshold are filterable by a downstream stage.
+
+## 4. Stage 3 - LegalExtractStage
+
+Wraps the regex + dictionary `GenericExtractor` (always on) and the
+Vietnamese precedent normalizer `PrecedentExtractor` (gated by
+`cfg.extractor.run_site_layer`). Adds flat columns (`text_hash`,
+`char_len`, `extracted`, `precedent_number`, `adopted_date`,
+`applied_article_{code,number,clause}`, `principle_text`). Schema
+stays stable across sites: precedent-layer columns are always emitted,
+`None`-valued when the layer is disabled.
+
+## 5. Stage 4 - Embedder (runtime-selectable)
+
+`packages/embedder/stage.py::build_embedder_stage(cfg)` picks between:
+
+| `cfg.embedder.runtime` | Stage returned                                             | Resources           |
+|---                     |---                                                         |---                  |
+| `"nim"` (default)      | `NimEmbedderStage` (custom ProcessingStage, HTTP-bound)    | `Resources(cpus=1)` |
+| `"hf"`                 | `nemo_curator.stages.text.embedders.EmbeddingCreatorStage` (composite: `TokenizerStage` + HF `EmbeddingModelStage`) | `Resources(gpus=1)` |
+| `"auto"`               | NIM for `nvidia/...` / `openai/...` / `meta-llama/...` slugs, HF otherwise | depends |
+
+`NimEmbedderStage` preserves the existing sliding-window chunking +
+mean-pool aggregation (32 k doc context against an 8 k NIM window).
+Both stages emit `embedding`, `embedding_dim`, `embedding_model_id`
+columns plus bookkeeping (`embedding_chunks_used`, `embedding_chunking`).
+
+## 6. Stage 5 - ReducerStage
+
+Full-batch fit across the incoming `DocumentBatch` (`batch_size=None`):
+PCA / t-SNE / UMAP on the `embedding` column (registry at
+`packages/reducer/stage.py::REDUCER_REGISTRY`) plus HDBSCAN for
+`cluster_id`. GPU path via `cuml.PCA` / `cuml.UMAP` / `cuml.HDBSCAN`
+when `cfg.reducer.prefer_gpu` is set and cuml is importable; falls back
+to `sklearn` / `umap-learn` otherwise.
+
+Outputs one row per document with `{pca,tsne,umap}_{x,y,z}` and
+`cluster_id` columns. `cluster_id == -1` encodes HDBSCAN noise.
+
+## 7. Terminals - writers per pipeline
+
+The five pipelines write to four on-disk artifact classes:
+
+| Pipeline   | Writer                                                                    | Output                                                  | Fields                                                                                           |
+|---         |---                                                                        |---                                                      |---                                                                                               |
+| `download` | `DocumentDownloadStage` (no explicit writer; bytes written by the downloader) | `<host>/pdf/<doc_name>.{pdf,docx,doc}` + sidecars       | `.html` / `.url` alongside each binary                                                           |
+| `parse`    | `packages.pipeline.io.MarkdownPerDocWriter`                                | `<host>/md/<doc_name>.md` + `<doc_name>.meta.json`       | `.md` carries the markdown body; `.meta.json` carries every non-bytes row column (precedent metadata, num_pages, confidence, parser_model, parsed_at, ...) |
+| `extract`  | `nemo_curator.stages.text.io.writer.JsonlWriter(mode="ignore")`             | `<host>/jsonl/<task_id>.jsonl`                           | `EXTRACTOR_JSONL_FIELDS` (doc_name, markdown, extracted, text_hash, precedent metadata)           |
+| `embed`    | `nemo_curator.stages.text.io.writer.ParquetWriter(mode="ignore")`           | `<host>/parquet/embeddings/<task_id>.parquet`            | `EMBEDDER_PARQUET_FIELDS` (doc_name, text_hash, embedding, embedding metadata)                    |
+| `reduce`   | `nemo_curator.stages.text.io.writer.ParquetWriter(mode="ignore")`           | `<host>/parquet/reduced/<task_id>.parquet`               | `REDUCER_PARQUET_FIELDS` (embedder fields + `{pca,tsne,umap}_{x,y,z}` + `cluster_id`)             |
+
+All writers are content- or name-deterministic. `mode="ignore"`
+preserves the directory and skips re-writing untouched files.
+`MarkdownPerDocWriter` keys by `doc_name`, so re-running `parse`
+against the same PDF overwrites in place with a stable path.
+
+## 8. Pipeline assembly
+
+Top-level anle files map 1-to-1 onto the five factories; the registry
+in [`pipeline.py`](../packages/datasites/anle/pipeline.py) stitches
+them together for the CLI.
+
+```python
+# packages/datasites/anle/parse.py (excerpt)
+from nemo_curator.pipeline import Pipeline
+from nemo_curator.stages.file_partitioning import FilePartitioningStage
+from nemo_curator.stages.text.download.base.iterator import (
+    DocumentIterateExtractStage,
 )
+from packages.datasites.anle.components import (
+    AnleDocumentExtractor, AnleDocumentIterator,
+)
+from packages.parser.stage import PdfParseStage
+from packages.pipeline.io import MarkdownPerDocWriter
+
+
+def build_parse_pipeline(cfg):
+    return Pipeline(name=f"{cfg.host}-parse", stages=[
+        FilePartitioningStage(file_paths=layout.pdf_dir,
+                              file_extensions=[".pdf", ".docx", ".doc"]),
+        DocumentIterateExtractStage(
+            iterator=AnleDocumentIterator(),
+            extractor=AnleDocumentExtractor(cfg)),
+        PdfParseStage(cfg),
+        MarkdownPerDocWriter(path=layout.md_dir,
+                             doc_name_field="doc_name",
+                             markdown_field="markdown"),
+    ])
 ```
 
-Lineage is what makes the agent's `provenance` block trustworthy (see
-`00-overview/architecture.md` section 8).
+```python
+# packages/datasites/anle/extract.py (excerpt)
+from nemo_curator.pipeline import Pipeline
+from nemo_curator.stages.text.io.writer import JsonlWriter
+from packages.extractor.stage import LegalExtractStage
+from packages.pipeline.io import MarkdownReader
+
+
+def build_extract_pipeline(cfg):
+    return Pipeline(name=f"{cfg.host}-extract", stages=[
+        MarkdownReader(file_paths=layout.md_dir),
+        LegalExtractStage(cfg),
+        JsonlWriter(path=layout.jsonl_dir,
+                    fields=EXTRACTOR_JSONL_FIELDS, mode="ignore"),
+    ])
+```
+
+The other three factories (`download.py`, `embed.py`, `reduce.py`)
+follow the same shape -- reader + one ProcessingStage + writer. The
+registry in `pipeline.py` is:
+
+```python
+# packages/datasites/anle/pipeline.py (excerpt)
+PIPELINES = {
+    "download": build_download_pipeline,
+    "parse":    build_parse_pipeline,
+    "extract":  build_extract_pipeline,
+    "embed":    build_embed_pipeline,
+    "reduce":   build_reduce_pipeline,
+}
+ALL_PIPELINES_ORDER = ["download", "parse", "extract", "embed", "reduce"]
+```
+
+which drives the CLI (`--pipeline {name|all}`).
+
+## 9. Executors and the Ray cluster
+
+Three Curator-shipped executors plug into `Pipeline.run(executor=...)`.
+All are Ray-backed.
+
+| `cfg.executor.name` | Class                                                       | When to pick                                     |
+|---                  |---                                                          |---                                               |
+| `"xenna"` (default) | `nemo_curator.backends.xenna.XennaExecutor`                 | Production. Cosmos-Xenna streaming autoscaler.   |
+| `"ray_actor_pool"`  | `nemo_curator.backends.ray_actor_pool.RayActorPoolExecutor` | Co-scheduling with Ray Serve (Xenna refuses).    |
+| `"ray_data"`        | `nemo_curator.backends.ray_data.RayDataExecutor`            | Single-batch vectorized workloads.               |
+
+`packages/pipeline/executors.py::build_executor(cfg)` instantiates the
+chosen backend with the per-backend knobs under `cfg.executor.*`.
+`packages/pipeline/executors.py::init_ray(cfg)` runs before
+`Pipeline.run()`:
+
+```python
+# packages/datasites/anle/__main__.py (excerpt)
+from packages.pipeline import build_executor, init_ray, shutdown_ray
+from packages.datasites.anle.pipeline import (
+    ALL_PIPELINES_ORDER, build_pipeline,
+)
+
+init_ray(cfg)
+try:
+    selected = (ALL_PIPELINES_ORDER
+                if args.pipeline == "all" else [args.pipeline])
+    for name in selected:
+        executor = build_executor(cfg)
+        build_pipeline(cfg, name).run(executor=executor)
+finally:
+    if not cfg.ray.address:                # remote Ray Client stays connected
+        shutdown_ray()
+```
+
+`cfg.ray.address` semantics:
+
+| value                          | effect                                                                            |
+|---                             |---                                                                                |
+| `None` (default)               | Local single-node cluster via `ray.init(num_cpus=..., num_gpus=...)`.              |
+| `"auto"`                       | Attach to an already-running local Ray runtime (`RAY_ADDRESS` / `ray_bootstrap`).  |
+| `"ray://<head>:10001"`         | Ray Client mode: driver runs locally, stages run on the remote cluster.           |
+
+Full CLI:
+
+```bash
+# Run everything (download -> extract -> embed -> reduce)
+python -m packages.datasites.anle --pipeline all --executor xenna --limit 3
+
+# Re-run one stage against existing on-disk inputs
+python -m packages.datasites.anle --pipeline embed \
+    --executor ray_actor_pool --ray-address ray://head.example:10001
+
+# Dotlist overrides
+python -m packages.datasites.anle --pipeline all \
+    --override executor.mode=batch scraper.qps=3.0 \
+               embedder.batch_size=16
+```
+
+## 10. Update cadence
+
+| Pipeline           | Cadence    | Trigger                                                        |
+|---                 |---         |---                                                             |
+| anle daily         | every 24 h | cron that launches `python -m packages.datasites.anle` on the Ray head. |
+| anle weekly sweep  | every 7 d  | cron with `--override scraper.paginated=true` to re-crawl nguonanle. |
+| re-reduce          | on demand  | `--override executor.mode=batch` + tightened cluster (same pipeline). |
+| full re-embed      | on model-version change | bump `cfg.embedder.model_id`; `ParquetWriter` content-hash changes, new files land. |
+
+## 11. Quality assurance summary
+
+* Schema validation: every `ProcessingStage` advertises `inputs()` +
+  `outputs()`. `Pipeline.build()` cross-checks adjacent stages at build
+  time.
+* Structured logs via Curator's `loguru` integration.
+* Task-level performance metrics via `task._stage_perf` (Curator built-in).
+  The stage metric bundle (ingest rate, error rate, queue depth) is
+  surfaced by the Xenna autoscaler log stream at `cfg.executor.logging_interval`.
+* Acceptance commands (plan §6) exercise both local (`xenna`) and
+  remote (`ray_actor_pool` + `--ray-address`) paths.
+
+## 12. Explicit non-goals of this phase
+
+* Direct writes to Postgres / MongoDB / Milvus. The pipeline terminates
+  at `ParquetWriter`; downstream sink stages for each store are a
+  follow-up PR that plugs into the same `Pipeline` object.
+* Prometheus export. Curator's own stage metrics are the observability
+  floor; Prometheus integration comes with the sink stages.
+* `document_lineage` relational table. `_stage_perf` + `task_id` in
+  the parquet rows is the near-term lineage surface.

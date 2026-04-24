@@ -28,7 +28,8 @@ build/
 # Data artifacts (large)
 packages/*/data/pdfs/
 packages/*/data/metadata/
-packages/scrapers/*/data/
+packages/datasites/*/data/
+packages/datasites/data/
 packages/sft/data/synthetic/*.jsonl
 packages/sft/outputs/
 services/kg/data/

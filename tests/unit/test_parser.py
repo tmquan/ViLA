@@ -1,32 +1,38 @@
-"""Unit tests for AnleParser with a fake nemotron-parse client."""
+"""Unit tests for :class:`PdfParseStage` with a fake parser backend."""
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any
 
-import pytest
+import pandas as pd
+from nemo_curator.tasks import DocumentBatch
 from omegaconf import OmegaConf
 
-from packages.scrapers.anle.parser import AnleParser, ParseResult
-from packages.scrapers.common.base import SiteLayout
-from packages.scrapers.common.schemas import PipelineCfg
+from packages.common.schemas import PipelineCfg
+from packages.parser.base import ParserAlgorithm
+from packages.parser.stage import PdfParseStage
 
 
-class FakeNemotronClient:
+class FakeNemotronClient(ParserAlgorithm):
     """Returns canned per-page output without touching the network."""
+
+    runtime = "fake"
+    model_id = "fake/nemotron"
 
     def __init__(self, pages: int = 2, confidence: float = 0.9) -> None:
         self._pages = pages
         self._confidence = confidence
 
-    def parse(self, pdf_bytes: bytes, *, preserve_tables: bool = True) -> dict[str, Any]:
+    def parse(
+        self, pdf_bytes: bytes, *, preserve_tables: bool = True
+    ) -> dict[str, Any]:
         return {
             "pages": [
-                {"page_number": i + 1,
-                 "blocks": [{"type": "Title", "text": f"Page {i+1}"}],
-                 "markdown": f"# Page {i+1}\nĐiều 173 BLHS 2015."}
+                {
+                    "page_number": i + 1,
+                    "blocks": [{"type": "Title", "text": f"Page {i + 1}"}],
+                    "markdown": f"# Page {i + 1}\nĐiều 173 BLHS 2015.",
+                }
                 for i in range(self._pages)
             ],
             "markdown": "# Page 1\nĐiều 173 BLHS 2015.",
@@ -34,75 +40,55 @@ class FakeNemotronClient:
         }
 
 
-def _seed_pdf(layout: SiteLayout, doc_id: str, n: int = 1) -> None:
-    layout.ensure_dirs(layout.pdf_dir, layout.metadata_dir)
-    (layout.pdf_dir / f"{doc_id}.pdf").write_bytes(b"%PDF-1.4\n...")
-
-
-def test_parse_one_happy_path(tmp_path: Path) -> None:
-    layout = SiteLayout(output_root=tmp_path, host="anle.toaan.gov.vn")
-    _seed_pdf(layout, "TAND1")
-    _seed_pdf(layout, "TAND2")
-
+def _cfg() -> Any:
     cfg = OmegaConf.structured(PipelineCfg)
-    parser = AnleParser(
-        cfg=cfg,
-        layout=layout,
-        client=FakeNemotronClient(pages=3),
-        num_workers=2,
+    cfg.parser.runtime = "local"  # avoid NIM API key probe
+    cfg.parser.model_id = "fake/nemotron"
+    return cfg
+
+
+def _make_batch(n: int = 2) -> DocumentBatch:
+    df = pd.DataFrame(
+        {
+            "doc_name": [f"TAND{i}" for i in range(n)],
+            "pdf_bytes": [b"%PDF-1.4\n..." for _ in range(n)],
+        }
     )
-
-    counts = parser.run()
-    assert counts["seen"] == 2
-    assert counts["processed"] == 2
-    assert counts["errored"] == 0
-
-    # md/ and json/ exist and pass is_item_complete.
-    for doc_id in ("TAND1", "TAND2"):
-        assert (layout.md_dir / f"{doc_id}.md").exists()
-        assert (layout.json_dir / f"{doc_id}.json").exists()
-        assert parser.is_item_complete(doc_id)
-        js = json.loads((layout.json_dir / f"{doc_id}.json").read_text(encoding="utf-8"))
-        assert js["num_pages"] == 3
+    return DocumentBatch(task_id="t", dataset_name="anle", data=df)
 
 
-def test_parse_skips_already_complete(tmp_path: Path) -> None:
-    layout = SiteLayout(output_root=tmp_path, host="anle.toaan.gov.vn")
-    _seed_pdf(layout, "TAND1")
-    cfg = OmegaConf.structured(PipelineCfg)
+def test_process_returns_new_batch_with_parser_columns() -> None:
+    stage = PdfParseStage(cfg=_cfg())
+    stage._client = FakeNemotronClient(pages=3)  # bypass setup()
 
-    client = FakeNemotronClient(pages=1)
-    p1 = AnleParser(cfg=cfg, layout=layout, client=client)
-    p1.run()
+    out = stage.process(_make_batch(2))
+    df = out.to_pandas()
 
-    # Second run on the same layout should skip everything.
-    p2 = AnleParser(cfg=cfg, layout=layout, client=client)
-    counts = p2.run()
-    assert counts["skipped"] == 1
-    assert counts["processed"] == 0
+    assert list(df["doc_name"]) == ["TAND0", "TAND1"]
+    assert all(df["num_pages"] == 3)
+    assert all(m.startswith("# Page 1") for m in df["markdown"])
+    assert (df["parser_model"] == "fake/nemotron").all()
+    assert "pdf_bytes" not in df.columns, "raw bytes must be dropped downstream"
 
 
-def test_parse_doc_filter_limits_to_single(tmp_path: Path) -> None:
-    layout = SiteLayout(output_root=tmp_path, host="anle.toaan.gov.vn")
-    _seed_pdf(layout, "TANDA")
-    _seed_pdf(layout, "TANDB")
-    cfg = OmegaConf.structured(PipelineCfg)
-
-    parser = AnleParser(
-        cfg=cfg, layout=layout, client=FakeNemotronClient(), doc_filter="TANDA"
-    )
-    counts = parser.run()
-    assert counts["seen"] == 1
-    assert counts["processed"] == 1
+def test_process_advertises_inputs_outputs() -> None:
+    stage = PdfParseStage(cfg=_cfg())
+    in_attrs, in_cols = stage.inputs()
+    out_attrs, out_cols = stage.outputs()
+    assert in_attrs == ["data"]
+    assert "pdf_bytes" in in_cols
+    assert out_attrs == ["data"]
+    assert {"markdown", "pages", "confidence", "num_pages"} <= set(out_cols)
 
 
-def test_parse_is_item_complete_rejects_zero_pages(tmp_path: Path) -> None:
-    layout = SiteLayout(output_root=tmp_path, host="anle.toaan.gov.vn")
-    layout.ensure_dirs(layout.md_dir, layout.json_dir)
-    (layout.md_dir / "X.md").write_text("hi", encoding="utf-8")
-    (layout.json_dir / "X.json").write_text(
-        json.dumps({"num_pages": 0}), encoding="utf-8"
-    )
-    cfg = OmegaConf.structured(PipelineCfg)
-    parser = AnleParser(cfg=cfg, layout=layout, client=FakeNemotronClient())
-    assert not parser.is_item_complete("X")
+def test_process_handles_str_bytes_from_parquet_roundtrip() -> None:
+    stage = PdfParseStage(cfg=_cfg())
+    stage._client = FakeNemotronClient(pages=1)
+
+    # Parquet sometimes demotes bytes to latin-1 strings; the stage
+    # must recover gracefully.
+    df = pd.DataFrame({"doc_name": ["X"], "pdf_bytes": ["%PDF-1.4"]})
+    batch = DocumentBatch(task_id="t", dataset_name="anle", data=df)
+
+    out = stage.process(batch)
+    assert out.to_pandas()["num_pages"].iloc[0] == 1

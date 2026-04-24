@@ -1,6 +1,6 @@
 """Structured dataclass schemas for scraper pipeline configs.
 
-These mirror the shape of `packages/scrapers/anle/configs/default.yaml`
+These mirror the shape of `packages/datasites/anle/configs/default.yaml`
 and are fed into OmegaConf.structured() to produce typed defaults with
 schema validation. Merge order at runtime:
 
@@ -36,8 +36,14 @@ class ScraperCfg:
     user_agent: str = "ViLA-research/0.1 (+https://example.vn/contact)"
     proxy: str | None = None
     timeout_s: float = 30.0
-    max_retries: int = 5
+    max_retries: int = 5                    # HTML/page GET retries (exp backoff)
     verify_tls: bool = True
+    # Binary-download retry policy. Separate from the page-GET policy
+    # because PDFs on VN .gov.vn hosts flake on minute scales (geo-
+    # block warm-ups, WAF captchas, CDN stalls) and a long flat delay
+    # rides these out better than exponential backoff.
+    download_max_retries: int = 50          # retry a failed PDF up to this many times
+    download_retry_delay_s: float = 30.0    # flat delay between PDF retries
 
     # Per-site scraping hints. Concrete values live in the site's YAML.
     listing_url: str = ""
@@ -199,8 +205,48 @@ class VisualizerCfg:
 
 
 @dataclass
+class ExecutorCfg:
+    """Curator executor knobs.
+
+    `name` selects which :class:`nemo_curator.backends.base.BaseExecutor`
+    implementation drives the pipeline. Xenna is the Curator default
+    and integrates with Cosmos-Xenna's streaming autoscaler. The two
+    Ray backends are lower-level and useful when co-running with Ray
+    Serve (RayData) or when the head node should participate as a
+    worker (RayActorPool).
+    """
+
+    name: str = "xenna"                      # xenna | ray_actor_pool | ray_data
+    mode: str = "streaming"                  # streaming | batch (Xenna only)
+    logging_interval: int = 60               # Xenna: seconds between status logs
+    autoscale_interval_s: int = 180          # Xenna: re-scale cadence
+    cpu_allocation_percentage: float = 0.9   # Xenna: fraction of cluster CPUs
+    ignore_failures: bool = False
+    ignore_head_node: bool = False           # not valid for Xenna; used by Ray backends
+
+
+@dataclass
+class RayCfg:
+    """Ray client / init configuration.
+
+    When ``address`` is None, ``ray.init()`` is called locally with the
+    current process as head (single-node development). When it is a
+    ``ray://<head>:10001`` URI, Ray Client connects to a remote cluster
+    and all stages run on that cluster's workers. When it is ``"auto"``,
+    Ray auto-discovers a running local cluster via
+    ``RAY_ADDRESS`` / ``ray_bootstrap.yaml``.
+    """
+
+    address: str | None = None              # None | "auto" | "ray://host:10001"
+    runtime_env: dict[str, Any] = field(default_factory=dict)
+    num_cpus: int | None = None
+    num_gpus: int | None = None
+    ignore_reinit_error: bool = True
+
+
+@dataclass
 class PipelineCfg:
-    """Top-level pipeline config consumed by run.py and every stage.
+    """Top-level pipeline config consumed by stage factories and the CLI.
 
     `full_text_context` is the token budget for stages that must read a
     full Vietnamese legal document in one pass (bản án / cáo trạng /
@@ -219,5 +265,10 @@ class PipelineCfg:
     embedder: EmbedderCfg = field(default_factory=EmbedderCfg)
     reducer: ReducerCfg = field(default_factory=ReducerCfg)
     visualizer: VisualizerCfg = field(default_factory=VisualizerCfg)
+    executor: ExecutorCfg = field(default_factory=ExecutorCfg)
+    ray: RayCfg = field(default_factory=RayCfg)
+    # Optional cap on URLs handed to the download stage. Useful for
+    # smoke tests; `None` runs the full corpus.
+    limit: int | None = None
     # Free-form stage-specific overrides; merged per-stage at runtime.
     stage_overrides: dict[str, Any] = field(default_factory=dict)

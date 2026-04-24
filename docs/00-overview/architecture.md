@@ -32,11 +32,16 @@ replaces a qualified lawyer or judge.
                                       |
                            (Downloader - Phase 3)
                                       v
-  +----------------------------------------------------------------+
-  | Curation pipeline (Nemo Curator)                               |
-  | Downloader -> Parser -> Extractor -> Embedder -> Reducer       |
-  | PDF + HTML -> markdown -> entities -> vectors -> 2d/3d coords  |
-  +---------+----------------------+--------------------+----------+
+  +-----------------------------------------------------------------------+
+  | Curation pipelines (NeMo Curator 2.x; Ray-backed; disk-chained)       |
+  | download -> parse -> extract -> embed -> reduce                        |
+  |   URLs                                                                 |
+  |   -> pdf/<doc_name>.{pdf,docx,doc} (+ .html + .url sidecars)           |
+  |   -> md/<doc_name>.md (+ .meta.json)                                   |
+  |   -> jsonl/<task_id>.jsonl                                             |
+  |   -> parquet/embeddings/<task_id>.parquet                              |
+  |   -> parquet/reduced/<task_id>.parquet  (+ pca/tsne/umap + cluster_id) |
+  +---------+------------------------+---------------------+---------------+
             |                      |                    |
             v                      v                    v
   +------------------+    +------------------+    +------------------+
@@ -66,11 +71,11 @@ replaces a qualified lawyer or judge.
                 +----------------------------+       |
                 | LLM NIM (build.nvidia.com) |       |
                 | tier roster (Phase 9 §1):  |       |
-                |  xl       Qwen3.5-397B     |       |
                 |  primary  openai gpt-oss   |       |
+                |  fast     nemotron-3-nano  |       |
                 |  fallback nemotron-3-super |       |
                 |  alt      Qwen3.5-122B     |       |
-                |  fast     nemotron-3-nano  |       |
+                |  xl       Qwen3.5-397B     |       |
                 +-------------+--------------+       |
                               |                      |
                               +-----------+----------+
@@ -89,10 +94,13 @@ replaces a qualified lawyer or judge.
 1. User uploads a `cáo trạng` PDF in the Next.js UI.
 2. UI streams the file to the `upload` API route in `apps/web`.
 3. API enqueues a job on the `ingest` service (Python, `services/ingest`).
-4. `ingest` runs the Curator mini-pipeline on the single document:
-   Parser (PDF to markdown) -> Extractor (NER + statute linker) -> Embedder
-   (dense vector). Persists structured metadata in Postgres, markdown body in
-   MongoDB, embedding in Milvus.
+4. `ingest` drops the single uploaded PDF into the scraper's
+   on-disk `pdf/` tree and invokes `build_pipeline(cfg, "parse")`
+   followed by `"extract"` -> `"embed"` -> `"reduce"` from
+   `packages.datasites.<site>.pipeline`. The same five-pipeline chain
+   used by the batch crawler runs end-to-end on the single document.
+   Sink stages (planned) fan the results into Postgres (structured
+   metadata), MongoDB (markdown body), and Milvus (embedding).
 5. The NAT agent (`services/agent`) is invoked with the case ID.
 6. Agent executes the decision tree defined in Phase 7/8:
    retrieve similar cases via `cuVS` k-NN, retrieve neighborhood from the
@@ -108,9 +116,15 @@ replaces a qualified lawyer or judge.
 |-----------|---------|------------------|
 | `apps/web` | Next.js UI | TypeScript |
 | `packages/schemas` | Shared Pydantic + Zod schemas | Python + TypeScript |
-| `packages/scrapers` | Downloader operators for each source | Python |
-| `packages/curator` | Nemo Curator operator definitions | Python |
-| `packages/parsers` | nemo-parse based PDF parsers | Python |
+| `packages/pipeline` | Executor factory (`XennaExecutor` / `RayActorPoolExecutor` / `RayDataExecutor`) + Ray-client bootstrap (`init_ray` / `shutdown_ray`) | Python |
+| `packages/parser` | Stage 2: `ParserAlgorithm` ABC + `NemotronParser` / `PypdfParser` + `PdfParseStage` (`ProcessingStage[DocumentBatch, DocumentBatch]`) | Python |
+| `packages/extractor` | Stage 3: `ExtractorAlgorithm` ABC + `GenericExtractor` / `PrecedentExtractor` + `LegalExtractStage` | Python |
+| `packages/embedder` | Stage 4: `EmbedderBackend` ABC + `NimEmbedder` / `HuggingFaceEmbedder` + chunking helpers + `NimEmbedderStage` / `build_embedder_stage(cfg)` (NIM or Curator `EmbeddingCreatorStage`) | Python |
+| `packages/reducer` | Stage 5: `ReducerAlgorithm` ABC + `PCAReducer` / `TSNEReducer` / `UMAPReducer` + `ReducerStage` (HDBSCAN cluster_id) | Python |
+| `packages/visualizer` | Off-pipeline renderer library: `Renderer` ABC + one file per artifact (scatter/distribution/timeline/taxonomy/relations/citations/dashboard/notebook) | Python |
+| `packages/common` | Shared infrastructure: `SiteLayout` (output-path helper), `PoliteSession`, `PipelineCfg` / `ExecutorCfg` / `RayCfg` schemas | Python |
+| `packages/datasites/<site>` | Site integration: four Curator primitives under `components/` (`URLGenerator` / `DocumentDownloader` / `DocumentIterator` / `DocumentExtractor`) + one factory file per pipeline (`download.py` / `parse.py` / `extract.py` / `embed.py` / `reduce.py`) + `pipeline.py` registry + `__main__.py` CLI + `configs/` | Python |
+| `apps/visualizer` | Parquet-reading consumer of the pipeline output; renders HTML + notebooks | Python |
 | `packages/nlp` | NER, statute linker, decision tree rules | Python |
 | `packages/sft` | Dataset assembly for supervised fine-tuning | Python |
 | `services/ingest` | Orchestrates curation for live uploads | Python (FastAPI) |

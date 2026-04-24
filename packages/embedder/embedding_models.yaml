@@ -4,7 +4,7 @@
 # embedding_dim (when known ahead of time), whether it supports the
 # pipeline-wide full_text_context (32k), and human-readable notes.
 #
-# The embedder (packages/scrapers/anle/embedder.py) reads this file,
+# The embedder (packages/embedder/embedder.py) reads this file,
 # finds the row matching cfg.embedder.model_id, and instantiates the
 # correct backend. If `supports_32k: false`, the embedder uses
 # `cfg.embedder.chunking` to aggregate across multiple windows.

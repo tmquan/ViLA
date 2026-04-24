@@ -47,9 +47,15 @@ publication of court judgments.
   - HTTP GET pagination endpoints (server-rendered HTML).
   - Per-item detail page links to a PDF download.
   - No public API. Access pattern: polite crawler.
-- **Integration method**: dedicated scraper in `packages/scrapers/congbobanan`
-  implemented as a Curator `Downloader` operator. See
-  `03-curation-pipeline.md` section 4 for the operator source sketch.
+- **Integration method** (planned): dedicated datasite under
+  `packages/datasites/congbobanan/` following the same five-file +
+  `components/` layout as `packages/datasites/anle/`. Each Curator
+  primitive (`URLGenerator`, `DocumentDownloader`, `DocumentIterator`,
+  `DocumentExtractor`) has one site-specific subclass; the
+  `download` / `parse` / `extract` / `embed` / `reduce` pipelines are
+  assembled by per-file factories. See `03-curation-pipeline.md` for
+  the pipeline-level design notes and `packages/datasites/anle/` for
+  the reference implementation.
 - **Data schema (from HTML listing)**:
 
   | Field | Type | Example |
@@ -93,8 +99,10 @@ publication of court judgments.
 - **Content**: finite, curated set of ~70+ precedents (growing). Each
   precedent has an HTML page plus PDF.
 - **Access method**: HTML listing + detail pages + PDF downloads.
-- **Integration method**: separate Curator `Downloader` in
-  `packages/scrapers/anle`. Smaller corpus; full re-crawl weekly is trivial.
+- **Integration method**: five-pipeline Curator chain under
+  `packages/datasites/anle/` (reference datasite; see its
+  [README](../packages/datasites/anle/README.md)). Full re-crawl weekly
+  is trivial at this corpus size.
 - **Data schema**:
 
   | Field | Type | Example |
@@ -128,9 +136,10 @@ publication of court judgments.
 
 - **Content**: consolidated statutory text, including Bộ luật Hình sự
   (BLHS), Bộ luật Tố tụng Hình sự (BLTTHS), Bộ luật Dân sự (BLDS), etc.
-- **Integration method**: HTML scrape with a lightweight Curator
-  Downloader; emit per-article JSON records into `raw_documents` with
-  `source='vbpl'`.
+- **Integration method** (planned): lightweight datasite under
+  `packages/datasites/vbpl/` following the anle layout; emits
+  per-article rows into the `extract` pipeline's JSONL output and into
+  `raw_documents` with `source='vbpl'` via a planned Postgres sink.
 - **Schema**:
 
   | Field | Type |
@@ -202,9 +211,11 @@ data/
   `Tội giết người` and `Tội lừa đảo chiếm đoạt tài sản`, both with
   `Bản án` documents. Full convention documented in
   `00-overview/repo-layout.md` under "Sample corpus layout".
-- A `LocalCorpusScraper` in `packages/scrapers/local/` wraps this tree
-  as a Curator `Downloader`, so the full curation pipeline (Phase 3)
-  runs end-to-end on local samples without touching the network.
+- A `LocalCorpusReader` under `packages/datasites/local/` is planned
+  to wrap this tree as a Curator reader so the full curation pipeline
+  (Phase 3) runs end-to-end on local samples without touching the
+  network. Not yet implemented; use the anle pipeline with
+  `--override parser.runtime=local` as the current offline path.
 
 ## 4. Reference patterns from external repositories
 
@@ -214,18 +225,25 @@ we adopt (not verbatim code).
 
 ### 4.1 `tmquan/datascraper` — scraping patterns adopted
 
-- Site-specific scraper modules under `packages/scrapers/<site>/` with a
-  common base (rate limiting, polite headers, session reuse, failure
-  retries).
-- Persistent state file per site so incremental runs are safe to re-start.
-- Separation between a `fetch` phase (network I/O, cachable) and an
-  `extract` phase (pure function of bytes to record). This mirrors the
-  Curator split between `Downloader` and `Parser` operators.
-- Disk layout `<root>/<site>/<YYYY>/<MM>/<DD>/<item>.{pdf,html,json}` —
-  we adopt this literally so local cache and object-storage layout are
-  identical.
-- Retry policy: exponential backoff with jitter, maximum attempts 5, and an
-  item-quarantine table for permanently failing items.
+- Site-specific scraper modules under `packages/datasites/<site>/`.
+  Common infrastructure (rate limiting, polite headers, session reuse,
+  exponential-backoff retries) lives in
+  `packages/common/http.py::PoliteSession`; per-site code subclasses
+  Curator's `URLGenerator` + `DocumentDownloader` under
+  `<site>/components/` and never re-implements HTTP plumbing.
+- Idempotent fetch: existing `<doc_name>.pdf` files short-circuit the
+  downloader, so incremental runs are safe to re-start without a
+  separate state file.
+- Separation between a `fetch` phase (network I/O, cachable) and a
+  `parse` phase (pure function of bytes to markdown) is enforced by
+  running them as two distinct pipelines (`download` vs. `parse`).
+- Disk layout `data/<host>/pdf/<doc_name>.{pdf,docx,doc}` (see
+  `packages/common/base.py::SiteLayout`) keeps the local cache flat
+  and keyed on `doc_name`; object-storage mirroring is a downstream
+  sink PR.
+- Retry policy: `PoliteSession.download` uses a patient flat-delay
+  retry (50 attempts × 30 s by default) tuned for VN .gov.vn hosts
+  that flake on minute scales.
 
 ### 4.2 `tmquan/hfdata` — dataset assembly patterns adopted
 

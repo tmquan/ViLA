@@ -1,7 +1,7 @@
 # Monorepo Layout
 
 The existing `.gitignore` already sketches the intended structure
-(`packages/schemas`, `packages/scrapers`, `packages/sft`, `services/kg`,
+(`packages/schemas`, `packages/datasites`, `packages/sft`, `services/kg`,
 `services/agent`). This document makes that structure explicit and complete.
 
 ## Tooling
@@ -102,34 +102,62 @@ ViLA/
       scripts/
         generate_jsonschema.py    # emits JSON Schema
         compare_py_ts.py          # fails CI if Py and TS drift
-    scrapers/
-      congbobanan/                # congbobanan.toaan.gov.vn
-      anle/                       # anle.toaan.gov.vn
-      thuvienphapluat/
-      common/
-        rate_limiter.py
-        cache.py
-        user_agents.py
-    curator/                      # Nemo Curator operator definitions
-      pyproject.toml
-      src/vila_curator/
-        pipeline.py
-        operators/
-          downloader.py
-          parser.py
-          extractor.py
-          embedder.py
-          reducer.py
-          quality.py
-    parsers/                      # nemo-parse PDF parsers
-      pyproject.toml
-      src/vila_parsers/
-        cao_trang.py
-        verdict.py
-        lawsuit.py
-        common/
-          layout.py
-          tables.py
+    common/                       # shared pipeline infrastructure
+      base.py                     # SiteLayout (output-path helper only)
+      cli.py                      # Curator-centric CLI flags (--executor, --ray-address, ...)
+      config.py, http.py, logging.py, ontology.py, schemas.py
+    pipeline/                     # cross-site executor + Ray-client plumbing
+      executors.py                # build_executor(cfg) -> BaseExecutor
+                                  # + init_ray(cfg) / shutdown_ray()
+    parser/                       # stage 2 (site-agnostic ProcessingStage)
+      base.py                     # ParserAlgorithm ABC
+      nemotron.py                 # NemotronParser (NIM)
+      pypdf.py                    # PypdfParser (local)
+      stage.py                    # PdfParseStage(ProcessingStage[DocumentBatch, DocumentBatch])
+    extractor/                    # stage 3
+      base.py                     # ExtractorAlgorithm ABC + record types
+      generic.py                  # GenericExtractor (regex NER + statutes)
+      precedent.py                # PrecedentExtractor (Vietnamese án lệ)
+      stage.py                    # LegalExtractStage(ProcessingStage)
+    embedder/                     # stage 4 (dual-runtime)
+      base.py                     # EmbedderBackend ABC + ModelEntry + registry
+      nim.py                      # NimEmbedder (OpenAI-compatible NIM client)
+      huggingface.py              # HuggingFaceEmbedder (local transformers)
+      chunking.py                 # sliding/sentence chunkers + mean-pool
+      stage.py                    # NimEmbedderStage + build_embedder_stage(cfg)
+                                  #   nim -> NimEmbedderStage (custom)
+                                  #   hf  -> EmbeddingCreatorStage (Curator)
+      embedding_models.yaml       # runtime-agnostic model registry
+    reducer/                      # stage 5 (reducer + HDBSCAN clusterer)
+      base.py                     # ReducerAlgorithm ABC + have_cuml
+      pca.py, tsne.py, umap.py    # one concrete subclass per algorithm
+      stage.py                    # ReducerStage(ProcessingStage) + REDUCER_REGISTRY
+                                  #   + cluster_id via cuml.HDBSCAN / sklearn.HDBSCAN
+    visualizer/                   # off-pipeline renderer library
+      base.py                     # Renderer ABC + load_pipeline_output + apply_ontology
+      scatter.py, distribution.py, timeline.py, taxonomy.py,
+      relations.py, citations.py, dashboard.py, notebook.py
+                                  # one Renderer subclass per artifact
+    datasites/                    # per-site Curator primitives + one file per pipeline
+      anle/                       # anle.toaan.gov.vn (precedents)
+        __init__.py               # re-exports components + pipeline registry
+        __main__.py               # CLI: --pipeline {download,parse,extract,embed,reduce,all}
+        pipeline.py               # PIPELINES registry + build_pipeline(cfg, name) dispatch
+        download.py               # build_download_pipeline   URLs      -> PDFs
+        parse.py                  # build_parse_pipeline      PDFs      -> markdown
+        extract.py                # build_extract_pipeline    markdown  -> JSONL
+        embed.py                  # build_embed_pipeline      JSONL     -> embeddings parquet
+        reduce.py                 # build_reduce_pipeline     embeddings -> reduced parquet
+        _shared.py                # build_layout + field constants (private)
+        components/               # Curator primitives (one subclass per base)
+          __init__.py
+          url_generator.py        # AnleURLGenerator       (nemo_curator URLGenerator)
+          downloader.py           # AnleDocumentDownloader (nemo_curator DocumentDownloader)
+          iterator.py             # AnleDocumentIterator   (nemo_curator DocumentIterator)
+          extractor.py            # AnleDocumentExtractor  (nemo_curator DocumentExtractor)
+        configs/                  # anle.yaml, default.yaml
+      # congbobanan / vbpl / thuvienphapluat are planned; the follow-up port
+      # mirrors the anle layout file-for-file.
     nlp/
       pyproject.toml
       src/vila_nlp/
@@ -199,11 +227,38 @@ ViLA/
 ## Package boundaries and imports
 
 - `packages/schemas` is the only package imported by everything else.
+- `packages/common` is the shared pipeline infrastructure; every stage
+  package depends on it. It imports only stdlib + `omegaconf` +
+  `nemo_curator` (for the `ExecutorCfg` / `RayCfg` schemas).
+- `packages/pipeline` holds the executor and Ray-client factories. It
+  imports only `nemo_curator.backends.*` and the config schemas.
+- `packages/parser`, `packages/extractor`, `packages/embedder`,
+  `packages/reducer` each depend on `packages/common` and
+  `nemo_curator.stages.*`. Each exports one
+  `ProcessingStage[DocumentBatch, DocumentBatch]` subclass (`PdfParseStage`,
+  `LegalExtractStage`, `NimEmbedderStage` + HF factory,
+  `ReducerStage`) plus its backend ABCs and helpers.
+- `packages/visualizer` is no longer a pipeline stage: it imports
+  `pandas` + the ontology + plotly renderers. It is consumed by
+  `apps/visualizer`, never by the pipeline.
+- `packages/datasites/<site>` depends on `packages/common` +
+  `packages/pipeline` + `nemo_curator.stages.text.download.base` +
+  the stage-wrapper packages (parser / extractor / embedder / reducer).
+  Each site exports:
+    - four Curator primitive subclasses (under `<site>/components/`):
+      `URLGenerator`, `DocumentDownloader`, `DocumentIterator`,
+      `DocumentExtractor`;
+    - one file per pipeline (`download.py`, `parse.py`, `extract.py`,
+      `embed.py`, `reduce.py`) each exporting a
+      `build_<name>_pipeline(cfg) -> nemo_curator.pipeline.Pipeline`
+      factory;
+    - `pipeline.py` stitching the five factories into a `PIPELINES`
+      registry + `build_pipeline(cfg, name)` dispatch;
+    - `__main__.py` CLI driving the registry via `--pipeline`.
+- `apps/visualizer` imports `packages/visualizer` and
+  `packages/common.ontology`; it reads the parquet produced by the
+  pipeline's `ParquetWriter`.
 - `packages/nlp` imports only `packages/schemas`.
-- `packages/parsers` imports `packages/schemas` and `packages/nlp`
-  (for sentence splitting / normalization helpers).
-- `packages/curator` imports `packages/schemas`, `packages/parsers`,
-  `packages/nlp`, and `packages/scrapers`.
 - `services/*` may import `packages/*` but not each other. Cross-service
   communication is HTTP (OpenAPI-typed) or A2A (Phase 8).
 - `apps/web` imports only `packages/schemas/ts` and the OpenAPI clients
@@ -253,7 +308,7 @@ The repo root contains a `data/` directory that holds the curated sample
 corpus used for local development, smoke tests, and dataset assembly.
 The layout is **by-charge**, not by-date: the top partitioning axis is
 the Vietnamese charge name (tội danh). This is distinct from — and
-complementary to — the scraper's internal cache (`packages/scrapers/
+complementary to — the scraper's internal cache (`packages/datasites/
 <site>/data/`), which is organized by source and fetch date.
 
 ### Canonical layout
@@ -303,16 +358,29 @@ Sample document type: `Bản án` (verdict).
 
 ### Ingest semantics
 
-- `packages/curator/src/vila_curator/operators/downloader.py` accepts a
-  `LocalCorpusScraper(root=VILA_DATA_ROOT, collection=VILA_DATA_COLLECTION)`
-  that walks the `pdf/` tree and emits `DocumentRef` records.
-- The Parser operator writes its output markdown into the mirror path
-  under `data/md/` **in addition to** MongoDB persistence. The on-disk
-  markdown is convenient for diffing, grep, and manual review; MongoDB
-  remains authoritative.
-- The (collection, charge_name, document_type) tuple seeds
-  `raw_documents.metadata` with:
-  `{"collection": ..., "charge_name": ..., "document_type": ...}`.
+The sample corpus above (`data/pdf/<collection>/<charge>/<doc_type>/*.pdf`)
+is a **by-charge** layout curated for SFT / offline review. It is
+separate from the scraper output, which uses the flat
+`data/<host>/pdf/<doc_name>.pdf` layout produced by
+`packages.datasites.<site>.components.AnleDocumentDownloader` (see
+`packages/common/base.py::SiteLayout`).
+
+Planned convergence (not yet implemented):
+
+- A `LocalCorpusReader` pipeline factory under `packages/datasites/local/`
+  will walk the by-charge sample corpus as `FilePartitioningStage` inputs
+  and emit `DocumentBatch` tasks with
+  `{"collection": ..., "charge_name": ..., "document_type": ...}` on
+  `task._metadata`. Downstream stages (parse / extract / embed / reduce)
+  are shared with the anle pipeline.
+- The Parser pipeline (today `packages/datasites/anle/parse.py`) writes
+  markdown to `data/<host>/md/<doc_name>.md` -- a flat layout keyed by
+  `doc_name`, not by charge. A separate `build_sft_dataset.py` pass under
+  `packages/sft/` is expected to project the scraper output into the
+  by-charge sample corpus for dataset assembly.
+- MongoDB-authoritative persistence (`raw_bodies`, `parsed_sections`) is
+  described in `05-data-infrastructure.md`; it is a downstream sink
+  stage not yet wired into the pipeline graph.
 
 ### .gitignore rule
 

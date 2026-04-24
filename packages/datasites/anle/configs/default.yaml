@@ -20,7 +20,12 @@ scraper:
   user_agent: "ViLA-research/0.1 (+https://example.vn/contact)"
   proxy: null
   timeout_s: 30.0
-  max_retries: 5
+  max_retries: 5                 # HTML page GETs; exp backoff 1.5^n
+  # Binary-download retry. PDF endpoints on VN .gov.vn hosts flake on
+  # minute scales; a long flat delay rides these out without flooding
+  # the server on recovery.
+  download_max_retries: 50       # attempts per PDF before giving up
+  download_retry_delay_s: 30.0   # flat delay between attempts
   listing_url: https://anle.toaan.gov.vn/webcenter/portal/anle/anle
   detail_url_template: https://anle.toaan.gov.vn/webcenter/portal/anle/chitietanle?dDocName={doc_name}
   listing_pages: []           # override to enumerate paged listings
@@ -53,7 +58,7 @@ embedder:
   # Default: llama-nemotron-embed-1b-v2 served via NIM.
   # 8k native context; use sliding-window chunking to cover the
   # pipeline-wide full_text_context (32k) across multiple chunks
-  # aggregated by mean pooling. See packages/scrapers/anle/embedder.py.
+  # aggregated by mean pooling. See packages/embedder/embedder.py.
   model_id: nvidia/llama-nemotron-embed-1b-v2
   runtime: nim
   batch_size: 8

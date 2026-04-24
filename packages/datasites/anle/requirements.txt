@@ -1,10 +1,18 @@
 # Runtime dependencies for the anle 6-stage pipeline.
 #
 # Install for local development:
-#     pip install -r packages/scrapers/anle/requirements.txt
+#     pip install -r packages/datasites/anle/requirements.txt
 #
 # Optional GPU extras (rapids / cuml / umap) are kept commented out;
 # uncomment on a CUDA host to enable GPU paths in the reducer.
+
+# --- pipeline runtime (NeMo Curator 2.x) ---------------------------
+# ProcessingStage / Pipeline / DocumentBatch / the XennaExecutor +
+# RayActorPoolExecutor + RayDataExecutor backends all live here.
+# `text_cpu` pulls parquet/jsonl readers+writers and the download
+# composite (DocumentDownloadExtractStage). Replace with `text_cuda12`
+# on a CUDA host or install the `[gpu]` workspace extra.
+nemo-curator[text_cpu]>=0.7
 
 # --- config + CLI ---------------------------------------------------
 omegaconf>=2.3
@@ -13,7 +21,6 @@ omegaconf>=2.3
 requests>=2.31
 requests[socks]>=2.31      # SOCKS5 proxy support for Vietnam-geo hosts
 beautifulsoup4>=4.12
-tqdm>=4.66
 
 # --- data I/O -------------------------------------------------------
 pandas>=2.1
@@ -23,15 +30,18 @@ pyyaml>=6.0
 # --- NIM / NVIDIA endpoints ----------------------------------------
 openai>=1.30               # OpenAI-compatible NIM client
 
-# --- HF embedder (optional; required only if runtime=hf) -----------
-transformers>=4.43
-torch>=2.2
+# --- HF embedder (optional; required only if cfg.embedder.runtime=hf)
+# Curator's EmbeddingCreatorStage uses sentence-transformers; install
+# only on hosts where the HF runtime is actually enabled.
+# transformers>=4.43
+# torch>=2.2
+# sentence-transformers>=3.0
 
 # --- reducer (CPU fallback) ----------------------------------------
-scikit-learn>=1.3
+scikit-learn>=1.3          # PCA / HDBSCAN / t-SNE fallbacks
 umap-learn>=0.5
 
-# --- visualizer -----------------------------------------------------
+# --- visualizer (out of pipeline; consumes parquet under apps/visualizer)
 plotly>=5.20
 kaleido>=0.2               # static image export (PNG)
 networkx>=3.2
@@ -44,7 +54,3 @@ nbformat>=5.9
 # cuml-cu13
 # cugraph-cu13
 # cupy-cuda12x
-
-# --- tests (dev only) ----------------------------------------------
-# pytest>=8.0
-# pytest-asyncio>=0.23

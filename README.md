@@ -12,9 +12,25 @@ indictments, statutes) remains in Vietnamese.
 
 ## Status
 
-Specification complete. Implementation not yet started. See
-[`docs/99-implementation-roadmap.md`](docs/99-implementation-roadmap.md)
-for milestones.
+Specification frozen (ontology v1.2.0). Implementation under way:
+
+- **Curation (Phase 3)**: the reference datasite
+  [`packages/datasites/anle/`](packages/datasites/anle/) ships five
+  NeMo Curator pipelines (`download` / `parse` / `extract` / `embed`
+  / `reduce`), chained via disk and executed by any of the three
+  Curator-shipped Ray backends (`XennaExecutor`,
+  `RayActorPoolExecutor`, `RayDataExecutor`). Full test suite passes
+  (`pytest -q`: 60+ tests).
+- **Parsing backends (Phase 4)**: `PdfParseStage` runs with either
+  the NIM `nvidia/nemotron-parse` endpoint or a local `pypdf`
+  fallback. OCR + cuDF feature frame + section tagger are spec-only.
+- **Other datasites**: `congbobanan`, `vbpl`, `thuvienphapluat` are
+  planned; the follow-up port mirrors the anle layout file-for-file.
+- **Everything else** (Phase 5+: Postgres / MongoDB / Milvus sinks,
+  knowledge graph, NAT agent, UI) is spec-only.
+
+See [`docs/99-implementation-roadmap.md`](docs/99-implementation-roadmap.md)
+for milestone-level status.
 
 ## Documentation
 

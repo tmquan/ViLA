@@ -8,18 +8,18 @@ is given in weeks; durations can compress with more parallelism.
 
 ## 1. Milestones
 
-| M# | Milestone | Duration | Exit criteria |
-|---|---|---|---|
-| M-1 | Planning freeze | 0 w | Ontology v1.2.0 (`00-overview/ontology.md`), legal timeline (`00-overview/vn-legal-timeline.md`), glossary, and schemas all consistent. Readiness checklist (section 10) all green. |
-| M0 | Foundations | 2 w | Monorepo scaffolded; CI green; shared schemas stood up; LLM + embed clients callable. Seed data for `vila.codes` loaded from the legal-timeline doc. |
-| M1 | Ingest baseline | 3 w | Scrapers for congbobanan + anle working. PDFs + metadata land in object store + Postgres. Lineage logged. |
-| M2 | Parse + extract | 4 w | nemo-parse path + OCR fallback + rule-based sectionizer + NER + statute linker pass MVP metrics (F1 >= 0.75 on statute linker). |
-| M3 | Storage | 2 w | Postgres schema applied. Mongo raw bodies loaded. Milvus collections populated w/ cuVS GPU index. |
-| M4 | Knowledge graph | 2 w | cuGraph build pipeline. Query API. Basic cuxfilter dashboard. |
-| M5 | Agent MVP | 4 w | Langgraph `predict_outcome` end-to-end with tools, skills, MCP server, citation binding. Golden traces pass. |
-| M6 | UI MVP | 4 w | Next.js app with upload -> overview -> prediction flow. i18n wired. PoC demo script passes Playwright. |
-| M7 | Analytics + A2A | 2 w | Dashboard live. Civil agent peer scaffolded. A2A routing tested. |
-| M8 | Hardening + eval | 3 w | Observability, load test, eval runs, red-team scenarios, threat model. Ready for pilot. |
+| M# | Milestone | Duration | Status | Exit criteria |
+|---|---|---|---|---|
+| M-1 | Planning freeze | 0 w | GREEN | Ontology v1.2.0 (`00-overview/ontology.md`), legal timeline (`00-overview/vn-legal-timeline.md`), glossary, and schemas all consistent. Readiness checklist (section 10) all green. |
+| M0 | Foundations | 2 w | IN PROGRESS | Monorepo scaffolded; CI green; shared schemas stood up; LLM + embed clients callable. Seed data for `vila.codes` loaded from the legal-timeline doc. |
+| M1 | Ingest baseline | 3 w | PARTIAL | anle reference datasite live (five Curator pipelines, 60+ unit tests). congbobanan + vbpl pending (mirror the anle layout). Object-store + Postgres sinks + lineage table not yet wired -- pipeline currently terminates at on-disk parquet/JSONL. |
+| M2 | Parse + extract | 4 w | PARTIAL | `PdfParseStage` (nemo-parse NIM + local pypdf fallback) + regex-based `LegalExtractStage` shipped. OCR fallback, Vietnamese section tagger (YAML rules), ML-based NER, statute linker F1 targets -- all pending. |
+| M3 | Storage | 2 w | PENDING | Postgres schema applied. Mongo raw bodies loaded. Milvus collections populated w/ cuVS GPU index. Curator sink stages wired as a fifth terminal writer pair alongside the current parquet/JSONL output. |
+| M4 | Knowledge graph | 2 w | PENDING | cuGraph build pipeline. Query API. Basic cuxfilter dashboard. |
+| M5 | Agent MVP | 4 w | PENDING | Langgraph `predict_outcome` end-to-end with tools, skills, MCP server, citation binding. Golden traces pass. |
+| M6 | UI MVP | 4 w | PENDING | Next.js app with upload -> overview -> prediction flow. i18n wired. PoC demo script passes Playwright. |
+| M7 | Analytics + A2A | 2 w | PENDING | Dashboard live (consumes `data/<host>/parquet/reduced/*.parquet` via `apps.visualizer`). Civil agent peer scaffolded. A2A routing tested. |
+| M8 | Hardening + eval | 3 w | PENDING | Observability, load test, eval runs, red-team scenarios, threat model. Ready for pilot. |
 
 Total: 26 weeks (~6 months). Many streams parallelize; the critical path
 is M0 -> M1 -> M2 -> M3 -> M5 -> M6.
@@ -64,15 +64,24 @@ both parsed data (M2) and storage (M3). Agent (M5) depends on M3 + M4.
 **Risks**: NIM account provisioning delays. Mitigation: submit early,
 have a local-NIM container as fallback.
 
-### M1 — Ingest baseline (3 weeks)
+### M1 — Ingest baseline (3 weeks; PARTIAL)
 
-- **Scrapers**: `congbobanan` (incremental + historical backfill),
-  `anle` (full weekly), `vbpl` (article diff). Pattern from
-  `tmquan/datascraper`.
-- **Downloader operator**: wraps all scrapers behind the Curator
-  `Downloader` interface.
-- **Object storage + Postgres rows**: raw_documents + document_lineage.
-- **Governance**: robots.txt + QPS + UA. Run logs.
+- **Datasites**: five-pipeline Curator chain (`download` / `parse` /
+  `extract` / `embed` / `reduce`) landed under
+  [`packages/datasites/anle/`](../packages/datasites/anle/). `congbobanan`
+  (incremental + historical backfill) and `vbpl` (article diff) are
+  next; both mirror the anle layout file-for-file.
+- **Curator primitives**: four site-specific subclasses per datasite
+  under `<site>/components/` (`URLGenerator`, `DocumentDownloader`,
+  `DocumentIterator`, `DocumentExtractor`). The ad-hoc "Downloader
+  operator" wrapper from earlier drafts is replaced by the
+  Curator-native composites (`DocumentDownloadExtractStage` +
+  `FilePartitioningStage`).
+- **Object storage + Postgres rows**: **pending**. The pipeline
+  currently terminates at on-disk parquet/JSONL; a follow-up PR adds
+  sink stages for `raw_documents` + `document_lineage`.
+- **Governance**: `PoliteSession` enforces QPS + UA + SOCKS5 proxy;
+  `robots.txt` compliance and per-run log shipping are pending.
 
 **Risks**: source HTML drift. Mitigation: integration tests that parse a
 canonical HTML fixture committed to the repo; alerts on fixture vs live
