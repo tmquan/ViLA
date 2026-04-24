@@ -83,20 +83,27 @@ class MarkdownPerDocWriter(ProcessingStage[DocumentBatch, FileGroupTask]):
         drop = set(self.drop_fields) | {self.markdown_field}
 
         for _, row in df.iterrows():
-            doc_name = str(row.get(self.doc_name_field) or "").strip()
+            doc_name = _doc_name_or_empty(row.get(self.doc_name_field))
             if not doc_name:
                 logger.warning(
                     "row missing %s; skipping markdown write",
                     self.doc_name_field,
                 )
                 continue
+            markdown = str(row.get(self.markdown_field) or "")
+            # Contract: upstream drops empty-markdown rows (see
+            # PdfParseStage). Defensive: never write a 0-byte <doc>.md
+            # so the extract / embed pipelines never observe one.
+            if not markdown.strip():
+                logger.warning(
+                    "row doc_name=%s has empty %s; skipping markdown write",
+                    doc_name, self.markdown_field,
+                )
+                continue
             md_path = Path(self.path) / f"{doc_name}{MARKDOWN_EXTENSION}"
             meta_path = Path(self.path) / f"{doc_name}{META_EXTENSION}"
 
-            md_path.write_text(
-                str(row.get(self.markdown_field) or ""),
-                encoding="utf-8",
-            )
+            md_path.write_text(markdown, encoding="utf-8")
             meta = {k: _jsonable(v) for k, v in row.items() if k not in drop}
             meta_path.write_text(
                 json.dumps(meta, ensure_ascii=False, default=str),
@@ -163,6 +170,16 @@ class MarkdownReaderStage(ProcessingStage[FileGroupTask, DocumentBatch]):
                 continue
             doc_name = path.stem
             markdown = path.read_text(encoding="utf-8")
+
+            # Contract: "there must not be empty markdown" downstream.
+            # Skip stale 0-byte / whitespace-only .md files (e.g. from
+            # an earlier pipeline version that did not drop empty
+            # parser output) rather than emit a ghost row.
+            if not markdown.strip():
+                logger.warning(
+                    "skipping empty markdown file %s", path,
+                )
+                continue
 
             meta_path = path.with_suffix(META_EXTENSION)
             meta: dict[str, Any] = {}

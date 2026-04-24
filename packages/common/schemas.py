@@ -107,17 +107,47 @@ class ScraperCfg:
 
 @dataclass
 class ParserCfg:
-    """Parser-stage settings (stage 2: nvidia/nemotron-parse).
+    """Parser-stage settings (stage 2).
+
+    Three runtimes:
+
+    * ``"local"``   -- pure-Python pypdf / docx2txt. Fast + free, but
+      blind on image-only scans.
+    * ``"nim"``     -- nemotron-parse NIM only. OCR + layout built in.
+      Requires ``NVIDIA_API_KEY``.
+    * ``"hybrid"``  (default) -- pypdf first; on empty / near-empty
+      output (fewer than ``min_local_chars`` chars) falls back to
+      nemotron-parse. Right trade-off for a corpus that mixes digital
+      and scanned PDFs.
 
     nemotron-parse processes whole PDF pages; per-page input is bounded
     by the page image/text, not by a token budget. No seq-length knob.
     """
 
-    model_id: str = "nvidia/nemotron-parse"
+    # Cloud NIM model slug. The underlying service is
+    # ``nvidia/nemoretriever-parse`` (OpenAI-compatible
+    # chat-completions over image input). Do NOT use the older
+    # ``nvidia/nemotron-parse`` name -- it 404s on the public NIM.
+    model_id: str = "nvidia/nemoretriever-parse"
     num_workers: int = 4
-    runtime: str = "local"            # local (pypdf) | nim (nemotron-parse)
-    nim_base_url: str = "${oc.env:NIM_BASE_URL,https://ai.api.nvidia.com/v1}"
+    runtime: str = "hybrid"           # local | nim | hybrid
+    nim_base_url: str = (
+        "${oc.env:NIM_BASE_URL,https://integrate.api.nvidia.com/v1}"
+    )
     timeout_s: float = 120.0
+    # Below this many characters in the local parser's markdown
+    # output, the hybrid runtime routes the PDF to the NIM endpoint.
+    # Tuned for "image-only scan with a stray header/footer" vs
+    # "real digital PDF" -- the latter almost always yields >>50 chars.
+    min_local_chars: int = 50
+    preserve_tables: bool = True
+    # nemoretriever-parse knobs. ``nim_tool`` is one of
+    # ``markdown_bbox`` (default, best fidelity), ``markdown_no_bbox``
+    # (no layout), or ``detection_only`` (bboxes only). ``nim_dpi`` is
+    # the raster resolution for PDF -> PNG before upload; 150 balances
+    # OCR accuracy against payload size.
+    nim_tool: str = "markdown_bbox"
+    nim_dpi: int = 150
 
 
 @dataclass

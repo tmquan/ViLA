@@ -29,10 +29,17 @@ pandas>=2.1
 pyarrow>=15.0
 pyyaml>=6.0
 
-# --- parser (local PDF fallback) ----------------------------------
-# Required when cfg.parser.runtime=local (packages/parser/pypdf.py).
-# The NIM path (cfg.parser.runtime=nim) does not need this locally.
+# --- parser (local PDF + NIM PDF rasterization) -------------------
+# pypdf: native text extraction for digital PDFs. Used by the local
+#        runtime and by the hybrid runtime's first pass.
+# pypdfium2 + Pillow: page -> PNG raster for cfg.parser.runtime in
+#            {nim, hybrid}. nemoretriever-parse accepts images only,
+#            so the NIM path rasterizes every page via pypdfium2 and
+#            encodes PNG via Pillow before upload. Pure-wheel, no
+#            system-level poppler / mupdf dep.
 pypdf>=4.0
+pypdfium2>=4.24
+Pillow>=10.0
 
 # --- NIM / NVIDIA endpoints ---------------------------------------
 openai>=1.30               # OpenAI-compatible NIM client

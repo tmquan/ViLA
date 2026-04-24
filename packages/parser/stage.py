@@ -27,36 +27,70 @@ from nemo_curator.stages.resources import Resources
 from nemo_curator.tasks import DocumentBatch
 
 from packages.parser.base import ParserAlgorithm
-from packages.parser.nemotron import NemotronParser
+from packages.parser.hybrid import HybridParser
+from packages.parser.nemotron import (
+    DEFAULT_BASE_URL as _NIM_DEFAULT_BASE_URL,
+    DEFAULT_DPI as _NIM_DEFAULT_DPI,
+    NemoretrieverParser,
+)
 from packages.parser.pypdf import PypdfParser
 
 logger = logging.getLogger(__name__)
 
 
+def _build_nemotron(cfg: Any) -> NemoretrieverParser:
+    api_key = os.environ.get("NVIDIA_API_KEY") or os.environ.get(
+        "NVIDIA_NIM_API_KEY"
+    )
+    if not api_key:
+        raise RuntimeError(
+            "NVIDIA_API_KEY (or NVIDIA_NIM_API_KEY) is required for the "
+            "nemoretriever-parse NIM endpoint. Export it, or set "
+            "cfg.parser.runtime=local to skip the NIM fallback."
+        )
+    base_url = str(cfg.parser.nim_base_url)
+    if base_url.startswith("${") and base_url.endswith("}"):
+        base_url = _NIM_DEFAULT_BASE_URL
+    return NemoretrieverParser(
+        api_key=api_key,
+        base_url=base_url,
+        model=str(cfg.parser.model_id),
+        timeout=float(cfg.parser.timeout_s),
+        dpi=int(cfg.parser.get("nim_dpi", _NIM_DEFAULT_DPI)),
+        tool=str(cfg.parser.get("nim_tool", "markdown_bbox")),
+    )
+
+
 def build_parser(cfg: Any) -> ParserAlgorithm:
-    """Instantiate the configured :class:`ParserAlgorithm`."""
+    """Instantiate the configured :class:`ParserAlgorithm`.
+
+    Runtimes:
+
+    * ``"local"``   -- pypdf / docx2txt only. Empty output on
+      image-only PDFs; downstream drops those rows.
+    * ``"nim"``     -- nemotron-parse NIM only. Requires
+      ``NVIDIA_API_KEY``.
+    * ``"hybrid"``  (default) -- pypdf first, nemotron-parse fallback
+      when the local path returns fewer than
+      ``cfg.parser.min_local_chars`` characters. Covers image-only /
+      scan-only PDFs without paying NIM on the 90%+ of documents
+      pypdf can handle natively.
+    """
     runtime = str(cfg.parser.runtime).lower()
     if runtime == "local":
         return PypdfParser()
     if runtime == "nim":
-        api_key = os.environ.get("NVIDIA_API_KEY") or os.environ.get(
-            "NVIDIA_NIM_API_KEY"
+        return _build_nemotron(cfg)
+    if runtime == "hybrid":
+        return HybridParser(
+            local=PypdfParser(),
+            nim=_build_nemotron(cfg),
+            min_chars=int(cfg.parser.get("min_local_chars", 50)),
         )
-        if not api_key:
-            raise RuntimeError(
-                "NVIDIA_API_KEY (or NVIDIA_NIM_API_KEY) is required for "
-                "cfg.parser.runtime=nim. Export it or set runtime=local."
-            )
-        base_url = str(cfg.parser.nim_base_url)
-        if base_url.startswith("${") and base_url.endswith("}"):
-            base_url = "https://ai.api.nvidia.com/v1"
-        return NemotronParser(
-            api_key=api_key,
-            base_url=base_url,
-            model=str(cfg.parser.model_id),
-            timeout=float(cfg.parser.timeout_s),
-        )
-    raise ValueError(f"unknown parser runtime: {runtime}")
+    raise ValueError(
+        f"unknown parser runtime: {runtime!r}; "
+        f"expected one of {{'local', 'nim', 'hybrid'}}"
+    )
 
 
 @dataclass
@@ -123,6 +157,29 @@ class PdfParseStage(ProcessingStage[DocumentBatch, DocumentBatch]):
         # bytes are no longer needed once the markdown + layout exist.
         if "pdf_bytes" in df.columns:
             df = df.drop(columns=["pdf_bytes"])
+
+        # Contract: "there must not be empty markdown" downstream. The
+        # parser occasionally returns empty markdown on image-only or
+        # corrupted PDFs. Drop those rows here so neither the
+        # MarkdownPerDocWriter writes a 0-byte <doc>.md nor the
+        # embedder gets handed an empty text. The row is logged with
+        # its doc_name so operators can quarantine the offending PDF.
+        non_empty_mask = df["markdown"].astype(str).str.strip().astype(bool)
+        dropped = int((~non_empty_mask).sum())
+        if dropped:
+            doc_col = (
+                "doc_name" if "doc_name" in df.columns else None
+            )
+            dropped_names = (
+                df.loc[~non_empty_mask, doc_col].astype(str).tolist()
+                if doc_col
+                else ["<unknown>"] * dropped
+            )
+            logger.warning(
+                "PdfParseStage: dropping %d row(s) with empty markdown: %s",
+                dropped, dropped_names,
+            )
+            df = df[non_empty_mask].reset_index(drop=True)
 
         return DocumentBatch(
             task_id=task.task_id,

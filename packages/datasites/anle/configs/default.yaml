@@ -43,9 +43,19 @@ scraper:
   selectors: {}               # override to point at custom CSS selectors
 
 parser:
-  model_id: nvidia/nemotron-parse
+  # Cloud NIM chat model (OpenAI-compatible); do NOT use the old
+  # ``nvidia/nemotron-parse`` slug -- that path 404s.
+  model_id: nvidia/nemoretriever-parse
+  # hybrid: pypdf first, nemoretriever-parse fallback on image-only
+  # scans (via rasterization + OCR). Requires NVIDIA_API_KEY. Switch
+  # to `local` if you only have pypdf, or `nim` to force every PDF
+  # through nemoretriever-parse.
+  runtime: hybrid
+  min_local_chars: 50
   num_workers: 4
   nim_base_url: "${oc.env:NIM_BASE_URL,https://integrate.api.nvidia.com/v1}"
+  nim_tool: markdown_bbox         # markdown_bbox | markdown_no_bbox | detection_only
+  nim_dpi: 150                    # PDF -> PNG raster resolution
   timeout_s: 120.0
 
 extractor:

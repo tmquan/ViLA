@@ -1,16 +1,33 @@
-"""NVIDIA ``nemotron-parse`` NIM parser backend.
+"""NVIDIA ``nemoretriever-parse`` NIM parser backend.
 
-Posts each document to the NIM ``/cv/nvidia/nemotron-parse`` endpoint
-and normalizes the response into the dict shape declared in
-:class:`packages.parser.base.ParserAlgorithm`.
+Consumed via the standard OpenAI-compatible chat-completions API at
+``https://integrate.api.nvidia.com/v1`` with the model name
+``nvidia/nemoretriever-parse``. The NIM accepts **images only** --
+text / PDF inputs are rejected -- so this wrapper rasterizes the
+incoming PDF page-by-page with pypdfium2, POSTs each page as a
+base64-encoded PNG, and consolidates the per-page responses into the
+:class:`ParserAlgorithm` contract shape:
 
-Uses direct :mod:`requests` rather than the OpenAI SDK because
-nemotron-parse is a CV / document endpoint under
-``ai.api.nvidia.com/v1/cv/``, not a chat/completions model.
+    {
+        "pages":    [{"page_number": int, "markdown": str, "blocks": list}, ...],
+        "markdown": "## Page 1\\n\\n...\\n\\n## Page 2\\n\\n...",
+        "confidence": float | None,
+    }
+
+Matches the shape :class:`PypdfParser` returns so downstream stages
+(``PdfParseStage`` -> ``MarkdownPerDocWriter`` -> extractor / embedder)
+are backend-agnostic.
+
+References:
+
+* https://docs.nvidia.com/nim/vision-language-models/1.2.0/examples/retriever/api.html
+* https://build.nvidia.com/nvidia/nemoretriever-parse
 """
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import logging
 from typing import Any
@@ -20,8 +37,23 @@ from packages.parser.base import ParserAlgorithm
 logger = logging.getLogger(__name__)
 
 
-class NemotronParser(ParserAlgorithm):
-    """Thin wrapper over the NIM ``nemotron-parse`` endpoint."""
+#: Default tool. nemoretriever-parse supports three:
+#:
+#: * ``markdown_bbox``    -- full bbox + text + region type (recommended).
+#: * ``markdown_no_bbox`` -- single ``{"text": "..."}`` blob, no layout.
+#: * ``detection_only``   -- bboxes only, no text transcription.
+DEFAULT_TOOL = "markdown_bbox"
+
+DEFAULT_MODEL = "nvidia/nemoretriever-parse"
+DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
+
+#: Rasterization DPI. 150 dpi produces ~1240x1754 for a US-letter page,
+#: which is the sweet spot for OCR fidelity vs. upload size.
+DEFAULT_DPI = 150
+
+
+class NemoretrieverParser(ParserAlgorithm):
+    """Per-page OCR + layout extractor against ``nvidia/nemoretriever-parse``."""
 
     runtime = "nim"
 
@@ -29,22 +61,19 @@ class NemotronParser(ParserAlgorithm):
         self,
         api_key: str,
         *,
-        base_url: str = "https://ai.api.nvidia.com/v1",
-        model: str = "nvidia/nemotron-parse",
+        base_url: str = DEFAULT_BASE_URL,
+        model: str = DEFAULT_MODEL,
         timeout: float = 120.0,
+        dpi: int = DEFAULT_DPI,
+        tool: str = DEFAULT_TOOL,
     ) -> None:
-        import requests
+        from openai import OpenAI  # lazy import
 
-        self._session = requests.Session()
-        self._session.headers.update(
-            {
-                "Authorization": f"Bearer {api_key}",
-                "Accept": "application/json",
-            }
-        )
-        self._base_url = base_url.rstrip("/")
+        self._client = OpenAI(base_url=base_url, api_key=api_key)
         self.model_id = model
-        self._timeout = timeout
+        self._timeout = float(timeout)
+        self._dpi = int(dpi)
+        self._tool = str(tool)
 
     def parse(
         self,
@@ -52,35 +81,160 @@ class NemotronParser(ParserAlgorithm):
         *,
         preserve_tables: bool = True,
     ) -> dict[str, Any]:
-        import base64
+        """Rasterize + invoke NIM per page; return the consolidated record."""
+        # ``preserve_tables`` is a no-op knob here: the tool choice
+        # (``markdown_bbox``) already returns table structure, and there
+        # is no server-side toggle.
+        page_images = _rasterize_pdf(pdf_bytes, dpi=self._dpi)
+        pages: list[dict[str, Any]] = []
+        md_parts: list[str] = []
 
-        payload_b64 = base64.b64encode(pdf_bytes).decode("ascii")
-        url = f"{self._base_url}/cv/{self.model_id}"
-        resp = self._session.post(
-            url,
-            json={
-                "input": [
-                    {"type": "file", "data": payload_b64, "mime_type": "application/pdf"}
-                ],
-                "options": {
-                    "preserve_tables": preserve_tables,
-                    "emit_layout": True,
-                },
-            },
+        for i, png_bytes in enumerate(page_images, start=1):
+            try:
+                md = self._parse_image(png_bytes)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "nemoretriever-parse: page %d failed (%s: %s); "
+                    "continuing with empty page markdown",
+                    i, type(exc).__name__, exc,
+                )
+                md = ""
+            pages.append({"page_number": i, "markdown": md, "blocks": []})
+            if md:
+                md_parts.append(f"## Page {i}\n\n{md}")
+
+        return {
+            "pages": pages,
+            "markdown": "\n\n".join(md_parts),
+            "confidence": None,
+        }
+
+    # ------------------------------------------------------ internals
+
+    def _parse_image(self, png_bytes: bytes) -> str:
+        b64 = base64.b64encode(png_bytes).decode("ascii")
+        data_url = f"data:image/png;base64,{b64}"
+
+        completion = self._client.chat.completions.create(
+            model=self.model_id,
+            tools=[{"type": "function", "function": {"name": self._tool}}],
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": data_url},
+                        }
+                    ],
+                }
+            ],
             timeout=self._timeout,
         )
-        resp.raise_for_status()
-        return _normalize_nemotron_response(resp.json())
+        tool_calls = completion.choices[0].message.tool_calls or []
+        if not tool_calls:
+            return ""
+        return _extract_page_markdown(
+            tool_calls[0].function.arguments, tool=self._tool
+        )
 
 
-def _normalize_nemotron_response(resp: Any) -> dict[str, Any]:
-    """Coerce a nemotron-parse response into the shape ViLA expects."""
-    if isinstance(resp, dict):
-        return resp
-    # SDK may return a typed object; best-effort conversion.
-    if hasattr(resp, "model_dump"):
-        return resp.model_dump()
-    return json.loads(json.dumps(resp, default=lambda o: getattr(o, "__dict__", str(o))))
+# --------------------------------------------------------------- helpers
 
 
-__all__ = ["NemotronParser"]
+def _rasterize_pdf(pdf_bytes: bytes, *, dpi: int) -> list[bytes]:
+    """Render every page of ``pdf_bytes`` to a PNG byte string.
+
+    Uses pypdfium2 for the PDF -> bitmap step and Pillow for the
+    bitmap -> PNG step. Both are pure wheels (no system-level poppler
+    / mupdf). ``dpi/72`` is the scale factor because PDFs are defined
+    at 72 dpi natively.
+    """
+    try:
+        import pypdfium2 as pdfium
+    except ImportError as exc:  # pragma: no cover - import-time check
+        raise RuntimeError(
+            "NemoretrieverParser needs `pypdfium2` for PDF rasterization. "
+            "Install with `pip install pypdfium2`."
+        ) from exc
+    try:
+        import PIL.Image  # noqa: F401 - pypdfium2.to_pil() hands back a PIL Image
+    except ImportError as exc:  # pragma: no cover - import-time check
+        raise RuntimeError(
+            "NemoretrieverParser needs `Pillow` to encode rasterized PDF "
+            "pages as PNG before upload. Install with `pip install Pillow`. "
+            "(Listed in packages/datasites/<site>/requirements.txt.)"
+        ) from exc
+
+    doc = pdfium.PdfDocument(pdf_bytes)
+    out: list[bytes] = []
+    try:
+        scale = dpi / 72.0
+        for page in doc:
+            try:
+                pil_image = page.render(scale=scale).to_pil()
+                buf = io.BytesIO()
+                pil_image.save(buf, format="PNG", optimize=True)
+                out.append(buf.getvalue())
+            finally:
+                page.close()
+    finally:
+        doc.close()
+    return out
+
+
+def _extract_page_markdown(raw_arguments: str, *, tool: str) -> str:
+    """Convert the NIM tool-call arguments into one markdown string.
+
+    The shape varies by tool:
+
+    * ``markdown_bbox``    -- list of ``{bbox, text, type}`` objects;
+      we concatenate every non-empty ``text`` in document order.
+    * ``markdown_no_bbox`` -- single ``{"text": "..."}`` object.
+    * ``detection_only``   -- list without ``text``; always returns ``""``.
+    """
+    if not raw_arguments:
+        return ""
+    try:
+        data = json.loads(raw_arguments)
+    except json.JSONDecodeError as exc:
+        logger.warning(
+            "nemoretriever-parse: non-JSON tool arguments (%s); "
+            "returning empty markdown",
+            exc,
+        )
+        return ""
+
+    if isinstance(data, dict):
+        # markdown_no_bbox
+        return str(data.get("text") or "").strip()
+    if isinstance(data, list):
+        parts: list[str] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or "").strip()
+            if text:
+                parts.append(text)
+        return "\n\n".join(parts)
+    logger.warning(
+        "nemoretriever-parse: unexpected tool-arguments shape (%s); "
+        "returning empty markdown",
+        type(data).__name__,
+    )
+    return ""
+
+
+#: Back-compat alias. The class used to be called ``NemotronParser``;
+#: everything imported under that name still works.
+NemotronParser = NemoretrieverParser
+
+
+__all__ = [
+    "DEFAULT_BASE_URL",
+    "DEFAULT_DPI",
+    "DEFAULT_MODEL",
+    "DEFAULT_TOOL",
+    "NemoretrieverParser",
+    "NemotronParser",
+]
