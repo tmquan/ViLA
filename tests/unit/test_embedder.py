@@ -215,6 +215,100 @@ def test_safe_embed_batch_rethrows_non_oversize_errors(
         stage._safe_embed_batch(["anything"])
 
 
+def test_safe_embed_batch_skips_empty_slots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NIM 400s on empty inputs; the safe wrapper must never pass them through."""
+    stage = NimEmbedderStage(cfg=_cfg())
+    stage._entry = ModelEntry("fake/empty-strict", "nim", 4, True, None)
+
+    calls: list[list[str]] = []
+
+    class _EmptyStrictBackend:
+        model_id = "fake/empty-strict"
+        embedding_dim = 4
+        max_seq_length = 128
+
+        def embed_batch(self, texts: list[str]) -> list[list[float]]:
+            calls.append(list(texts))
+            if any((not t) or (not t.strip()) for t in texts):
+                raise RuntimeError(
+                    "Error code: 400 - {'error': 'Input list must be "
+                    "non-empty and all elements must be non-empty.'}"
+                )
+            return [[1.0, 0.0, 0.0, 0.0] for _ in texts]
+
+    stage._backend = _EmptyStrictBackend()
+
+    # Mix: real text, whitespace, empty string.
+    out = stage._safe_embed_batch(["real content", "   ", ""])
+    assert len(out) == 3
+    assert out[0] == [1.0, 0.0, 0.0, 0.0]
+    # Empty-input positions come back as zero-length lists.
+    assert out[1] == []
+    assert out[2] == []
+    # Backend only ever saw the non-empty payload, never the full
+    # mixed batch (that would have 400'd).
+    assert calls == [["real content"]]
+
+
+def test_safe_embed_batch_all_empty_returns_empty_vectors() -> None:
+    stage = NimEmbedderStage(cfg=_cfg())
+    stage._entry = ModelEntry("fake/unused", "nim", 4, True, None)
+
+    class _BombBackend:
+        max_seq_length = 128
+
+        def embed_batch(self, texts: list[str]) -> list[list[float]]:
+            raise AssertionError("backend must not be called for all-empty batch")
+
+    stage._backend = _BombBackend()
+    assert stage._safe_embed_batch(["", "   ", "\n\t"]) == [[], [], []]
+
+
+def test_process_row_with_empty_markdown_short_circuits() -> None:
+    import pandas as pd
+    from nemo_curator.tasks import DocumentBatch
+
+    stage = NimEmbedderStage(cfg=_cfg())
+    stage._entry = ModelEntry("fake/ok", "nim", 4, True, None)
+
+    calls: list[list[str]] = []
+
+    class _PickyBackend:
+        model_id = "fake/ok"
+        embedding_dim = 4
+        max_seq_length = 128
+
+        def embed_batch(self, texts: list[str]) -> list[list[float]]:
+            calls.append(list(texts))
+            if any((not t) or (not t.strip()) for t in texts):
+                raise RuntimeError("Error code: 400 - empty input")
+            return [[1.0, 0.0, 0.0, 0.0] for _ in texts]
+
+    stage._backend = _PickyBackend()
+
+    df = pd.DataFrame(
+        {
+            "doc_name": ["A", "B", "C"],
+            "markdown": ["real body", "", "another"],
+        }
+    )
+    out = stage.process(
+        DocumentBatch(task_id="t", dataset_name="anle", data=df)
+    ).to_pandas()
+
+    assert list(out["doc_name"]) == ["A", "B", "C"]
+    assert len(out["embedding"].iloc[0]) == 4
+    assert out["embedding"].iloc[1] == []              # empty text row
+    assert out["embedding_dim"].iloc[1] == 0
+    assert out["embedding_chunks_used"].iloc[1] == 0
+    assert out["embedding_chunking"].iloc[1] == "empty"
+    assert len(out["embedding"].iloc[2]) == 4
+    # Backend saw only the non-empty texts.
+    assert all(all(t.strip() for t in batch) for batch in calls)
+
+
 def test_chars_per_token_from_cfg_controls_chunk_budget() -> None:
     cfg = _cfg()
     cfg.embedder.chars_per_token = 2.4

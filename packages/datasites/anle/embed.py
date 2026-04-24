@@ -17,7 +17,6 @@ from typing import Any
 
 from nemo_curator.pipeline import Pipeline
 from nemo_curator.stages.text.io.reader import JsonlReader
-from nemo_curator.stages.text.io.writer import ParquetWriter
 
 from packages.datasites.anle._shared import (
     EMBEDDER_JSONL_READ_FIELDS,
@@ -25,6 +24,7 @@ from packages.datasites.anle._shared import (
     build_layout,
 )
 from packages.embedder.stage import build_embedder_stage
+from packages.pipeline.io import ParquetPerDocWriter
 
 
 def build_embed_pipeline(cfg: Any) -> Pipeline:
@@ -44,10 +44,10 @@ def build_embed_pipeline(cfg: Any) -> Pipeline:
                 ),
             ),
             build_embedder_stage(cfg),
-            ParquetWriter(
+            ParquetPerDocWriter(
                 path=str(layout.embeddings_dir),
+                doc_name_field="doc_name",
                 fields=list(EMBEDDER_PARQUET_FIELDS),
-                mode="ignore",
             ),
         ],
         config={

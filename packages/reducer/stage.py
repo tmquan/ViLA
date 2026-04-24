@@ -88,12 +88,48 @@ class ReducerStage(ProcessingStage[DocumentBatch, DocumentBatch]):
                 _stage_perf=task._stage_perf,
             )
 
-        matrix = np.vstack(
-            [np.asarray(v, dtype="float32") for v in df["embedding"]]
-        )
         n_components = int(self.cfg.reducer.n_components)
         prefer_gpu = bool(self.cfg.reducer.prefer_gpu)
         axes = "xyz"[:n_components]
+
+        # Empty-embedding rows (e.g. blank markdown upstream) carry
+        # zero-length vectors that break ``np.vstack`` dim alignment.
+        # Fit the reducer on the valid subset only, then splice NaN
+        # coords back into the empty rows so the output schema stays
+        # stable and downstream consumers can filter with ``isna``.
+        raw_embeddings = list(df["embedding"])
+        valid_mask = [
+            bool(v is not None and len(v) > 0) for v in raw_embeddings
+        ]
+        valid_indices = [i for i, ok in enumerate(valid_mask) if ok]
+
+        if not valid_indices:
+            logger.warning(
+                "reducer: every embedding in this batch is empty; "
+                "emitting NaN coord columns and cluster_id=-1"
+            )
+            for method in list(self.cfg.reducer.methods):
+                algo_cls = REDUCER_REGISTRY.get(str(method))
+                if algo_cls is None:
+                    continue
+                algo = algo_cls()
+                for i, axis in enumerate(axes):
+                    df[f"{algo.name}_{axis}"] = [float("nan")] * len(df)
+            df["cluster_id"] = [-1] * len(df)
+            return DocumentBatch(
+                task_id=task.task_id,
+                dataset_name=task.dataset_name,
+                data=df,
+                _metadata=task._metadata,
+                _stage_perf=task._stage_perf,
+            )
+
+        matrix = np.vstack(
+            [np.asarray(raw_embeddings[i], dtype="float32") for i in valid_indices]
+        )
+
+        def _full_nan_column(n: int) -> list[float]:
+            return [float("nan")] * n
 
         for method in list(self.cfg.reducer.methods):
             algo_cls = REDUCER_REGISTRY.get(str(method))
@@ -108,12 +144,19 @@ class ReducerStage(ProcessingStage[DocumentBatch, DocumentBatch]):
             except Exception:
                 logger.exception("reducer %s failed; emitting NaN columns", method)
                 for i, axis in enumerate(axes):
-                    df[f"{algo.name}_{axis}"] = [float("nan")] * len(df)
+                    df[f"{algo.name}_{axis}"] = _full_nan_column(len(df))
                 continue
             for i, axis in enumerate(axes):
-                df[f"{algo.name}_{axis}"] = coords[:, i].tolist()
+                column = _full_nan_column(len(df))
+                for src_i, tgt_i in enumerate(valid_indices):
+                    column[tgt_i] = float(coords[src_i, i])
+                df[f"{algo.name}_{axis}"] = column
 
-        df["cluster_id"] = _cluster(matrix, prefer_gpu=prefer_gpu)
+        valid_cluster_ids = _cluster(matrix, prefer_gpu=prefer_gpu)
+        cluster_column: list[int] = [-1] * len(df)
+        for src_i, tgt_i in enumerate(valid_indices):
+            cluster_column[tgt_i] = valid_cluster_ids[src_i]
+        df["cluster_id"] = cluster_column
 
         return DocumentBatch(
             task_id=task.task_id,

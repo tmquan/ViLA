@@ -82,10 +82,10 @@ def test_parse_pipeline_stages(tmp_path: Any) -> None:
 def test_extract_pipeline_stages(tmp_path: Any) -> None:
     pipeline = build_pipeline(_cfg(tmp_path), "extract")
     names_before = [s.name for s in pipeline.stages]
-    # Composite markdown_reader + legal_extract + jsonl_writer before decompose.
+    # Composite markdown_reader + legal_extract + jsonl_per_doc_writer before decompose.
     assert any("markdown_reader" in n for n in names_before)
     assert any("legal_extract" in n for n in names_before)
-    assert any("jsonl_writer" in n for n in names_before)
+    assert any("jsonl_per_doc_writer" in n for n in names_before)
 
     pipeline.build()
     names_after = [s.name for s in pipeline.stages]
@@ -99,7 +99,7 @@ def test_embed_pipeline_stages(tmp_path: Any) -> None:
     names_before = [s.name for s in pipeline.stages]
     assert any("jsonl_reader" in n for n in names_before)
     assert any("embedder" in n.lower() for n in names_before)
-    assert any("parquet_writer" in n for n in names_before)
+    assert any("parquet_per_doc_writer" in n for n in names_before)
 
 
 def test_reduce_pipeline_stages(tmp_path: Any) -> None:
@@ -107,7 +107,7 @@ def test_reduce_pipeline_stages(tmp_path: Any) -> None:
     names = [s.name for s in pipeline.stages]
     assert any("parquet_reader" in n for n in names)
     assert any("reducer" in n for n in names)
-    assert any("parquet_writer" in n for n in names)
+    assert any("parquet_per_doc_writer" in n for n in names)
 
 
 def test_every_pipeline_describes_without_error(tmp_path: Any) -> None:

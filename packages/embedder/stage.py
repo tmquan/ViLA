@@ -179,16 +179,39 @@ class NimEmbedderStage(ProcessingStage[DocumentBatch, DocumentBatch]):
         for text in df[text_field]:
             text_str = str(text or "")
             text_hash = hashlib.sha256(text_str.encode("utf-8")).hexdigest()[:32]
+
+            # NIM rejects empty / whitespace-only inputs with
+            # ``400 - Input list must be non-empty and all elements must
+            # be non-empty.`` Short-circuit empty rows to an empty
+            # embedding so one bad document never crashes the batch.
+            if not text_str.strip():
+                logger.warning(
+                    "embedder: empty/whitespace-only text (hash=%s); "
+                    "emitting zero-length embedding",
+                    text_hash,
+                )
+                embeddings.append([])
+                dims.append(0)
+                text_hashes.append(text_hash)
+                chunks_used.append(0)
+                chunking_used.append("empty")
+                continue
+
             chunks = self._split_for_embedding(
                 text_str, chunking_mode, chunk_overlap_tokens
             )
             vectors = self._embed_chunks(chunks, batch_size)
-            pooled = mean_pool(vectors) if vectors else []
+            # Filter out empty vectors before pooling so mean_pool does
+            # not choke on mixed shapes (if a chunk was empty/filtered).
+            non_empty = [v for v in vectors if v]
+            pooled = mean_pool(non_empty) if non_empty else []
             embeddings.append(pooled)
             dims.append(len(pooled))
             text_hashes.append(text_hash)
-            chunks_used.append(len(chunks))
-            chunking_used.append(chunking_mode if len(chunks) > 1 else "none")
+            chunks_used.append(len(non_empty))
+            chunking_used.append(
+                chunking_mode if len(chunks) > 1 else "none"
+            )
 
         df["embedding"] = embeddings
         df["embedding_dim"] = dims
@@ -251,36 +274,58 @@ class NimEmbedderStage(ProcessingStage[DocumentBatch, DocumentBatch]):
         return out
 
     def _safe_embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """Embed a batch; recover from NIM's 400 "exceeds max tokens" errors.
+        """Embed a batch; recover from NIM's 400 errors that the pre-flight
+        heuristic missed.
 
-        The pre-flight ``_split_for_embedding`` heuristic is coarse:
-        Vietnamese legal text tokenizes denser than the default
-        ``chars_per_token`` predicts, so the NIM endpoint occasionally
-        rejects a chunk with ``Input length N exceeds maximum allowed
-        token size``. Rather than crash the whole pipeline on one
-        outlier, split the offending text in half and retry. Each
-        recursion level halves the input, so the worst-case fan-out is
-        bounded by ``_MAX_SPLIT_DEPTH``. Sub-embeddings are mean-pooled
-        back to one vector per original chunk slot so the caller keeps
-        the ``one-vector-per-chunk`` invariant.
+        Two failure modes worth catching:
+
+        * **Empty / whitespace-only input**. NIM rejects the whole batch
+          with ``400 - Input list must be non-empty and all elements
+          must be non-empty.``. We filter those positions out before
+          hitting the API and splice ``[]`` placeholders back in, so
+          one empty markdown row does not kill 63 good siblings.
+        * **Oversize chunk**. The ``chars_per_token`` heuristic is
+          coarse; Vietnamese legal text tokenizes denser than expected.
+          On ``400 - Input length N exceeds maximum allowed token size``,
+          split the offending text in half and retry recursively (up to
+          ``_MAX_SPLIT_DEPTH`` levels / 64x overshoot), then mean-pool
+          the fragments so the caller's one-vector-per-chunk invariant
+          is preserved.
+
+        Non-empty positions in the returned list are vectors of the
+        backend's native dim; empty-text positions hold ``[]``.
         """
         assert self._backend is not None
+        # --- empty-input guard ---
+        non_empty_idx = [i for i, t in enumerate(texts) if t and t.strip()]
+        if not non_empty_idx:
+            return [[] for _ in texts]
+
+        payload = [texts[i] for i in non_empty_idx]
         try:
-            return self._backend.embed_batch(texts)
+            vectors = self._backend.embed_batch(payload)
         except Exception as exc:  # noqa: BLE001 - caller's scope guard
             if not _is_oversize_error(exc):
                 raise
             logger.warning(
                 "NIM embedder: batch of %d rejected as oversize; "
                 "splitting per-text and retrying",
-                len(texts),
+                len(payload),
             )
-            return [self._embed_one_defensive(t) for t in texts]
+            vectors = [self._embed_one_defensive(t) for t in payload]
+
+        # Splice vectors back into the original positions.
+        out: list[list[float]] = [[] for _ in texts]
+        for src_i, tgt_i in enumerate(non_empty_idx):
+            out[tgt_i] = vectors[src_i]
+        return out
 
     def _embed_one_defensive(
         self, text: str, depth: int = 0
     ) -> list[float]:
         assert self._backend is not None
+        if not text or not text.strip():
+            return []
         try:
             return self._backend.embed_batch([text])[0]
         except Exception as exc:  # noqa: BLE001
@@ -293,7 +338,12 @@ class NimEmbedderStage(ProcessingStage[DocumentBatch, DocumentBatch]):
         half = len(text) // 2
         left = self._embed_one_defensive(text[:half], depth + 1)
         right = self._embed_one_defensive(text[half:], depth + 1)
-        return mean_pool([left, right])
+        # If one half was empty/whitespace the caller got [] back; fall
+        # back to whichever half did produce a vector.
+        fragments = [v for v in (left, right) if v]
+        if not fragments:
+            return []
+        return mean_pool(fragments)
 
 
 # ----------------------------------------------------------- HF stage (Curator)

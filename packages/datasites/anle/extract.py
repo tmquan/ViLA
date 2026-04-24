@@ -16,14 +16,13 @@ from __future__ import annotations
 from typing import Any
 
 from nemo_curator.pipeline import Pipeline
-from nemo_curator.stages.text.io.writer import JsonlWriter
 
 from packages.datasites.anle._shared import (
     EXTRACTOR_JSONL_FIELDS,
     build_layout,
 )
 from packages.extractor.stage import LegalExtractStage
-from packages.pipeline.io import MarkdownReader
+from packages.pipeline.io import JsonlPerDocWriter, MarkdownReader
 
 
 def build_extract_pipeline(cfg: Any) -> Pipeline:
@@ -42,10 +41,10 @@ def build_extract_pipeline(cfg: Any) -> Pipeline:
                 ),
             ),
             LegalExtractStage(cfg=cfg),
-            JsonlWriter(
+            JsonlPerDocWriter(
                 path=str(layout.jsonl_dir),
+                doc_name_field="doc_name",
                 fields=list(EXTRACTOR_JSONL_FIELDS),
-                mode="ignore",
             ),
         ],
         config={"host": str(cfg.host), "jsonl_dir": str(layout.jsonl_dir)},

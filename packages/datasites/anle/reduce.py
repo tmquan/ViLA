@@ -18,13 +18,13 @@ from typing import Any
 
 from nemo_curator.pipeline import Pipeline
 from nemo_curator.stages.text.io.reader import ParquetReader
-from nemo_curator.stages.text.io.writer import ParquetWriter
 
 from packages.datasites.anle._shared import (
     EMBEDDER_PARQUET_FIELDS,
     REDUCER_PARQUET_FIELDS,
     build_layout,
 )
+from packages.pipeline.io import ParquetPerDocWriter
 from packages.reducer.stage import ReducerStage
 
 
@@ -45,10 +45,10 @@ def build_reduce_pipeline(cfg: Any) -> Pipeline:
                 ),
             ),
             ReducerStage(cfg=cfg),
-            ParquetWriter(
+            ParquetPerDocWriter(
                 path=str(layout.reduced_dir),
+                doc_name_field="doc_name",
                 fields=list(REDUCER_PARQUET_FIELDS),
-                mode="ignore",
             ),
         ],
         config={"host": str(cfg.host), "reduced_dir": str(layout.reduced_dir)},
