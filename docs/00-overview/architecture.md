@@ -32,8 +32,8 @@ replaces a qualified lawyer or judge.
                                       |
                            (Downloader - Phase 3)
                                       v
-  +-----------------------------------------------------------------------+
-  | Curation pipelines (NeMo Curator 2.x; Ray-backed; disk-chained)       |
+  +------------------------------------------------------------------------+
+  | Curation pipelines (NeMo Curator 2.x; Ray-backed; disk-chained)        |
   | download -> parse -> extract -> embed -> reduce                        |
   |   URLs                                                                 |
   |   -> pdf/<doc_name>.{pdf,docx,doc} (+ .html + .url sidecars)           |
@@ -41,7 +41,7 @@ replaces a qualified lawyer or judge.
   |   -> jsonl/<task_id>.jsonl                                             |
   |   -> parquet/embeddings/<task_id>.parquet                              |
   |   -> parquet/reduced/<task_id>.parquet  (+ pca/tsne/umap + cluster_id) |
-  +---------+------------------------+---------------------+---------------+
+  +---------+----------------------+--------------------+------------------+
             |                      |                    |
             v                      v                    v
   +------------------+    +------------------+    +------------------+

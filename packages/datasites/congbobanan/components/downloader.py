@@ -70,8 +70,13 @@ class CongbobananDocumentDownloader(DocumentDownloader):
         super().__init__(download_dir=download_dir, verbose=verbose)
         self.cfg = cfg
 
-        self._pdf_url_template: str = str(
-            cfg.scraper.get("pdf_url_template", DEFAULT_PDF_URL_TEMPLATE)
+        # The schema default for pdf_url_template is ``""``, so fall
+        # back with the empty-string-falsy ``or`` pattern rather than
+        # ``.get(key, fallback)`` (which only fires when the key is
+        # absent, not when it is the empty string).
+        self._pdf_url_template: str = (
+            str(cfg.scraper.get("pdf_url_template", ""))
+            or DEFAULT_PDF_URL_TEMPLATE
         )
         self._retry_empty_detail: bool = bool(
             cfg.scraper.get("retry_empty_detail", True)

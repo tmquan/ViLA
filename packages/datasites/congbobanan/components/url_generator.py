@@ -68,8 +68,12 @@ class CongbobananURLGenerator(URLGenerator):
 
     def __init__(self, cfg: Any) -> None:
         self.cfg = cfg
-        self._detail_template: str = str(
-            cfg.scraper.get("detail_url_template", DEFAULT_DETAIL_URL_TEMPLATE)
+        # ``cfg.scraper.detail_url_template`` is ``""`` by default in
+        # the schema (not ``None``), so ``.get(key, fallback)`` never
+        # fires. Fall back on the empty-string-falsy ``or`` pattern.
+        self._detail_template: str = (
+            str(cfg.scraper.get("detail_url_template", ""))
+            or DEFAULT_DETAIL_URL_TEMPLATE
         )
         self._start_id: int = int(cfg.scraper.get("start_id", 1))
         self._end_id: int = int(cfg.scraper.get("end_id", 0))
