@@ -154,7 +154,7 @@
   "embedding": {
     "dim": 2048,
     "model_id": "nvidia/llama-nemotron-embed-1b-v2",
-    "chunking": "sliding",
+    "chunking": "none",
     "n_rows": 1963
   }
 }

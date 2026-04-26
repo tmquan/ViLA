@@ -17,78 +17,118 @@ tags:
 - anle
 - supreme-court
 configs:
-- config_name: extracts
-  data_files: data/extracts.parquet
-- config_name: embeddings
-  data_files: data/embeddings.parquet
-- config_name: reduced
-  data_files: data/reduced.parquet
+- config_name: parse
+  data_files: data/parse.parquet
+- config_name: extract
+  data_files: data/extract.parquet
+- config_name: embed
+  data_files: data/embed.parquet
+- config_name: reduce
+  data_files: data/reduce.parquet
 ---
 
 # Án lệ — Vietnamese Legal Precedents
 
 **1 963** case decisions scraped from [`anle.toaan.gov.vn`](https://anle.toaan.gov.vn),
 the official Vietnamese Án lệ (legal precedent) portal of the Supreme People's
-Court. Each precedent is provided as raw PDF, parsed markdown, structured JSON
-(entities, statute references, applied article, adoption date), a 2 048-d dense
-embedding, and a 2-D projection (PCA / t-SNE / UMAP + HDBSCAN cluster id).
+Court. Each precedent is provided as a **raw PDF**, **parsed markdown**, a
+**structured JSON record** (entities, statute references, applied article,
+adoption date), a **2 048-dim dense embedding**, and a 2-D projection
+(**PCA / t-SNE / UMAP + HDBSCAN cluster id**).
 
-The corpus was produced end-to-end by the [`packages/datasites/anle`](https://anle.toaan.gov.vn)
-NeMo Curator pipeline:
+The corpus was produced end-to-end by the
+[`packages/datasites/anle`](https://github.com/) NeMo Curator pipeline:
 
 ```
 download → parse → extract → embed → reduce
 ```
 
+A self-contained EDA notebook accompanying every figure in this card is
+checked in as
+[`notebook.ipynb`](https://huggingface.co/datasets/tmquan/anle-toaan-gov-vn/blob/main/notebook.ipynb).
+
 ## Quick start
+
+The four configurations mirror the four pipeline stages 1-to-1; pick the
+one matching the granularity you need:
 
 ```python
 from datasets import load_dataset
 
-extracts   = load_dataset("tmquan/anle-toaan-gov-vn", "extracts",   split="train")
-embeddings = load_dataset("tmquan/anle-toaan-gov-vn", "embeddings", split="train")
-reduced    = load_dataset("tmquan/anle-toaan-gov-vn", "reduced",    split="train")
+# parse   — markdown body of every precedent under field `text`
+parse   = load_dataset("tmquan/anle-toaan-gov-vn", "parse",   split="train")
+# extract — `text` + structured legal extraction (entities, statute refs, applied article …)
+extract = load_dataset("tmquan/anle-toaan-gov-vn", "extract", split="train")
+# embed   — 2 048-dim dense vectors
+embed   = load_dataset("tmquan/anle-toaan-gov-vn", "embed",   split="train")
+# reduce  — pre-computed PCA / t-SNE / UMAP coordinates + HDBSCAN cluster id
+reduce  = load_dataset("tmquan/anle-toaan-gov-vn", "reduce",  split="train")
 
-print(extracts[0]["doc_name"], extracts[0]["adopted_date"])
-print(embeddings.features["embedding"])      # 2048-d float
-print(reduced[0])                             # pca_x/y, tsne_x/y, umap_x/y, cluster_id
+print(parse[0]["doc_name"], parse[0]["text"][:80])           # 'TAND192001' '## Page 1\n\n1 …'
+print(extract[0]["entities"][:2])                            # [{'tag': 'DATE', 'text': '08/7/2020', …}, …]
+print(len(embed[0]["embedding"]))                            # 2048
+print(reduce[0])                                             # pca_x/y, tsne_x/y, umap_x/y, cluster_id
 ```
 
-To download just the raw PDFs:
+To download a slice of the raw artefacts:
 
 ```python
 from huggingface_hub import snapshot_download
 
+# Just the raw PDFs (1.4 GB)
 snapshot_download(
-    repo_id="tmquan/anle-toaan-gov-vn",
-    repo_type="dataset",
-    allow_patterns=["raw/pdf/*"],
-    local_dir="anle-pdfs",
+    repo_id="tmquan/anle-toaan-gov-vn", repo_type="dataset",
+    allow_patterns=["raw/pdf/*.pdf"], local_dir="anle/pdf",
+)
+
+# Just the parsed markdown (124 MB)
+snapshot_download(
+    repo_id="tmquan/anle-toaan-gov-vn", repo_type="dataset",
+    allow_patterns=["raw/md/*"], local_dir="anle/md",
 )
 ```
 
 ## Configurations
 
-| Config       | Rows  | Schema (key columns)                                                                                |
-|---           |---:   |---                                                                                                  |
-| `extracts`   | 1 963 | `doc_name`, `markdown`, `num_pages`, `char_len`, `adopted_date`, `applied_article_*`, `extracted.entities`, `extracted.relations`, `extracted.statute_refs`, … |
-| `embeddings` | 1 963 | `doc_name`, `text_hash`, `embedding` (2 048-d float), `embedding_model_id`, `embedding_chunks_used`, `embedding_chunking` |
-| `reduced`    | 1 963 | `doc_name`, `pca_x/y`, `tsne_x/y`, `umap_x/y`, `cluster_id`                                         |
+| Config    | Rows  | Stage          | Key columns                                                                 |
+|---        |---:   |---             |---                                                                          |
+| `parse`   | 1 963 | parse          | `doc_name`, `source`, `detail_url`, `pdf_url`, **`text`**, `num_pages`, `char_len`, `parser_model`, `parsed_at`, `text_hash` |
+| `extract` | 1 963 | extract        | `doc_name`, `text_hash`, **`text`**, `entities`, `relations`, `statute_refs`, `adopted_date`, `precedent_number`, `applied_article_*`, `principle_text`, `court` |
+| `embed`   | 1 963 | embed          | `doc_name`, `text_hash`, `embedding` (2 048-d float), `embedding_dim`, `embedding_model_id`, `embedding_chunks_used`, `embedding_chunking` |
+| `reduce`  | 1 963 | reduce         | `doc_name`, `text_hash`, `pca_x/y`, `tsne_x/y`, `umap_x/y`, `cluster_id`    |
+
+`text` is the markdown body produced by the `parse` stage and copied
+verbatim into the `extract` stage. `text_hash` is a deterministic content
+hash that joins every config back to the per-doc shards under `raw/`.
 
 ## Repo layout
 
 ```
+README.md                     this dataset card
+notebook.ipynb                end-to-end EDA notebook (Plotly, LaTeX-style theme)
 data/
-  extracts.parquet              roll-up of every raw/jsonl/*.jsonl record
-  embeddings.parquet            roll-up of every raw/parquet/embeddings/*.parquet
-  reduced.parquet               roll-up of every raw/parquet/reduced/*.parquet
+  parse.parquet               15 MB · `text` + parse metadata
+  extract.parquet             16 MB · `text` + structured extraction
+  embed.parquet               23 MB · 2 048-d dense vectors
+  reduce.parquet              90 KB · PCA / t-SNE / UMAP + cluster id
+assets/                       static PNGs embedded in this README
 raw/
-  pdf/<doc_name>.pdf            original scraped PDF
-  pdf/<doc_name>.url            source detail URL
-  md/<doc_name>.md              parsed markdown body
-  md/<doc_name>.meta.json       parser metadata sidecar
-  jsonl/<doc_name>.jsonl        one-record JSONL extract (mirror of pipeline output)
+  pdf/<doc_name>.pdf          original scraped PDF (1.4 GB total)
+  pdf/<doc_name>.url          source detail URL
+  md/<doc_name>.md            parsed markdown body
+  md/<doc_name>.meta.json     parser metadata sidecar
+  jsonl/<doc_name>.jsonl      one-record JSONL extract (mirror of pipeline output)
 ```
+
+| Bucket       | Files     | Size      |
+|---           |     ---:  | ---:      |
+| top-level    | 3         | 11 MB     |
+| `data/`      | 4         | 54 MB     |
+| `assets/`    | 9         | 2.5 MB    |
+| `raw/jsonl/` | 1 963     | 77 MB     |
+| `raw/md/`    | 3 926     | 124 MB    |
+| `raw/pdf/`   | 3 926     | 1.4 GB    |
+| **Total**    | **9 832** | **≈ 1.66 GB** |
 
 ## Pipeline summary
 
@@ -309,6 +349,34 @@ does not mean those documents are uninformative; the corpus simply isn't
 strongly bimodal.
 
 ![reduced – cluster](assets/09_reduced_cluster.png)
+
+---
+
+## How to reproduce
+
+The full publishing flow is one Python script:
+
+```bash
+# from the monorepo root
+pip install -r packages/datasites/anle/requirements.txt
+python data/anle.toaan.gov.vn/_to_hf.py --repo tmquan/anle-toaan-gov-vn
+```
+
+`_to_hf.py` does three things in order:
+
+1. **Consolidate** every per-doc shard under `parquet/embeddings/`,
+   `parquet/reduced/` and `jsonl/` into the three ZSTD parquet files in
+   `data/`. DuckDB is used because PyArrow ≥ 17 occasionally fails on the
+   per-doc embedding shards with `Repetition level histogram size mismatch`.
+2. **Render** all 9 static plot PNGs in `assets/` and the `_stats.json`
+   snapshot embedded in this card (delegates to `_render_assets.py`).
+3. **Upload** every artefact to the Hub at the right path. Importantly it
+   uses `HfApi.upload_folder(path_in_repo=...)` — never
+   `hf upload-large-folder`, which silently puts everything at the repo
+   root because it has no `--path-in-repo` flag.
+
+Sub-steps can be skipped with `--skip-consolidate`, `--skip-assets`,
+`--no-upload`.
 
 ---
 
