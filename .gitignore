@@ -35,13 +35,6 @@ packages/sft/outputs/
 services/kg/data/
 services/agent/.nat/
 
-# Top-level sample corpus (see docs/00-overview/repo-layout.md)
-# Preserve directory skeleton via committed .gitkeep files
-data/pdf/**
-data/md/**
-data/*.zip
-!data/**/.gitkeep
-
 # OS
 .DS_Store
 Thumbs.db
@@ -57,16 +50,25 @@ Thumbs.db
 logs/
 *.log
 
-# Misc
-data/
-data/*.*
-data/**/*.zip
-data/**/*.json
-data/**/*.jsonl
-data/**/*.parquet
-data/**/*.csv
-data/**/*.html
-data/**/*.ipynb
-data/**/*.md
-data/**/*.pdf
-data/**/*.txt
+# --- Top-level data/ corpus (heavy artefacts) -----------------------
+# By default everything under data/ is ignored: scraped PDFs, parsed
+# markdown, JSONL extracts, embedding parquet, etc. Pull/regenerate
+# via the relevant `packages/datasites/<host>` pipeline.
+data/**
+
+# Allowlist commitable analysis + HF push artefacts under data/.
+# Each ancestor directory must be re-included before its contents.
+!data/anle.toaan.gov.vn/
+!data/anle.toaan.gov.vn/notebook.ipynb
+!data/anle.toaan.gov.vn/_to_hf.py
+!data/anle.toaan.gov.vn/_render_assets.py
+!data/anle.toaan.gov.vn/_hf/
+!data/anle.toaan.gov.vn/_hf/README.md
+!data/anle.toaan.gov.vn/_hf/_stats.json
+!data/anle.toaan.gov.vn/_hf/assets/
+!data/anle.toaan.gov.vn/_hf/assets/*.png
+
+# Re-ignore the consolidated parquet bundle — it's a build artefact
+# of `_to_hf.py`, regeneratable from the per-doc shards in jsonl/
+# and parquet/embeddings/. Keeping it out of git keeps the repo small.
+data/anle.toaan.gov.vn/_hf/data/

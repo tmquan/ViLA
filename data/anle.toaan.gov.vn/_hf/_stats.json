@@ -1,0 +1,160 @@
+{
+  "inventory": {
+    "pdf": 1963,
+    "md": 1963,
+    "jsonl": 1963,
+    "embeddings": 1963,
+    "reduced": 1963
+  },
+  "size_stats": {
+    "num_pages": {
+      "count": 1963.0,
+      "mean": 9.7,
+      "std": 5.3,
+      "min": 1.0,
+      "50%": 9.0,
+      "90%": 15.0,
+      "99%": 27.0,
+      "max": 90.0
+    },
+    "char_len": {
+      "count": 1963.0,
+      "mean": 23355.3,
+      "std": 14122.3,
+      "min": 1508.0,
+      "50%": 20430.0,
+      "90%": 38936.8,
+      "99%": 72160.7,
+      "max": 224753.0
+    }
+  },
+  "adopted_year_range": [
+    1952,
+    2025
+  ],
+  "adopted_year_coverage": 1933,
+  "n_entities_total": 140863,
+  "n_relations_total": 0,
+  "n_statute_refs_total": 34190,
+  "tag_counts": {
+    "DATE": 79538,
+    "ARTICLE": 34190,
+    "ORG-COURT": 27060,
+    "PRECEDENT": 75
+  },
+  "legal_sector_counts": {
+    "Dân sự (civil)": 886,
+    "Hình sự (criminal)": 467,
+    "Hành chính (administrative)": 327,
+    "Unknown / unparsed": 101,
+    "Kinh doanh thương mại (commercial)": 99,
+    "Hôn nhân & gia đình (family)": 43,
+    "Quyết định khác (other)": 32,
+    "Lao động (labor)": 8
+  },
+  "procedural_level_counts": {
+    "Phúc thẩm (appellate)": 1085,
+    "Giám đốc thẩm (cassation)": 690,
+    "Unknown / unparsed": 105,
+    "Sơ thẩm (first instance)": 65,
+    "Tái thẩm (re-trial)": 18
+  },
+  "court_per_doc": {
+    "TAND quận / huyện / thị xã": 718,
+    "non-court / other": 860,
+    "Tòa án nhân dân tối cao": 863,
+    "Tòa án (khác)": 1449,
+    "TAND tỉnh / thành phố": 1846,
+    "Tòa án nhân dân cấp cao": 1906
+  },
+  "top_cited_articles": {
+    "? / Điều 51": {
+      "citations": 2052,
+      "n_docs": 455
+    },
+    "? / Điều 26": {
+      "citations": 801,
+      "n_docs": 453
+    },
+    "? / Điều 38": {
+      "citations": 730,
+      "n_docs": 315
+    },
+    "? / Điều 52": {
+      "citations": 701,
+      "n_docs": 222
+    },
+    "? / Điều 308": {
+      "citations": 686,
+      "n_docs": 563
+    },
+    "? / Điều 30": {
+      "citations": 653,
+      "n_docs": 451
+    },
+    "? / Điều 343": {
+      "citations": 563,
+      "n_docs": 560
+    },
+    "? / Điều 32": {
+      "citations": 560,
+      "n_docs": 336
+    },
+    "? / Điều 2": {
+      "citations": 548,
+      "n_docs": 383
+    },
+    "? / Điều 58": {
+      "citations": 521,
+      "n_docs": 144
+    },
+    "? / Điều 337": {
+      "citations": 505,
+      "n_docs": 504
+    },
+    "? / Điều 3": {
+      "citations": 502,
+      "n_docs": 283
+    },
+    "? / Điều 54": {
+      "citations": 496,
+      "n_docs": 163
+    },
+    "? / Điều 17": {
+      "citations": 469,
+      "n_docs": 150
+    },
+    "? / Điều 6": {
+      "citations": 416,
+      "n_docs": 304
+    }
+  },
+  "top_applied_articles": {
+    "? / Điều 26": 161,
+    "? / Điều 51": 107,
+    "? / Điều 337": 75,
+    "? / Điều 123": 56,
+    "? / Điều 3": 51,
+    "? / Điều 174": 43,
+    "? / Điều 2": 36,
+    "? / Điều 30": 34,
+    "? / Điều 308": 34,
+    "? / Điều 251": 32,
+    "? / Điều 325": 31,
+    "? / Điều 1": 30,
+    "? / Điều 12": 30,
+    "? / Điều 468": 29,
+    "? / Điều 166": 27
+  },
+  "cluster_counts": {
+    "noise": 1099,
+    "c0": 536,
+    "c1": 328
+  },
+  "embedding": {
+    "dim": 2048,
+    "model_id": "nvidia/llama-nemotron-embed-1b-v2",
+    "chunking": "sliding",
+    "n_rows": 1963
+  }
+}

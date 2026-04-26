@@ -70,6 +70,17 @@ kaleido>=0.2               # static image export (PNG)
 networkx>=3.2
 nbformat>=5.9
 
+# --- analysis notebook + HF dataset push (data/anle.toaan.gov.vn) ---
+# Used by data/anle.toaan.gov.vn/notebook.ipynb (corpus EDA) and
+# data/anle.toaan.gov.vn/{_render_assets.py, _to_hf.py} (rebuild the static
+# README assets and consolidate per-doc shards into a HF-friendly bundle).
+# duckdb is required because PyArrow >= 17 occasionally chokes on the
+# embedding parquet shards with `Repetition level histogram size mismatch`.
+duckdb>=1.0
+huggingface_hub>=0.30,<1.0
+hf_transfer>=0.1           # optional: enables HF_HUB_ENABLE_HF_TRANSFER=1 fast upload
+datasets>=2.18             # optional: only used for the load_dataset verification example
+
 # --- optional GPU acceleration -------------------------------------
 # Uncomment on a CUDA host; requires the NVIDIA rapids conda channel
 # or the matching cu13 wheel index.
