@@ -104,6 +104,19 @@ class ScraperCfg:
     categories: list[str] = field(default_factory=list)
     keywords: list[str] = field(default_factory=list)
 
+    # ---- pbgdpl HTML-fragment crawler ------------------------------
+    # The pbgdpl Q&A site exposes a custom AJAX user control (no
+    # PDFs). The harvester needs a homepage URL for the LinhVuc
+    # taxonomy + featured set and a few flags to control the
+    # per-LinhVuc walk and the on-disk HTML cache. Defaults are safe
+    # for any datasite that doesn't use them; pbgdpl's YAML overrides
+    # them.
+    index_url: str = ""
+    walk_lv: bool = False
+    lv_max_pages: int = 100
+    cache_listings: bool = True
+    cache_details: bool = True
+
 
 @dataclass
 class ParserCfg:

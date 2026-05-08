@@ -1,0 +1,18 @@
+# pbgdpl crawler runtime dependencies.
+#
+# This crawler intentionally has no NeMo Curator / Ray / NIM
+# dependencies: pbgdpl serves HTML-only Q&A pairs (no PDF, no OCR),
+# so the heavyweight curation stack used by anle / congbobanan is not
+# needed here. The full set below is therefore much smaller than
+# anle/requirements.txt; the shared HTTP / config / logging primitives
+# are imported from packages.common which only needs requests + bs4 +
+# omegaconf + lxml.
+
+requests>=2.31,<3.0
+beautifulsoup4>=4.12,<5.0
+lxml>=5.0,<6.0
+omegaconf>=2.3,<3.0
+
+# Used by analyze.py for HF dataset push (only needed if you intend
+# to publish the corpus to Hugging Face).
+huggingface_hub>=0.23
