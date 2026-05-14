@@ -1,6 +1,6 @@
-"""Build-level smoke tests for the four anle pipelines.
+"""Build-level smoke tests for the five anle pipelines.
 
-Each of ``download``, ``extract``, ``embed``, ``reduce`` should:
+Each of ``download``, ``parse``, ``extract``, ``embed``, ``reduce`` should:
 
 * Build a :class:`nemo_curator.pipeline.Pipeline` instance.
 * Contain only Curator :class:`ProcessingStage` / :class:`CompositeStage` subclasses.

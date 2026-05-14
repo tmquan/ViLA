@@ -138,8 +138,8 @@ ViLA/
       scatter.py, distribution.py, timeline.py, taxonomy.py,
       relations.py, citations.py, dashboard.py, notebook.py
                                   # one Renderer subclass per artifact
-    datasites/                    # per-site Curator primitives + one file per pipeline
-      anle/                       # anle.toaan.gov.vn (precedents)
+    datasites/                    # per-site crawlers (see "Package boundaries" -> two families)
+      anle/                       # Family A (Curator multi-stage): anle.toaan.gov.vn (precedents)
         __init__.py               # re-exports components + pipeline registry
         __main__.py               # CLI: --pipeline {download,parse,extract,embed,reduce,all}
         pipeline.py               # PIPELINES registry + build_pipeline(cfg, name) dispatch
@@ -156,8 +156,24 @@ ViLA/
           iterator.py             # AnleDocumentIterator   (nemo_curator DocumentIterator)
           extractor.py            # AnleDocumentExtractor  (nemo_curator DocumentExtractor)
         configs/                  # anle.yaml, default.yaml
-      # congbobanan / vbpl / thuvienphapluat are planned; the follow-up port
-      # mirrors the anle layout file-for-file.
+      # congbobanan / vbpl / thuvienphapluat are Family A; the follow-up
+      # port mirrors the anle layout file-for-file.
+      pbgdpl/                     # Family B (HTML crawler): pbgdpl.gov.vn (legal Q&A)
+        __main__.py               # CLI: --pipeline {harvest,detail,all}
+        scraper.py                # PIPELINES + run_pipeline(cfg, name)
+        components/               # HTML parsing helpers (NOT Curator subclasses)
+        _shared.py                # build_layout + JSONL field constants
+        analyze.py, viz.py        # post-crawl analytics + figures
+        hf_export.py, push_to_hf.py
+        configs/                  # pbgdpl.yaml, default.yaml
+        README.md, requirements.txt
+      phapdien/                   # Family B (HTML crawler): phapdien.moj.gov.vn (Bộ pháp điển)
+        __main__.py               # CLI: --pipeline {tree,detail,all}
+        scraper.py                # PIPELINES + run_pipeline(cfg, name)
+        ontology.py               # hand-curated vi/en topic + glossary table
+        _shared.py, analyze.py, viz.py
+        hf_export.py, push_to_hf.py
+        configs/, README.md, requirements.txt
     nlp/
       pyproject.toml
       src/vila_nlp/
@@ -241,10 +257,20 @@ ViLA/
 - `packages/visualizer` is no longer a pipeline stage: it imports
   `pandas` + the ontology + plotly renderers. It is consumed by
   `apps/visualizer`, never by the pipeline.
-- `packages/datasites/<site>` depends on `packages/common` +
-  `packages/pipeline` + `nemo_curator.stages.text.download.base` +
-  the stage-wrapper packages (parser / extractor / embedder / reducer).
-  Each site exports:
+- `packages/datasites/<site>` falls into one of two **families**,
+  picked by the nature of the source corpus. Both families share the
+  shared CLI parser (`packages/common/cli.py::build_arg_parser`) and
+  the per-site `_shared.py` layout helper, but the orchestration
+  entry-point and contracted files differ.
+
+  **Family A — Curator multi-stage** (`anle`, `congbobanan`, `vbpl`).
+  For source corpora that ship as PDF / DOCX (digital or scanned) and
+  need the full parse → extract → embed → reduce chain. Entry-point
+  is `packages/common/runner.py::run_curator_site`. Depends on
+  `packages/common` + `packages/pipeline` +
+  `nemo_curator.stages.text.download.base` + the stage-wrapper
+  packages (parser / extractor / embedder / reducer). Each site
+  exports:
     - four Curator primitive subclasses (under `<site>/components/`):
       `URLGenerator`, `DocumentDownloader`, `DocumentIterator`,
       `DocumentExtractor`;
@@ -254,7 +280,42 @@ ViLA/
       factory;
     - `pipeline.py` stitching the five factories into a `PIPELINES`
       registry + `build_pipeline(cfg, name)` dispatch;
-    - `__main__.py` CLI driving the registry via `--pipeline`.
+    - `__main__.py` CLI driving the registry via `--pipeline`
+      `{download,parse,extract,embed,reduce,all}`;
+    - `configs/{default,<site>}.yaml`, `README.md`,
+      `requirements.txt`.
+
+  **Family B — HTML crawler** (`pbgdpl`, `phapdien`). For source
+  corpora served as already-text HTML (Q&A, codified statutes) where
+  no PDF / OCR step is needed and the Ray + Curator executor stack
+  would be overkill. Entry-point is
+  `packages/common/runner.py::run_crawler_site` (see that module's
+  docstring for the contract). Each site exports:
+    - `scraper.py` containing site-specific crawler classes (e.g.
+      `PbgdplHarvester`, `PhapdienCrawler`) plus a `PIPELINES`
+      dict, `ALL_PIPELINES_ORDER` list, and
+      `run_pipeline(cfg, name) -> Path` dispatch. Pipeline names
+      are site-specific (e.g. `harvest`/`detail` for pbgdpl,
+      `tree`/`detail` for phapdien) — not the canonical Curator
+      five-stage names;
+    - **optional** `components/` directory holding pure HTML
+      parsing helpers (not Curator primitive subclasses);
+    - `_shared.py` (layout + JSONL field constants);
+    - `__main__.py` thin wrapper around `run_crawler_site`;
+    - `configs/{default,<site>}.yaml`, `README.md`,
+      `requirements.txt` (still required even though the dep set is
+      a small `requests + bs4 + lxml + omegaconf` core);
+    - **optional analytics / HF export** add-ons: `analyze.py`
+      (post-crawl roll-ups → `analytics.json`), `viz.py` (figures
+      from `analytics.json`), `hf_export.py` (JSONL → HF parquet
+      bundle), `push_to_hf.py` (Hub upload wrapper around
+      `packages.common.hf.run_push_cli`). Anle ships the same
+      add-ons; they are not pipeline stages.
+
+  Both families consume the same shared CLI flags via
+  `packages/common/cli.py::build_arg_parser`. Family-B sites accept
+  `--executor` / `--ray-address` for shape compatibility but log
+  them as ignored.
 - `apps/visualizer` imports `packages/visualizer` and
   `packages/common.ontology`; it reads the parquet produced by the
   pipeline's `ParquetWriter`.

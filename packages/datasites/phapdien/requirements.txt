@@ -1,0 +1,25 @@
+# phapdien crawler runtime dependencies.
+#
+# Like pbgdpl, this crawler does NOT run under nemo_curator's Pipeline /
+# executor stack: phapdien serves codified legal text as plain HTML from
+# an ASP.NET WebForms app (no PDF, no OCR), so the heavyweight curation
+# stack used by anle / congbobanan is not needed. The full set below is
+# therefore much smaller than anle/requirements.txt.
+
+# --- crawler core (tree + detail stages) ---------------------------
+requests>=2.31,<3.0
+beautifulsoup4>=4.12,<5.0
+lxml>=5.0,<6.0
+omegaconf>=2.3,<3.0
+
+# --- HF dataset export (hf_export.py + push_to_hf.py) --------------
+# pyarrow drives the parquet shards under data/.../hf/; huggingface_hub
+# is only needed when actually pushing to the Hub.
+pyarrow>=15.0
+huggingface_hub>=0.23
+
+# --- optional viz (viz.py) -----------------------------------------
+# matplotlib is lazy-imported inside viz.py functions, so installs that
+# never call render_all() / render_mermaid_mindmap() don't need it. Pin
+# loosely so a fork can pick its own version.
+# matplotlib>=3.7

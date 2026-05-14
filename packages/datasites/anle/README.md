@@ -30,6 +30,10 @@ packages/datasites/anle/
   embed.py                      build_embed_pipeline      JSONL     -> embeddings parquet
   reduce.py                     build_reduce_pipeline     embeddings -> reduced parquet
   _shared.py                    build_layout + field constants (private)
+  _extract_inproc.py            in-process re-run of `extract` without Ray (md+meta -> JSONL)
+  _reduce_inproc.py             in-process re-run of `reduce`  without Ray (embeddings -> reduced)
+  hf_export.py                  JSONL + embedding parquets -> HF-ready bundle under data/<host>/hf/
+  push_to_hf.py                 upload the hf/ bundle to the Hub (wraps packages.common.hf.run_push_cli)
   components/
     __init__.py
     url_generator.py            AnleURLGenerator
@@ -40,6 +44,12 @@ packages/datasites/anle/
   README.md
   requirements.txt
 ```
+
+The four `_*_inproc.py` / `hf_*` / `push_to_hf.py` helpers are **not**
+pipeline factories — they are stand-alone `python -m` entry-points
+used to (re-)run a stage without the Ray/Curator stack (handy for
+local smoke runs or when you only need to rebuild the JSONL / parquet
+artefacts) and to materialise / publish the HuggingFace bundle.
 
 ## On-disk output layout
 
