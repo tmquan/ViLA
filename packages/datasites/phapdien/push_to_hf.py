@@ -1,0 +1,55 @@
+"""Upload the materialised phapdien HF folder to a HuggingFace dataset repo.
+
+Auth follows the standard HuggingFace order: ``--token`` >
+``HF_TOKEN`` env > cached ``huggingface-cli login`` credentials.
+
+Examples::
+
+    # Default repo: tmquan/phapdien-moj-gov-vn (public)
+    python -m packages.datasites.phapdien.push_to_hf
+
+    # Override repo + use a private repo
+    python -m packages.datasites.phapdien.push_to_hf \\
+        --repo-id myorg/phapdien --private
+
+    # Dry-run: validate the folder + print what would happen
+    python -m packages.datasites.phapdien.push_to_hf --dry-run
+
+All real work is delegated to :func:`packages.common.hf.run_push_cli`;
+this module only encodes the per-site defaults.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+from packages.common.hf import run_push_cli
+
+DEFAULT_HF_DIR  = Path("data/phapdien.moj.gov.vn/hf")
+DEFAULT_REPO_ID = "tmquan/phapdien-moj-gov-vn"
+
+#: Files we expect ``hf_export`` to have produced. Push is rejected if
+#: any are missing -- prevents accidentally pushing an empty / partial
+#: repo.
+REQUIRED_FILES = (
+    "README.md",
+    "articles.parquet",
+    "demucs.parquet",
+    "tree_nodes.parquet",
+)
+
+
+def main(argv: list[str] | None = None) -> int:
+    return run_push_cli(
+        default_hf_dir=DEFAULT_HF_DIR,
+        default_repo_id=DEFAULT_REPO_ID,
+        required_files=REQUIRED_FILES,
+        description="Push the materialised phapdien HF folder to HuggingFace.",
+        default_commit_message="Initial dataset upload",
+        argv=argv,
+    )
+
+
+if __name__ == "__main__":
+    sys.exit(main())

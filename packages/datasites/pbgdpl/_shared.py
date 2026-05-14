@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from packages.common import SiteLayout
+from packages.common import SiteLayout, build_layout as _build_layout_common
 
 
 #: Detail JSONL columns emitted by :func:`packages.datasites.pbgdpl.scraper.run_detail`.
@@ -82,19 +82,20 @@ def build_layout(cfg: Any) -> SiteLayout:
         jsonl/taxonomy.json                # LinhVuc id -> name (~535 entries)
         jsonl/manifest.json                # last-run summary
         logs/run-<ts>.jsonl                # per-request operational log
+
+    Uses the shared ``"html"`` layout profile + three pbgdpl-specific
+    HTML cache subdirs (``listings/`` / ``items/`` / ``lv/``).
     """
-    output_root = Path(str(cfg.output_dir)).expanduser().resolve()
-    layout = SiteLayout(output_root=output_root, host=str(cfg.host))
-    layout.ensure_dirs(
-        layout.site_root,
-        layout.html_dir,
-        layout.html_dir / "listings",
-        layout.html_dir / "items",
-        layout.html_dir / "lv",
-        layout.jsonl_dir,
-        layout.logs_dir,
+    layout = SiteLayout.from_cfg(cfg)
+    return _build_layout_common(
+        cfg,
+        profile="html",
+        extra_dirs=(
+            layout.html_dir / "listings",
+            layout.html_dir / "items",
+            layout.html_dir / "lv",
+        ),
     )
-    return layout
 
 
 def listings_dir(layout: SiteLayout) -> Path:

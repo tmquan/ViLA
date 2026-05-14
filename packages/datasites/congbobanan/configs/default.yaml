@@ -26,6 +26,13 @@ scraper:
   verify_tls: false         # congbobanan's cert is not in the Mozilla bundle
   download_max_retries: 50
   download_retry_delay_s: 30.0
+  # Separate, longer-budget retry channel for DNS resolution failures
+  # (EAI_AGAIN, EAI_NONAME). systemd-resolved on the worker host can
+  # stall for tens of seconds under concurrent load against .gov.vn
+  # nameservers; the request/download retry budgets above are tuned
+  # for 5xx / connection resets and would give up too early.
+  dns_max_retries: 12
+  dns_retry_delay_s: 5.0
 
   # URL templates
   detail_url_template: "https://congbobanan.toaan.gov.vn/2ta{case_id}t1cvn/chi-tiet-ban-an"
@@ -57,8 +64,10 @@ parser:
   timeout_s: 120.0
 
 extractor:
+  run_text_normalization: true   # NFC + Vietnamese tone canonicalization + PDF ws cleanup
   run_generic_layer: true
-  run_site_layer: false     # precedent normalization is anle-only
+  run_site_layer: false          # precedent normalization is anle-only
+  run_structure_layer: true      # hierarchical doc model (sections / paragraphs / sentences)
   llm_tier_for_ambiguous: fast
   max_seq_length: "${..full_text_context}"
 

@@ -5,15 +5,28 @@ The old ``SiteScraperBase`` class is gone: stage 1 is now the
 composite built from Curator's :class:`URLGenerator` /
 :class:`DocumentDownloader` / :class:`DocumentIterator` /
 :class:`DocumentExtractor` abstract bases, with per-site subclasses
-under :mod:`packages.datasites.<site>`. This module therefore only
-holds the filesystem-path helper that every stage and writer shares:
-``SiteLayout``.
+under :mod:`packages.datasites.<site>`. This module holds the
+filesystem-path helper every stage and writer shares
+(:class:`SiteLayout`) plus :func:`build_layout`, a thin factory that
+turns a config into a layout with all required dirs created.
+
+Two named layout profiles cover every site we ship today:
+
+* ``"curator"`` -- the full PDF→markdown→JSONL→parquet flow used by
+  ``anle`` and ``congbobanan``: pdf / md / jsonl / parquet
+  (+ embeddings / reduced) / logs.
+* ``"html"`` -- HTML-only crawlers used by ``pbgdpl`` and ``phapdien``:
+  html / jsonl / logs (md is opt-in via ``extra_dirs``).
+
+Anything outside the named profiles can still be added per-site via
+``extra_dirs`` -- the profile is just a default, not a constraint.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Iterable, Sequence
 
 
 @dataclass
@@ -28,6 +41,12 @@ class SiteLayout:
 
     output_root: Path
     host: str
+
+    @classmethod
+    def from_cfg(cls, cfg: Any) -> "SiteLayout":
+        """Build a layout from a ``cfg`` exposing ``output_dir`` + ``host``."""
+        output_root = Path(str(cfg.output_dir)).expanduser().resolve()
+        return cls(output_root=output_root, host=str(cfg.host))
 
     @property
     def site_root(self) -> Path:
@@ -67,9 +86,75 @@ class SiteLayout:
     def logs_dir(self) -> Path:
         return self.site_root / "logs"
 
+    @property
+    def hf_dir(self) -> Path:
+        """HuggingFace publishing folder: ``hf/`` (parquet + README + …)."""
+        return self.site_root / "hf"
+
     def ensure_dirs(self, *dirs: Path) -> None:
         for d in dirs:
             d.mkdir(parents=True, exist_ok=True)
 
 
-__all__ = ["SiteLayout"]
+# Named profiles. Each function returns the canonical sequence of
+# directories a site of that shape wants created up-front.
+
+def _curator_dirs(layout: SiteLayout) -> tuple[Path, ...]:
+    """Full Curator pipeline (download → parse → extract → embed → reduce)."""
+    return (
+        layout.site_root,
+        layout.pdf_dir,
+        layout.md_dir,
+        layout.jsonl_dir,
+        layout.parquet_dir,
+        layout.embeddings_dir,
+        layout.reduced_dir,
+        layout.logs_dir,
+    )
+
+
+def _html_dirs(layout: SiteLayout) -> tuple[Path, ...]:
+    """HTML-only crawler (harvest → detail) base dirs."""
+    return (
+        layout.site_root,
+        layout.html_dir,
+        layout.jsonl_dir,
+        layout.logs_dir,
+    )
+
+
+_PROFILES: dict[str, Any] = {
+    "curator": _curator_dirs,
+    "html": _html_dirs,
+}
+
+
+def build_layout(
+    cfg: Any,
+    *,
+    profile: str = "curator",
+    extra_dirs: Iterable[Path] = (),
+) -> SiteLayout:
+    """Return a :class:`SiteLayout` with every required dir created.
+
+    ``profile`` selects the named base set (``"curator"`` or
+    ``"html"``); ``extra_dirs`` is an opt-in sequence of additional
+    paths the caller wants created too (e.g. ``html/items``,
+    ``html/listings`` for pbgdpl). Order doesn't matter -- the dirs
+    are created with ``parents=True, exist_ok=True``.
+    """
+    layout = SiteLayout.from_cfg(cfg)
+    if profile not in _PROFILES:
+        raise ValueError(
+            f"unknown layout profile {profile!r}; "
+            f"valid choices: {sorted(_PROFILES)}"
+        )
+    profile_dirs: Sequence[Path] = _PROFILES[profile](layout)
+    layout.ensure_dirs(*profile_dirs, *extra_dirs)
+    return layout
+
+
+__all__ = [
+    "SiteLayout",
+    "build_layout",
+]

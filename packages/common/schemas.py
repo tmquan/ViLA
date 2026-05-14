@@ -45,6 +45,15 @@ class ScraperCfg:
     download_max_retries: int = 50          # retry a failed PDF up to this many times
     download_retry_delay_s: float = 30.0    # flat delay between PDF retries
 
+    # DNS-failure retry channel. systemd-resolved / upstream nameservers
+    # occasionally raise EAI_AGAIN ("Temporary failure in name
+    # resolution") for tens of seconds at a time, especially under
+    # concurrent worker load against .gov.vn hosts. Tracked separately
+    # from `max_retries` / `download_max_retries` so a brief resolver
+    # hiccup doesn't burn the budgets tuned for 5xx / connection resets.
+    dns_max_retries: int = 12               # DNS-error retries before giving up
+    dns_retry_delay_s: float = 5.0          # flat delay between DNS retries
+
     # Per-site scraping hints. Concrete values live in the site's YAML.
     listing_url: str = ""
     detail_url_template: str = ""
@@ -117,6 +126,37 @@ class ScraperCfg:
     cache_listings: bool = True
     cache_details: bool = True
 
+    # ---- vbpl Playwright crawler -----------------------------------
+    # vbpl.vn is a Next.js SPA whose backend (vbpl-bientap-gateway.moj
+    # .gov.vn/api/qtdc/public/doc/...) is gated by a reCAPTCHA v3 ->
+    # Bearer token flow. The harvester walks the public sitemap (no
+    # auth needed); the detail stage drives a real headless Chromium
+    # so reCAPTCHA solves itself and we just intercept the resulting
+    # API responses. Defaults are no-ops for any datasite that doesn't
+    # use them; vbpl's YAML overrides them.
+    sitemap_url: str = ""                  # e.g. https://vbpl.vn/sitemap.xml
+    warmup_url: str = ""                   # site root visited once per worker to mint Bearer
+    scopes: list[str] = field(default_factory=list)  # [trung_uong, dia_phuong]; [] => all
+    browser: str = "chromium"              # chromium | firefox | webkit
+    headless: bool = True
+    nav_timeout_s: float = 60.0
+    download_files: bool = True            # also fetch the PDF/Doc binary if exposed
+    api_url_substr: str = "/api/qtdc/public/doc/"  # XHR signature to intercept
+    # Per-page wait for the first /api/qtdc XHR after DOMContentLoaded.
+    # vbpl's reCAPTCHA-gated body request can lag DOM by several
+    # seconds; the worker spins on the captured-list length up to here.
+    api_wait_s: float = 25.0
+    # Override the Chromium binary that Playwright launches. Empty
+    # string == auto-detect ``~/.cache/ms-playwright/chromium-*/...
+    # /chrome``; the auto-detect prefers the full Chromium build over
+    # chrome-headless-shell because reCAPTCHA v3 fingerprints the
+    # latter as a bot.
+    executable_path: str = ""
+    # Inject a small init script per context that masks the most
+    # common headless tells (navigator.webdriver, plugins, ...). On
+    # for vbpl; off for diagnostic runs.
+    stealth: bool = True
+
 
 @dataclass
 class ParserCfg:
@@ -165,18 +205,42 @@ class ParserCfg:
 
 @dataclass
 class ExtractorCfg:
-    """Extractor-stage settings (stage 3: generic + site-specific).
+    """Extractor-stage settings (stage 3: generic + site + structure).
 
-    `max_seq_length` caps the LLM-assisted extraction path (fast tier
-    fallback for ambiguous fields). Defaults to the pipeline-wide
-    full_text_context (32k tokens) so a full bản án / cáo trạng /
+    Three independently-toggleable layers, all preceded by an
+    optional Vietnamese-aware text normalization pass:
+
+    * ``run_text_normalization`` -- ftfy NFC + tone-mark canonicalization
+      + PDF whitespace cleanup. Replaces the ``markdown`` column with
+      its canonical form before any layer inspects it, so layer
+      regexes target a single orthography (post-1984 Vietnamese).
+    * ``run_generic_layer``   -- regex/dictionary NER + statute linker
+      (entities, relations, statute_refs) emitted to ``extracted``.
+    * ``run_site_layer``      -- Vietnamese precedent normalizer
+      (precedent_number, adopted_date, applied_article_*, principle).
+    * ``run_structure_layer`` -- hierarchical document representation
+      (DocumentMeta + Section + Paragraph + Sentence) emitted to
+      ``structure``. Designed for legal-document-management lookup,
+      retrieval, and citation. Robust on the canonical 5-section
+      template (header / case_summary / findings / decision / footer).
+
+    ``max_seq_length`` caps the LLM-assisted extraction path (fast
+    tier fallback for ambiguous fields). Defaults to the pipeline-wide
+    ``full_text_context`` (32k tokens) so a full bản án / cáo trạng /
     án lệ fits in a single call.
     """
 
+    run_text_normalization: bool = True
     run_generic_layer: bool = True
     run_site_layer: bool = True
+    run_structure_layer: bool = True
     llm_tier_for_ambiguous: str = "fast"
     max_seq_length: int = "${..full_text_context}"  # type: ignore[assignment]
+    # Per-process thread-pool width for in-process extractor runs.
+    # Curator-driven extractor sites (anle / congbobanan) ignore this
+    # because Ray + the executor handle parallelism. Used by vbpl's
+    # in-process VbplDocumentExtractor.
+    num_workers: int = 4
 
 
 @dataclass

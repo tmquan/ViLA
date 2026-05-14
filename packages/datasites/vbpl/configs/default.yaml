@@ -1,0 +1,185 @@
+# Default config for the vbpl crawler.
+#
+# OmegaConf-based. Use `_base: default.yaml` from a sibling file to
+# override any subset of this; lists are REPLACED, mappings are
+# DEEP-MERGED. CLI dotlist overrides via `--override path.to.key=value`
+# are applied last.
+#
+# vbpl.vn (Cơ sở dữ liệu Quốc gia về pháp luật) is a Next.js SPA
+# whose backend at vbpl-bientap-gateway.moj.gov.vn is gated by
+# Google reCAPTCHA v3 -> Bearer tokens. The harvester walks the
+# public /sitemap.xml chain (allowed by robots.txt) with a vanilla
+# PoliteSession; the detail stage drives a real headless Chromium
+# via Playwright so reCAPTCHA solves itself just like for a regular
+# visitor. The four downstream curation stages (parser / extractor /
+# embedder / reducer) have no consumer here yet -- defaults are kept
+# so a future curation pipeline can read this same config without a
+# config-shape migration.
+
+host: vbpl.vn
+output_dir: ./data
+full_text_context: 32768
+
+scraper:
+  # Combined throughput across all workers. Playwright-driven nav is
+  # heavy (each tab triggers reCAPTCHA + Next.js client hydration),
+  # so 0.5 navs/s is a polite envelope that keeps the gateway happy
+  # without burning hours on cold reCAPTCHA solves.
+  num_workers: 2
+  qps: 0.5
+
+  # Browser-like UA. The default vbpl frontend ships a real Chrome
+  # bundle and the gateway WAF keys off both UA + reCAPTCHA score;
+  # using the ViLA-research stub gets us a 401/403 path.
+  user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+  proxy: null
+  timeout_s: 30.0
+  max_retries: 5
+  verify_tls: true
+  download_max_retries: 50
+  download_retry_delay_s: 30.0
+
+  # ---- vbpl-specific knobs (consumed by harvester / detail) ----
+
+  # Public sitemap chain. The harvester loads the index, filters to
+  # in-scope shards, and walks each one. No backend gateway hit.
+  sitemap_url: https://vbpl.vn/sitemap.xml
+
+  # Visited once per browser context to give Google reCAPTCHA v3 a
+  # warm session before the first detail navigation. Empty == use
+  # https://vbpl.vn/.
+  warmup_url: ""
+
+  # Which sitemap shards to walk. The 11 trung_uong shards cover
+  # central legal docs (~55 K); the 21 dia_phuong shards cover the
+  # 63-province set (~105 K). Empty list == both.
+  scopes: []
+
+  # Playwright knobs.
+  browser: chromium                # chromium | firefox | webkit
+  headless: true
+  nav_timeout_s: 60.0
+
+  # Per-page wait for the first /api/qtdc XHR after DOMContentLoaded.
+  # vbpl's body request can lag DOM by several seconds while
+  # reCAPTCHA + Next.js hydrate; bump if you see fetch_status="empty"
+  # rows on a network-slow host.
+  api_wait_s: 25.0
+
+  # Empty == auto-detect ~/.cache/ms-playwright/chromium-*/chrome-
+  # linux/chrome. Set explicitly only if you have a custom Chromium
+  # build to point at.
+  executable_path: ""
+
+  # Mask the most-fingerprintable webdriver tells via add_init_script
+  # so reCAPTCHA v3 doesn't insta-flag the headless tab. Disable
+  # only when diagnosing fingerprinting failures.
+  stealth: true
+
+  # Also fetch the original .pdf / .doc / .docx file from the
+  # gateway's minio backend if the captured API JSON exposes one.
+  download_files: true
+
+  # XHR signature to intercept on each detail page. Keep aligned
+  # with the gateway's prefix; Spring Boot redirects under /api so
+  # this matches both /api/qtdc/public/doc/... and any nested call.
+  api_url_substr: "/api/qtdc/public/doc/"
+
+  # Re-fetch raw shards / detail HTML even when cached on disk.
+  cache_listings: true
+  cache_details: true
+
+  # Unused for vbpl (kept for schema compatibility with anle / congbobanan).
+  listing_url: ""
+  detail_url_template: ""
+  pdf_url_template: ""
+  paginated: false
+  fetch_detail_page: false
+  fetch_head_before_download: false
+  selectors: {}
+  extra_params: {}
+  extra_headers: {}
+
+# Stage 2: parse. PDF/.docx via pypdf + docx2txt; legacy .doc via the
+# antiword/catdoc/libreoffice subprocess fallbacks shipped in
+# packages.parser.pypdf; HTML body via markdownify. The parser is
+# in-process (no Ray) so threads share one Algorithm instance; pypdf
+# releases the GIL during read so 4-8 workers scale near-linearly.
+
+parser:
+  model_id: nvidia/nemoretriever-parse
+  # local: pypdf + docx2txt + .doc subprocess only (default; cheap,
+  #        free, no NIM key). Most vbpl PDFs are digital text so
+  #        local handles them fine.
+  # nim:    nemoretriever-parse only. Needs NVIDIA_API_KEY.
+  # hybrid: pypdf first; route image-only scans (< min_local_chars)
+  #         to the NIM endpoint. Recommended once a NIM key is set.
+  runtime: local
+  num_workers: 4
+  min_local_chars: 50
+  nim_base_url: "${oc.env:NIM_BASE_URL,https://integrate.api.nvidia.com/v1}"
+  nim_tool: markdown_bbox
+  nim_dpi: 150
+  timeout_s: 120.0
+
+# Stage 3: extract. Vietnamese-aware NFC + tone canonicalization
+# upstream of the regex / structure layers so every layer sees a
+# single canonical orthography. ``run_site_layer`` is OFF for vbpl
+# because the precedent normalizer targets án lệ (Court precedents),
+# not statutes / regulations / circulars.
+
+extractor:
+  run_text_normalization: true
+  run_generic_layer: true
+  run_site_layer: false
+  run_structure_layer: true
+  llm_tier_for_ambiguous: fast
+  num_workers: 4
+  max_seq_length: "${..full_text_context}"
+
+# Stage 4: embed. NIM embedder by default (HTTP, no GPU on this host
+# needed); set runtime=hf to run nvidia/llama-nemotron-embed-1b-v2
+# locally on a GPU. Inputs come from jsonl/extract.jsonl; outputs to
+# parquet/embeddings/<doc>.parquet.
+
+embedder:
+  model_id: nvidia/llama-nemotron-embed-1b-v2
+  runtime: nim                  # nim | hf | auto
+  batch_size: 16
+  max_seq_length: 8192
+  chunking: sliding             # off | sliding | sentence
+  chunk_overlap: 256
+  model_dtype: bfloat16
+  device: auto
+
+# Stage 5: reduce. Vectorised PCA / t-SNE / UMAP + HDBSCAN on the
+# full embedding matrix. cuML on a worker with prefer_gpu=true,
+# sklearn / umap-learn / hdbscan otherwise.
+
+reducer:
+  methods: [pca, tsne, umap]
+  n_components: 2
+  prefer_gpu: true
+
+# Curator executor + Ray client config for the embed + reduce stages.
+# The first four stages (harvest / detail / parse / extract) ignore
+# this section -- they run in-process with no Ray.
+
+executor:
+  name: xenna                   # xenna | ray_actor_pool | ray_data
+  mode: streaming
+  logging_interval: 60
+  autoscale_interval_s: 180
+  cpu_allocation_percentage: 0.9
+  ignore_failures: false
+
+ray:
+  address: null                 # None | "auto" | "ray://head:10001"
+  runtime_env: {}
+  num_cpus: null
+  num_gpus: null
+
+stage_overrides:
+  embed_files_per_partition: 4
+  reduce_files_per_partition: 64

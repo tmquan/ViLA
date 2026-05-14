@@ -8,10 +8,9 @@ shared ``doc_name`` / ``markdown`` / embedding columns.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-from packages.common import SiteLayout
+from packages.common import SiteLayout, build_layout as _build_layout_common
 
 
 #: JSONL columns written by the Extractor pipeline. The first block is
@@ -92,20 +91,8 @@ EMBEDDER_JSONL_READ_FIELDS: list[str] = [
 
 
 def build_layout(cfg: Any) -> SiteLayout:
-    """Ensure every output directory exists and return the ``SiteLayout``."""
-    output_root = Path(str(cfg.output_dir)).expanduser().resolve()
-    layout = SiteLayout(output_root=output_root, host=str(cfg.host))
-    layout.ensure_dirs(
-        layout.site_root,
-        layout.pdf_dir,
-        layout.md_dir,
-        layout.jsonl_dir,
-        layout.parquet_dir,
-        layout.embeddings_dir,
-        layout.reduced_dir,
-        layout.logs_dir,
-    )
-    return layout
+    """Ensure every Curator-profile output directory exists; return layout."""
+    return _build_layout_common(cfg, profile="curator")
 
 
 __all__ = [

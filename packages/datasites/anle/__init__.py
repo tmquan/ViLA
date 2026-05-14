@@ -1,13 +1,16 @@
-"""anle.toaan.gov.vn datasite.
+"""anle.toaan.gov.vn datasite -- Vietnamese án lệ + bản án corpus.
 
-Top-level files map 1-to-1 onto the five Curator pipelines:
+Top-level files map 1-to-1 onto the five Curator pipelines + the HF
+publish path:
 
-    download.py  -> URLs     -> PDFs
-    parse.py     -> PDFs     -> markdown
-    extract.py   -> markdown -> JSONL
-    embed.py     -> JSONL    -> embeddings parquet
-    reduce.py    -> embeddings parquet -> reduced parquet
-    pipeline.py  -> registry + ``build_pipeline(cfg, name)`` dispatch
+    download.py    -> URLs     -> PDFs
+    parse.py       -> PDFs     -> markdown
+    extract.py     -> markdown -> JSONL
+    embed.py       -> JSONL    -> embeddings parquet
+    reduce.py      -> embeddings parquet -> reduced parquet
+    pipeline.py    -> registry + ``build_pipeline(cfg, name)`` dispatch
+    hf_export.py   -> JSONL    -> hf/ (parquet + README + manifest)
+    push_to_hf.py  -> hf/      -> HuggingFace dataset repo
 
 The four Curator abstract-base subclasses (URLGenerator,
 DocumentDownloader, DocumentIterator, DocumentExtractor) live under

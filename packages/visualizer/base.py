@@ -3,7 +3,8 @@
 The visualizer is no longer a pipeline stage. Every :class:`Renderer`
 takes a pandas :class:`DataFrame` and writes one or more files under
 ``out_dir``. :func:`load_pipeline_output` reads the two output trees
-the four-pipeline chain leaves on disk:
+the five-stage Curator chain (download → parse → extract → embed →
+reduce) leaves on disk:
 
     ``<host>/jsonl/*.jsonl``             (Extractor output: text + entities)
     ``<host>/parquet/reduced/*.parquet`` (Reducer output: embeddings + coords)
@@ -105,16 +106,62 @@ def load_pipeline_output(
     return jl.merge(pq, on="doc_name", how="outer", suffixes=("_jsonl", ""))
 
 
+#: Fields lifted out of the per-row ``structure.meta`` dict into
+#: top-level dataframe columns so the scatter renderer can use them
+#: as ``color_by`` keys without parsing JSON inline.
+_STRUCTURE_META_FIELDS: tuple[str, ...] = (
+    "doc_type",
+    "case_type",
+    "doc_subtype",
+    "court_level",
+    "jurisdiction",
+    "year",
+)
+
+
+def _promote_structure_meta(df: pd.DataFrame) -> pd.DataFrame:
+    """Lift selected ``structure.meta.<field>`` cells to top-level columns.
+
+    The Extractor JSONL writes the full :class:`DocumentStructure` as
+    a single nested ``structure`` dict per row. The scatter / facet
+    renderers want flat columns; this hoist makes ``case_type``,
+    ``court_level``, ``year``, ... colorable without each renderer
+    re-implementing the dict navigation.
+
+    Existing top-level columns win; if the column is already present
+    (e.g. set by an upstream stage) it's left alone.
+    """
+    if df.empty or "structure" not in df.columns:
+        return df
+
+    def _get(meta: Any, key: str) -> Any:
+        if not isinstance(meta, dict):
+            return None
+        return meta.get(key)
+
+    metas = df["structure"].map(
+        lambda s: s.get("meta") if isinstance(s, dict) else None
+    )
+    for field in _STRUCTURE_META_FIELDS:
+        if field in df.columns:
+            continue
+        df[field] = metas.map(lambda m, f=field: _get(m, f))
+    return df
+
+
 def apply_ontology(df: pd.DataFrame, onto: Ontology) -> pd.DataFrame:
     """Fill ontology-aligned columns renderers expect.
 
     Defaults ``legal_type``, ``legal_relation``, ``procedure_type``,
     ``code_id``, ``legal_arc``, ``cluster_id`` on the incoming frame
-    (any column already populated by the pipeline is left alone).
-    Returns the same frame for chaining.
+    (any column already populated by the pipeline is left alone), and
+    promotes ``structure.meta.<case_type|court_level|...>`` cells
+    into top-level columns so renderers can colour by them. Returns
+    the same frame for chaining.
     """
     if df.empty:
         return df
+    df = _promote_structure_meta(df)
     if "doc_id" not in df.columns and "doc_name" in df.columns:
         df["doc_id"] = df["doc_name"]
     if "legal_type" not in df.columns:
@@ -138,6 +185,12 @@ def apply_ontology(df: pd.DataFrame, onto: Ontology) -> pd.DataFrame:
     )
     if "cluster_id" not in df.columns:
         df["cluster_id"] = -1
+    # Replace any remaining None / NaN in the lifted meta columns
+    # with a stable "(unknown)" marker so plotly's discrete color
+    # axis doesn't drop those rows.
+    for field in _STRUCTURE_META_FIELDS:
+        if field in df.columns:
+            df[field] = df[field].fillna("(unknown)")
     return df
 
 

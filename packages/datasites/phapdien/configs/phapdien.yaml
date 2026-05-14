@@ -1,0 +1,15 @@
+_base: default.yaml
+
+# phapdien.moj.gov.vn (Cổng thông tin điện tử pháp điển)
+#
+# Public corpus path:
+#   TreeBoPD.aspx                         -> embedded jstree topics/de-muc IDs
+#   ViewBoPD.aspx?demucid=<uuid>&mapc=1   -> view shell with fileVersion
+#   ActionHandler.aspx do=html            -> full codified legal text HTML
+#
+# Keep QPS conservative: this is a SharePoint/WebForms site and the
+# content endpoint sometimes pauses under load.
+scraper:
+  qps: 0.8
+  timeout_s: 60.0
+

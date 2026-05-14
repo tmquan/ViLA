@@ -1,14 +1,15 @@
-"""Extractor pipeline: Markdown -> JSONL.
+"""Extractor pipeline factory for anle: markdown -> JSONL.
 
-Stage chain::
+Stage chain (built by
+:func:`packages.pipeline.factories.build_extract_pipeline`)::
 
     MarkdownReader(md_dir)
     -> LegalExtractStage
-    -> JsonlWriter(jsonl_dir)
+    -> JsonlPerDocWriter(jsonl_dir, fields=EXTRACTOR_JSONL_FIELDS)
 
 Reads: ``data/<host>/md/*.md`` (+ sibling ``<doc_name>.meta.json``).
-Writes: ``data/<host>/jsonl/*.jsonl`` with text + entities + precedent
-metadata (see :data:`EXTRACTOR_JSONL_FIELDS`).
+Writes: ``data/<host>/jsonl/*.jsonl`` with text + extracted entities +
+precedent metadata + structure (see :data:`EXTRACTOR_JSONL_FIELDS`).
 """
 
 from __future__ import annotations
@@ -21,33 +22,16 @@ from packages.datasites.anle._shared import (
     EXTRACTOR_JSONL_FIELDS,
     build_layout,
 )
-from packages.extractor.stage import LegalExtractStage
-from packages.pipeline.io import JsonlPerDocWriter, MarkdownReader
+from packages.pipeline.factories import build_extract_pipeline as _build
 
 
 def build_extract_pipeline(cfg: Any) -> Pipeline:
-    """Return the Extractor :class:`Pipeline`."""
-    layout = build_layout(cfg)
-    return Pipeline(
-        name=f"{cfg.host}-extract",
-        description="anle Extractor: markdown -> JSONL (legal extract).",
-        stages=[
-            MarkdownReader(
-                file_paths=str(layout.md_dir),
-                files_per_partition=int(
-                    cfg.get("stage_overrides", {}).get(
-                        "extract_files_per_partition", 8
-                    )
-                ),
-            ),
-            LegalExtractStage(cfg=cfg),
-            JsonlPerDocWriter(
-                path=str(layout.jsonl_dir),
-                doc_name_field="doc_name",
-                fields=list(EXTRACTOR_JSONL_FIELDS),
-            ),
-        ],
-        config={"host": str(cfg.host), "jsonl_dir": str(layout.jsonl_dir)},
+    """Return the anle Extractor :class:`Pipeline`."""
+    return _build(
+        cfg,
+        site="anle",
+        layout=build_layout(cfg),
+        jsonl_fields=EXTRACTOR_JSONL_FIELDS,
     )
 
 

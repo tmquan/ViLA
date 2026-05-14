@@ -1,0 +1,24 @@
+_base: default.yaml
+
+# Full-corpus crawl. vbpl.vn publishes ~160 K detail pages across
+# 11 trung_uong (central, ~55 K) + 21 dia_phuong (provincial, ~105 K)
+# sitemap shards. At 0.5 navs/s combined that's ~90 h wall-time;
+# halve `num_workers` if your host can only spare one Chromium tab,
+# or set `scopes: [trung_uong]` for the central-only ~30 h slice.
+#
+# The gateway at vbpl-bientap-gateway.moj.gov.vn uses Google
+# reCAPTCHA v3 to mint short-lived Bearer tokens. Headless Chromium
+# clears the captcha on its own; you do NOT need a paid solver
+# service. If reCAPTCHA scores you below the threshold (rare but
+# possible for cold cloud IPs), drop num_workers to 1 and run
+# headed (`--override scraper.headless=false`) so a human can
+# nudge the first warm-up.
+#
+# Run from any geography; vbpl.vn is not VN-IP gated. Set
+# `scraper.proxy=...` to route Playwright through an outbound
+# proxy if your egress is rate-limited at the network level.
+
+scraper:
+  num_workers: 2
+  qps: 0.5
+  scopes: []                  # both trung_uong + dia_phuong

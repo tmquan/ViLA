@@ -1,0 +1,46 @@
+# vbpl crawler runtime dependencies.
+#
+# Per-stage dep groups (rough split for diagnostic installs):
+#
+#   harvest  -- requests, omegaconf  (~/sitemap.xml walk, no JS)
+#   detail   -- playwright            (headless Chromium for reCAPTCHA)
+#   parse    -- pypdf, docx2txt, markdownify, beautifulsoup4
+#                + antiword on $PATH for legacy .doc (apt-installable)
+#   extract  -- ftfy, nemo-curator    (Vietnamese normalization +
+#                                      GenericExtractor + LegalStructureExtractor;
+#                                      pulled by packages.extractor)
+#
+# Install once before running:
+#
+#     pip install -r packages/datasites/vbpl/requirements.txt
+#     playwright install chromium                     # one-off, ~200 MB
+#     sudo apt-get install -y antiword                # one-off, ~150 KB
+#                                                     # (or catdoc, or libreoffice)
+#
+# omegaconf is pulled by the workspace pyproject; listing it here too
+# keeps `pip install -r requirements.txt` self-contained.
+
+# ---- harvest -----------------------------------------------------------
+requests>=2.31,<3.0
+omegaconf>=2.3,<3.0
+
+# ---- detail ------------------------------------------------------------
+playwright>=1.42,<2.0
+
+# ---- parse -------------------------------------------------------------
+pypdf>=4.0
+docx2txt>=0.8
+markdownify>=0.11
+beautifulsoup4>=4.12,<5.0
+lxml>=5.0,<6.0
+
+# ---- extract -----------------------------------------------------------
+# Pulled transitively by packages.extractor (which wires
+# nemo-curator's modifiers + the Vietnamese tone-mark canonicalizer).
+ftfy>=6.1
+nemo-curator[text_cpu]>=0.7
+
+# Used by future analyze.py / push_to_hf.py once a curation step
+# materialises a HF dataset out of extract.jsonl. Cheap enough to keep
+# in the base requirement set so the post-crawl tooling can run.
+huggingface_hub>=0.23

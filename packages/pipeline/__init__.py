@@ -1,8 +1,8 @@
-"""Cross-site pipeline helpers: executor factory + Ray client bootstrap.
+"""Cross-site pipeline helpers: executor + Ray + IO + stage factories.
 
-Per-site :class:`nemo_curator.pipeline.Pipeline` factories live under
-:mod:`packages.datasites.<site>.pipeline`; this module only hosts the
-bits that are identical across every site.
+Per-site :class:`nemo_curator.pipeline.Pipeline` builders live under
+:mod:`packages.datasites.<site>` and use the factories in this
+package to share the boilerplate across sites.
 """
 
 from packages.pipeline.executors import (
@@ -10,6 +10,12 @@ from packages.pipeline.executors import (
     build_executor,
     init_ray,
     shutdown_ray,
+)
+from packages.pipeline.factories import (
+    DEFAULT_FPP,
+    build_embed_pipeline,
+    build_extract_pipeline,
+    build_reduce_pipeline,
 )
 from packages.pipeline.io import (
     JSONL_EXTENSION,
@@ -24,6 +30,7 @@ from packages.pipeline.io import (
 )
 
 __all__ = [
+    "DEFAULT_FPP",
     "EXECUTOR_CHOICES",
     "JSONL_EXTENSION",
     "JsonlPerDocWriter",
@@ -34,7 +41,10 @@ __all__ = [
     "MarkdownReaderStage",
     "PARQUET_EXTENSION",
     "ParquetPerDocWriter",
+    "build_embed_pipeline",
     "build_executor",
+    "build_extract_pipeline",
+    "build_reduce_pipeline",
     "init_ray",
     "shutdown_ray",
 ]

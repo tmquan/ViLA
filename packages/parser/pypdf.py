@@ -1,20 +1,31 @@
 """Local pypdf / docx2txt parser backend.
 
-Pure-Python fallback when a NIM endpoint is unavailable. Supports PDF
-(via :mod:`pypdf`) and DOCX (via :mod:`docx2txt`); legacy ``.doc``
-binaries are not supported and are skipped with a warning.
+Pure-Python fallback when a NIM endpoint is unavailable. Supports:
+
+* ``%PDF`` -- via :mod:`pypdf`.
+* ``PK\\x03`` (DOCX is a zip)        -- via :mod:`docx2txt`.
+* ``\\xD0\\xCF\\x11\\xE0`` (OLE/.doc) -- best-effort via the
+  ``antiword`` / ``catdoc`` / ``libreoffice --headless`` CLI tools
+  when at least one is on ``PATH``. Pure-Python ``.doc`` extraction
+  is hard (the format is OLE-Compound + a piece-table-encoded text
+  stream) so we shell out instead of vendoring a partial parser.
 
 Dispatches by magic number so the same :meth:`parse` call handles any
 extension::
 
-    %PDF       -> pypdf
-    PK\\x03     -> docx2txt  (DOCX is a ZIP)
-    else       -> best-effort (log warning, return empty record)
+    %PDF                  -> pypdf
+    PK\\x03                -> docx2txt   (DOCX is a ZIP)
+    \\xD0\\xCF\\x11\\xE0   -> antiword | catdoc | soffice
+    else                  -> log warning, return empty record
 """
 
 from __future__ import annotations
 
 import logging
+import os
+import shutil
+import subprocess
+import tempfile
 from typing import Any
 
 from packages.parser.base import ParserAlgorithm
@@ -55,11 +66,18 @@ class PypdfParser(ParserAlgorithm):
         *,
         preserve_tables: bool = True,
     ) -> dict[str, Any]:
-        head = pdf_bytes[:4]
+        head = pdf_bytes[:8]
         if head.startswith(b"%PDF"):
             return self._parse_pdf(pdf_bytes)
         if head.startswith(b"PK\x03\x04"):
             return self._parse_docx(pdf_bytes)
+        # OLE Compound Document File (legacy MS Office binary). The
+        # 8-byte magic also matches .xls / .ppt / .msg, but vbpl /
+        # other VN .gov sites only serve .doc through this path -- we
+        # let antiword/catdoc decide and fall through to an empty
+        # record on failure.
+        if head.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+            return self._parse_doc(pdf_bytes)
         logger.warning(
             "PypdfParser: unrecognized magic %r (%d bytes) - skipping",
             head, len(pdf_bytes),
@@ -105,6 +123,167 @@ class PypdfParser(ParserAlgorithm):
             "markdown": f"## Page 1\n\n{text}",
             "confidence": None,
         }
+
+    @staticmethod
+    def _parse_doc(data: bytes) -> dict[str, Any]:
+        """Extract text from a legacy ``.doc`` (Word 97-2003 / OLE) blob.
+
+        Pure-Python ``.doc`` parsing requires walking the OLE compound
+        document, decoding the WordDocument stream, and following the
+        piece table -- there is no maintained pip-installable library
+        that does this end-to-end. We shell out instead.
+
+        Tries, in order:
+
+        1. ``antiword``  (best Vietnamese diacritic preservation,
+           apt-installable as ``apt install antiword``).
+        2. ``catdoc``    (decent fallback,
+           apt-installable as ``apt install catdoc``).
+        3. ``soffice``   / ``libreoffice`` headless conversion to
+           plain text (heaviest but always works on a host with
+           LibreOffice installed).
+
+        If none are present on PATH, logs a one-line install hint and
+        returns an empty record so the upstream pipeline can flag the
+        document with ``parser_model="local/pypdf"`` + zero markdown
+        and a follow-up run can re-parse it once the binary is
+        installed.
+        """
+        text = (
+            _try_antiword(data)
+            or _try_catdoc(data)
+            or _try_libreoffice(data)
+        )
+        if not text:
+            logger.warning(
+                "PypdfParser: .doc extraction yielded no text. Install "
+                "one of `antiword`, `catdoc`, or `libreoffice` so this "
+                "format isn't dropped (apt-get install antiword)."
+            )
+            return {"pages": [], "markdown": "", "confidence": None}
+        # Like DOCX, .doc has no firm page model in the OLE stream.
+        return {
+            "pages": [{"page_number": 1, "markdown": text, "blocks": []}],
+            "markdown": f"## Page 1\n\n{text}",
+            "confidence": None,
+        }
+
+
+# ---- .doc subprocess fallbacks --------------------------------------------
+
+
+def _try_antiword(data: bytes) -> str:
+    """Run ``antiword`` over ``data`` from a temp file. Returns the text or ``""``."""
+    if shutil.which("antiword") is None:
+        return ""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".doc", delete=False) as f:
+            f.write(data)
+            path = f.name
+        try:
+            # ``-m UTF-8.txt`` requests a UTF-8 mapping. -w 0 disables
+            # column wrapping so paragraphs stay on one line where the
+            # downstream extractor can re-split them on sentence
+            # boundaries.
+            out = subprocess.run(
+                ["antiword", "-m", "UTF-8.txt", "-w", "0", path],
+                capture_output=True, timeout=60, check=False,
+            )
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+    except (subprocess.SubprocessError, OSError) as exc:
+        logger.warning("antiword crashed: %s", exc)
+        return ""
+    if out.returncode != 0:
+        logger.debug(
+            "antiword rc=%d stderr=%r", out.returncode, out.stderr[:200],
+        )
+        return ""
+    return _decode_best_effort(out.stdout).strip()
+
+
+def _try_catdoc(data: bytes) -> str:
+    """Run ``catdoc`` over ``data``. Returns the text or ``""``."""
+    if shutil.which("catdoc") is None:
+        return ""
+    try:
+        # catdoc accepts stdin via ``-`` but prefers a real path so
+        # the OLE parser can seek; use a temp file.
+        with tempfile.NamedTemporaryFile(suffix=".doc", delete=False) as f:
+            f.write(data)
+            path = f.name
+        try:
+            out = subprocess.run(
+                ["catdoc", "-d", "utf-8", "-w", path],
+                capture_output=True, timeout=60, check=False,
+            )
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+    except (subprocess.SubprocessError, OSError) as exc:
+        logger.warning("catdoc crashed: %s", exc)
+        return ""
+    if out.returncode != 0:
+        logger.debug(
+            "catdoc rc=%d stderr=%r", out.returncode, out.stderr[:200],
+        )
+        return ""
+    return _decode_best_effort(out.stdout).strip()
+
+
+def _try_libreoffice(data: bytes) -> str:
+    """Convert via ``soffice --headless`` to ``.txt`` then read it back.
+
+    This is the heaviest fallback (LibreOffice spins up a one-off
+    process per call) but it's the most semantics-preserving for
+    Vietnamese diacritics + tables.
+    """
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if soffice is None:
+        return ""
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            in_path = os.path.join(tmpdir, "in.doc")
+            with open(in_path, "wb") as f:
+                f.write(data)
+            out = subprocess.run(
+                [
+                    soffice, "--headless", "--convert-to", "txt:Text (encoded):UTF8",
+                    "--outdir", tmpdir, in_path,
+                ],
+                capture_output=True, timeout=120, check=False,
+            )
+            if out.returncode != 0:
+                logger.debug(
+                    "soffice rc=%d stderr=%r",
+                    out.returncode, out.stderr[:200],
+                )
+                return ""
+            txt_path = os.path.join(tmpdir, "in.txt")
+            if not os.path.exists(txt_path):
+                return ""
+            with open(txt_path, encoding="utf-8", errors="replace") as f:
+                return f.read().strip()
+    except (subprocess.SubprocessError, OSError) as exc:
+        logger.warning("soffice crashed: %s", exc)
+        return ""
+
+
+def _decode_best_effort(blob: bytes) -> str:
+    """Decode a subprocess stdout blob trying UTF-8 then CP1258."""
+    if not blob:
+        return ""
+    for enc in ("utf-8", "cp1258", "latin-1"):
+        try:
+            return blob.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return blob.decode("utf-8", errors="replace")
 
 
 __all__ = ["PypdfParser"]

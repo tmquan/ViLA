@@ -38,6 +38,44 @@ DEFAULT_BACKOFF_FACTOR = 1.5
 DEFAULT_DOWNLOAD_MAX_RETRIES = 50
 DEFAULT_DOWNLOAD_RETRY_DELAY_S = 30.0
 
+# DNS-failure retry policy. Local stub resolvers (systemd-resolved) and
+# upstream nameservers occasionally raise EAI_AGAIN (-3, "Temporary
+# failure in name resolution") for tens of seconds at a time, especially
+# under concurrent worker load against .gov.vn hosts. The exponential
+# request retry budget (~12s) gives up too early for that, so we treat
+# DNS errors as a separate, longer, flatter retry channel.
+DEFAULT_DNS_MAX_RETRIES = 12
+DEFAULT_DNS_RETRY_DELAY_S = 5.0
+
+
+def _is_dns_error(exc: BaseException) -> bool:
+    """Return True if ``exc`` is (or was caused by) a DNS resolution failure.
+
+    ``requests`` wraps urllib3's ``NameResolutionError`` inside
+    ``ConnectionError`` / ``MaxRetryError``. We walk the cause chain
+    rather than match on string content so the check survives
+    library-internal message changes.
+    """
+    try:
+        from urllib3.exceptions import NameResolutionError
+    except ImportError:  # pragma: no cover - urllib3 is a hard dep of requests
+        NameResolutionError = ()  # type: ignore[assignment,misc]
+
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if NameResolutionError and isinstance(cur, NameResolutionError):
+            return True
+        # socket.gaierror also surfaces as the original cause on some
+        # platforms; EAI_AGAIN == -3, EAI_NONAME == -2.
+        import socket
+
+        if isinstance(cur, socket.gaierror):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
 
 class TokenBucket:
     """Simple thread-safe token-bucket limiter.
@@ -89,6 +127,8 @@ class PoliteSession:
         verify_tls: bool = True,
         download_max_retries: int = DEFAULT_DOWNLOAD_MAX_RETRIES,
         download_retry_delay_s: float = DEFAULT_DOWNLOAD_RETRY_DELAY_S,
+        dns_max_retries: int = DEFAULT_DNS_MAX_RETRIES,
+        dns_retry_delay_s: float = DEFAULT_DNS_RETRY_DELAY_S,
     ) -> None:
         self._bucket = TokenBucket(qps=qps)
         self._session = requests.Session()
@@ -112,6 +152,11 @@ class PoliteSession:
         # 50) than the page GETs (exponential 1.5^n x 5).
         self._download_max_retries = download_max_retries
         self._download_retry_delay_s = download_retry_delay_s
+        # DNS retry policy. Counts dns retries separately from
+        # max_retries so a one-off resolver hiccup doesn't burn the
+        # generic retry budget meant for 5xx / connection resets.
+        self._dns_max_retries = dns_max_retries
+        self._dns_retry_delay_s = dns_retry_delay_s
 
     def get(self, url: str, **kwargs: Any) -> requests.Response:
         """HTTP GET with rate limit + retry."""
@@ -177,6 +222,7 @@ class PoliteSession:
         )
 
         attempt = 0
+        dns_attempt = 0
         tmp_path = dest_path + ".part"
         last_error: str | None = None
         while True:
@@ -267,6 +313,22 @@ class PoliteSession:
                     return written
             except requests.RequestException as exc:
                 last_error = repr(exc)
+                # DNS errors don't count toward ``attempt``: they're
+                # almost always a transient resolver failure unrelated
+                # to the upstream server, and we don't want a brief
+                # systemd-resolved hiccup to burn 50 PDF retry slots.
+                if _is_dns_error(exc):
+                    attempt -= 1
+                    dns_attempt += 1
+                    dns_delay = self._dns_retry_delay_s
+                    logger.warning(
+                        "download DNS error on %s; dns attempt %d/%d; sleep %.1fs: %s",
+                        url, dns_attempt, self._dns_max_retries, dns_delay, exc,
+                    )
+                    if dns_attempt >= self._dns_max_retries:
+                        raise
+                    time.sleep(dns_delay)
+                    continue
                 logger.warning(
                     "download error on %s; attempt %d/%d; sleep %.1fs: %s",
                     url, attempt, max_attempts, delay, exc,
@@ -279,11 +341,27 @@ class PoliteSession:
     def _request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
         kwargs.setdefault("timeout", self._timeout)
         attempt = 0
+        dns_attempt = 0
         while True:
             self._bucket.acquire()
             try:
                 resp = self._session.request(method, url, **kwargs)
             except requests.RequestException as exc:
+                # DNS errors get their own (longer, flat-delay) retry
+                # channel because the local stub resolver can stall for
+                # tens of seconds and the exponential budget below
+                # would give up well before the resolver recovers.
+                if _is_dns_error(exc):
+                    dns_attempt += 1
+                    if dns_attempt >= self._dns_max_retries:
+                        raise
+                    delay = self._dns_retry_delay_s
+                    logger.warning(
+                        "DNS error on %s (dns attempt %d/%d): %s; retry in %.1fs",
+                        url, dns_attempt, self._dns_max_retries, exc, delay,
+                    )
+                    time.sleep(delay)
+                    continue
                 attempt += 1
                 if attempt >= self._max_retries:
                     raise
@@ -339,4 +417,10 @@ def session_from_scraper_cfg(cfg: Any) -> PoliteSession:
         verify_tls=bool(cfg.scraper.verify_tls),
         download_max_retries=int(cfg.scraper.get("download_max_retries", 50)),
         download_retry_delay_s=float(cfg.scraper.get("download_retry_delay_s", 30.0)),
+        dns_max_retries=int(
+            cfg.scraper.get("dns_max_retries", DEFAULT_DNS_MAX_RETRIES)
+        ),
+        dns_retry_delay_s=float(
+            cfg.scraper.get("dns_retry_delay_s", DEFAULT_DNS_RETRY_DELAY_S)
+        ),
     )

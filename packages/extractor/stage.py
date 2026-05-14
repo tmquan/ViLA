@@ -20,12 +20,14 @@ from nemo_curator.stages.resources import Resources
 from nemo_curator.tasks import DocumentBatch
 
 from packages.extractor.generic import GenericExtractor
+from packages.extractor.normalization import normalize_text
 from packages.extractor.precedent import PrecedentExtractor
+from packages.extractor.structure import LegalStructureExtractor
 
 
 @dataclass
 class LegalExtractStage(ProcessingStage[DocumentBatch, DocumentBatch]):
-    """Run the generic (always) + precedent (optional) extractors."""
+    """Run the generic (always) + precedent (optional) + structure layers."""
 
     cfg: Any
     name: str = "legal_extract"
@@ -34,14 +36,16 @@ class LegalExtractStage(ProcessingStage[DocumentBatch, DocumentBatch]):
 
     _generic: GenericExtractor | None = field(default=None, init=False, repr=False)
     _precedent: PrecedentExtractor | None = field(default=None, init=False, repr=False)
+    _structure: LegalStructureExtractor | None = field(default=None, init=False, repr=False)
 
     def inputs(self) -> tuple[list[str], list[str]]:
         return (["data"], ["markdown"])
 
     def outputs(self) -> tuple[list[str], list[str]]:
         # We always set the generic-layer columns. The precedent-layer
-        # columns are also always emitted (None-valued when the site
-        # layer is disabled) so schemas stay stable across sites.
+        # and structure-layer columns are also always emitted
+        # (None-valued when their layer is disabled) so schemas stay
+        # stable across sites.
         return (
             ["data"],
             [
@@ -54,20 +58,36 @@ class LegalExtractStage(ProcessingStage[DocumentBatch, DocumentBatch]):
                 "applied_article_number",
                 "applied_article_clause",
                 "principle_text",
+                "structure",
             ],
         )
 
     def setup(self, worker_metadata: WorkerMetadata | None = None) -> None:
         self._generic = GenericExtractor()
         self._precedent = PrecedentExtractor()
+        self._structure = LegalStructureExtractor()
 
     def process(self, task: DocumentBatch) -> DocumentBatch:
-        if self._generic is None or self._precedent is None:
+        if (
+            self._generic is None
+            or self._precedent is None
+            or self._structure is None
+        ):
             self.setup(None)
-        assert self._generic is not None and self._precedent is not None
+        assert (
+            self._generic is not None
+            and self._precedent is not None
+            and self._structure is not None
+        )
 
         run_generic = bool(self.cfg.extractor.run_generic_layer)
         run_site = bool(self.cfg.extractor.run_site_layer)
+        run_structure = bool(
+            getattr(self.cfg.extractor, "run_structure_layer", True)
+        )
+        run_normalize = bool(
+            getattr(self.cfg.extractor, "run_text_normalization", True)
+        )
 
         df = task.to_pandas().copy()
 
@@ -80,10 +100,22 @@ class LegalExtractStage(ProcessingStage[DocumentBatch, DocumentBatch]):
         applied_numbers: list[int | None] = []
         applied_clauses: list[int | None] = []
         principle_texts: list[str | None] = []
+        structures: list[dict[str, Any] | None] = []
+        normalized_markdowns: list[str] = []
 
         for _, row in df.iterrows():
             doc_id = str(row.get("doc_name") or row.get("doc_id") or "")
             markdown = str(row.get("markdown") or "")
+            # Canonicalize Unicode + Vietnamese tone-mark orthography +
+            # PDF whitespace artefacts before any layer inspects the
+            # text. Lets every regex in the layers below assume a
+            # single canonical form (NFC, modern orthography). The
+            # normalized markdown overwrites the input column so
+            # char-spans in `extracted` and `structure` index into
+            # the same string that lands in JSONL.
+            if run_normalize and markdown:
+                markdown = normalize_text(markdown)
+            normalized_markdowns.append(markdown)
             generic = self._generic.extract(doc_id=doc_id, markdown=markdown)
 
             text_hashes.append(generic.text_hash)
@@ -120,6 +152,18 @@ class LegalExtractStage(ProcessingStage[DocumentBatch, DocumentBatch]):
                 applied_clauses.append(None)
                 principle_texts.append(None)
 
+            if run_structure:
+                structure = self._structure.extract(
+                    doc_id=doc_id,
+                    markdown=markdown,
+                    scraper_metadata=_row_scraper_metadata(row),
+                )
+                structures.append(structure.to_jsonable())
+            else:
+                structures.append(None)
+
+        if run_normalize:
+            df["markdown"] = normalized_markdowns
         df["text_hash"] = text_hashes
         df["char_len"] = char_lens
         df["extracted"] = extracted_col
@@ -129,6 +173,7 @@ class LegalExtractStage(ProcessingStage[DocumentBatch, DocumentBatch]):
         df["applied_article_number"] = applied_numbers
         df["applied_article_clause"] = applied_clauses
         df["principle_text"] = principle_texts
+        df["structure"] = structures
 
         return DocumentBatch(
             task_id=task.task_id,
@@ -140,7 +185,12 @@ class LegalExtractStage(ProcessingStage[DocumentBatch, DocumentBatch]):
 
 
 def _row_scraper_metadata(row: Any) -> dict[str, Any]:
-    """Collect scraper-supplied fields from a dataframe row for the precedent extractor."""
+    """Collect scraper-supplied fields from a dataframe row.
+
+    Read by the precedent extractor (legal-citation normalisation) and
+    by the structure extractor (header-meta hints when the parser
+    output is too noisy to recover them from the markdown alone).
+    """
     keys = (
         "precedent_number",
         "adopted_date",
@@ -149,6 +199,8 @@ def _row_scraper_metadata(row: Any) -> dict[str, Any]:
         "court",
         "source_judgment",
         "source_case",
+        "title",
+        "doc_type",
     )
     out: dict[str, Any] = {}
     for k in keys:

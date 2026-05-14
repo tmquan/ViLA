@@ -24,97 +24,38 @@ under nemo_curator's :class:`Pipeline` / executor stack: pbgdpl serves
 HTML-only Q&A pairs with no PDF / OCR step, so the heavyweight Ray
 plumbing is unnecessary. Concurrency comes from a thread pool sharing
 one rate-limited :class:`packages.common.PoliteSession`.
+
+All real work is delegated to
+:func:`packages.common.runner.run_crawler_site`; this module only
+encodes the per-site pipeline registry + module wiring.
 """
 
 from __future__ import annotations
 
-import argparse
-import logging
 import sys
-from pathlib import Path
 
-from packages.common import (
-    apply_log_level,
-    build_arg_parser,
-    find_site_config,
-    load_and_override,
-)
-from packages.common.schemas import PipelineCfg
+from packages.common.runner import run_crawler_site
 from packages.datasites.pbgdpl.scraper import (
     ALL_PIPELINES_ORDER,
     PIPELINES,
     run_pipeline,
 )
 
-logger = logging.getLogger(__name__)
 
-SITE = "pbgdpl"
-_PIPELINE_CHOICES = [*PIPELINES.keys(), "all"]
-
-
-def _build_parser() -> argparse.ArgumentParser:
-    parser = build_arg_parser(description=f"Run the {SITE} crawler.")
-    parser.add_argument(
-        "--pipeline",
-        default="all",
-        choices=_PIPELINE_CHOICES,
-        help=(
+def main(argv: list[str] | None = None) -> int:
+    return run_crawler_site(
+        site="pbgdpl",
+        pipelines=PIPELINES,
+        all_order=ALL_PIPELINES_ORDER,
+        run_pipeline=run_pipeline,
+        description="Run the pbgdpl crawler.",
+        pipeline_help=(
             "Which stage to run. 'all' runs harvest -> detail in sequence; "
             "individual names re-run one stage against the prior stage's "
             "on-disk output."
         ),
+        argv=argv,
     )
-    return parser
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
-    apply_log_level(args.log_level)
-
-    config_path = (
-        Path(args.config).expanduser().resolve()
-        if args.config
-        else find_site_config(args.config_name or SITE)
-    )
-
-    overrides = list(args.override)
-    # ``--executor`` / ``--ray-address`` are accepted for CLI symmetry
-    # with the other datasites but ignored: this crawler does not
-    # bootstrap Ray. We log a hint rather than silently dropping the
-    # flags so a user trying to wire pbgdpl into their Ray launcher
-    # notices the discrepancy.
-    if args.executor or args.ray_address:
-        logger.info(
-            "ignoring --executor / --ray-address (pbgdpl runs in-process)",
-        )
-    if args.limit is not None:
-        overrides.append(f"limit={args.limit}")
-    if args.output:
-        overrides.append(
-            f"output_dir={str(Path(args.output).expanduser().resolve())}"
-        )
-
-    cfg = load_and_override(
-        config_path=config_path,
-        overrides=overrides,
-        schema_cls=PipelineCfg,
-    )
-
-    selected: list[str] = (
-        list(ALL_PIPELINES_ORDER) if args.pipeline == "all" else [args.pipeline]
-    )
-    logger.info("running pipelines: %s", selected)
-
-    rc = 0
-    try:
-        for name in selected:
-            logger.info("=== pipeline %s ===", name)
-            out_path = run_pipeline(cfg, name)
-            logger.info("pipeline %s finished: %s", name, out_path)
-    except Exception:
-        logger.exception("pipeline run failed")
-        rc = 1
-    return rc
 
 
 if __name__ == "__main__":

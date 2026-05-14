@@ -1,0 +1,57 @@
+# Default config for the phapdien crawler.
+#
+# OmegaConf-based. Use `_base: default.yaml` from a sibling file to
+# override any subset of this; lists are REPLACED, mappings are
+# DEEP-MERGED. CLI dotlist overrides via `--override path.to.key=value`
+# are applied last.
+#
+# Like pbgdpl (and unlike anle / congbobanan) phapdien serves
+# HTML-only article-level content (no PDF, no OCR), so the parser /
+# extractor / embedder / reducer sections are not consumed by this
+# crawler. They are kept in the typed PipelineCfg schema and left at
+# their schema defaults so a future curation step can pick up where
+# this crawler stops without a config-shape migration.
+
+host: phapdien.moj.gov.vn
+output_dir: ./data
+full_text_context: 32768
+
+scraper:
+  num_workers: 1               # single-worker on a polite envelope
+  qps: 0.8
+  user_agent: "ViLA-research/0.1 (+https://example.vn/contact)"
+  proxy: null
+  timeout_s: 60.0
+  max_retries: 5
+  verify_tls: true
+  cache_details: true
+
+# The four downstream stages below have no consumer in phapdien yet;
+# they are kept so a future curation pipeline can read this same
+# config without re-shaping it.
+
+parser:
+  model_id: nvidia/nemoretriever-parse
+  runtime: hybrid
+  num_workers: 4
+
+extractor:
+  run_text_normalization: true
+  run_generic_layer: true
+  run_site_layer: false
+  run_structure_layer: true
+  llm_tier_for_ambiguous: fast
+  max_seq_length: "${..full_text_context}"
+
+embedder:
+  model_id: nvidia/llama-nemotron-embed-1b-v2
+  runtime: nim
+  batch_size: 16
+  max_seq_length: 8192
+  chunking: sliding
+  chunk_overlap: 256
+
+reducer:
+  methods: [pca, tsne, umap]
+  n_components: 2
+  prefer_gpu: true

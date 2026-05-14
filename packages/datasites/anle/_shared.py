@@ -1,17 +1,17 @@
 """Shared helpers for the five anle pipeline factories.
 
-Holds the output-path layout builder and the three field lists that
-the writer stages use to keep the JSONL (text) and parquet (vector)
+Re-exports the canonical :func:`packages.common.build_layout` under
+the ``"curator"`` profile and declares the three field lists that the
+writer stages use to keep the JSONL (text) and parquet (vector)
 schemas consistent across ``download`` / ``parse`` / ``extract`` /
 ``embed`` / ``reduce``.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-from packages.common import SiteLayout
+from packages.common import SiteLayout, build_layout as _build_layout_common
 
 
 #: JSONL columns written by the Extractor pipeline.
@@ -36,6 +36,10 @@ EXTRACTOR_JSONL_FIELDS: list[str] = [
     "applied_article_clause",
     "principle_text",
     "court",
+    # Hierarchical structure (DocumentMeta + sections + paragraphs +
+    # sentences). Populated by LegalStructureExtractor when
+    # cfg.extractor.run_structure_layer is true.
+    "structure",
 ]
 
 #: Parquet columns written by the Embedder pipeline. ``doc_name`` +
@@ -73,20 +77,8 @@ EMBEDDER_JSONL_READ_FIELDS: list[str] = ["doc_name", "text_hash", "markdown"]
 
 
 def build_layout(cfg: Any) -> SiteLayout:
-    """Ensure every output directory exists and return the ``SiteLayout``."""
-    output_root = Path(str(cfg.output_dir)).expanduser().resolve()
-    layout = SiteLayout(output_root=output_root, host=str(cfg.host))
-    layout.ensure_dirs(
-        layout.site_root,
-        layout.pdf_dir,
-        layout.md_dir,
-        layout.jsonl_dir,
-        layout.parquet_dir,
-        layout.embeddings_dir,
-        layout.reduced_dir,
-        layout.logs_dir,
-    )
-    return layout
+    """Ensure every Curator-profile output directory exists; return layout."""
+    return _build_layout_common(cfg, profile="curator")
 
 
 __all__ = [

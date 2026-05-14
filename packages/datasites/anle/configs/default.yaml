@@ -26,6 +26,12 @@ scraper:
   # the server on recovery.
   download_max_retries: 50       # attempts per PDF before giving up
   download_retry_delay_s: 30.0   # flat delay between attempts
+  # DNS resolution failures (EAI_AGAIN) are retried on a separate
+  # longer-budget channel: a transient systemd-resolved hiccup
+  # shouldn't burn the request/download retry budgets above (which
+  # are tuned for 5xx / connection resets).
+  dns_max_retries: 12
+  dns_retry_delay_s: 5.0
   listing_url: https://anle.toaan.gov.vn/webcenter/portal/anle/anle
   detail_url_template: https://anle.toaan.gov.vn/webcenter/portal/anle/chitietanle?dDocName={doc_name}
   listing_pages: []           # override to enumerate paged listings
@@ -59,8 +65,10 @@ parser:
   timeout_s: 120.0
 
 extractor:
+  run_text_normalization: true   # NFC + Vietnamese tone canonicalization + PDF ws cleanup
   run_generic_layer: true
   run_site_layer: true
+  run_structure_layer: true
   llm_tier_for_ambiguous: fast
   max_seq_length: "${..full_text_context}"
 
@@ -85,6 +93,13 @@ reducer:
 
 visualizer:
   color_by:
+    # Structure-extractor meta (lifted from structure.meta into
+    # top-level columns by packages.visualizer.base._promote_structure_meta).
+    - case_type            # dan_su / hinh_su / hon_nhan_gia_dinh / ...
+    - doc_type             # ban_an / quyet_dinh / an_le / ...
+    - doc_subtype          # so_tham / phuc_tham / giam_doc_tham / ...
+    - court_level          # huyen / tinh / cap_cao / toi_cao
+    # Ontology-aligned + clustering
     - legal_type
     - legal_relation
     - procedure_type

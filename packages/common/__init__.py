@@ -14,9 +14,15 @@ Public surface:
                           packages/datasites/<name>/configs/<name>.yaml.
     PipelineCfg         - top-level OmegaConf-structured schema.
     ExecutorCfg / RayCfg - executor + Ray-client config.
+
+The :mod:`packages.common.hf` submodule is intentionally NOT
+re-exported here so importing ``packages.common`` doesn't pay for
+importing ``huggingface_hub`` / ``pyarrow`` (those are heavy and only
+needed when actually publishing). Use ``from packages.common.hf
+import ...`` directly.
 """
 
-from packages.common.base import SiteLayout
+from packages.common.base import SiteLayout, build_layout
 from packages.common.cli import (
     EXECUTOR_CHOICES,
     apply_log_level,
@@ -47,6 +53,7 @@ __all__ = [
     "apply_log_level",
     "apply_overrides",
     "build_arg_parser",
+    "build_layout",
     "find_site_config",
     "load_and_override",
     "load_config",

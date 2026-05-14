@@ -75,8 +75,10 @@ parser:
   num_workers: 4
 
 extractor:
+  run_text_normalization: true
   run_generic_layer: true
   run_site_layer: false
+  run_structure_layer: true
   llm_tier_for_ambiguous: fast
   max_seq_length: "${..full_text_context}"
 
