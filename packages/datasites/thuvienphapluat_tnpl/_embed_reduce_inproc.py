@@ -38,6 +38,7 @@ disabled.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -162,13 +163,44 @@ def _embed_column(
     *,
     batch_size: int,
     label: str,
+    cache_path: Path | None = None,
 ) -> np.ndarray:
     """Embed ``texts`` row-by-row, returning an ``(N, D)`` array.
 
     Rows with empty text are replaced by zero vectors of the same dim
     so the matrix shape stays rectangular and row-index alignment with
     the source dataframe is preserved.
+
+    When ``cache_path`` is given, the resulting matrix is saved to disk
+    (``.npy``) alongside a ``.fingerprint`` file recording
+    ``model_id + sha256(texts)``. On the next call with matching
+    fingerprint the cache is reloaded verbatim, so a crash in a later
+    reduce / cluster step never costs the (expensive) embedding pass.
     """
+    fingerprint: str | None = None
+    if cache_path is not None:
+        fp_data = (
+            backend.model_id + "\0" + "\0".join(texts)
+        ).encode("utf-8", errors="replace")
+        fingerprint = hashlib.sha256(fp_data).hexdigest()
+        meta_path = cache_path.with_suffix(".fingerprint")
+        if cache_path.exists() and meta_path.exists():
+            try:
+                if meta_path.read_text(encoding="utf-8").strip() == fingerprint:
+                    arr = np.load(cache_path)
+                    if arr.shape[0] == len(texts):
+                        logger.info(
+                            "%s: loaded cached embeddings %s shape=%s",
+                            label, cache_path.name, arr.shape,
+                        )
+                        return arr.astype(np.float32)
+                    logger.warning(
+                        "%s: cache row mismatch (%d vs %d); recomputing",
+                        label, arr.shape[0], len(texts),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("%s: cache load failed (%s); recomputing", label, exc)
+
     n = len(texts)
     out_rows: list[list[float]] = [None] * n  # type: ignore[list-item]
 
@@ -188,8 +220,6 @@ def _embed_column(
             done = min(batch_start + batch_size, len(non_empty_idx))
             logger.info("  %s embedded %d / %d", label, done, len(non_empty_idx))
 
-    # Probe the dim from the first non-empty embedding (after the loop
-    # `backend.embedding_dim` may also be set; we trust the actual output).
     dim = 0
     for v in out_rows:
         if v:
@@ -202,26 +232,88 @@ def _embed_column(
         if v is None or not v:
             out_rows[i] = [0.0] * dim
 
-    return np.asarray(out_rows, dtype=np.float32)
+    matrix = np.asarray(out_rows, dtype=np.float32)
+
+    if cache_path is not None and fingerprint is not None:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        np.save(cache_path, matrix)
+        cache_path.with_suffix(".fingerprint").write_text(fingerprint, encoding="utf-8")
+        logger.info("%s: cached embeddings -> %s", label, cache_path)
+
+    return matrix
+
+
+#: Above this row count, t-SNE is skipped by default -- sklearn's
+#: Barnes-Hut implementation is O(N log N) but with a large constant
+#: that makes 16k+ rows take 30+ min and risks loky-worker semaphore
+#: leaks on macOS. UMAP gives an equivalent (often better) projection
+#: in seconds on the same matrix.
+_TSNE_SKIP_ABOVE_N: int = 5_000
+
+#: When the embedder produces >50d vectors and the corpus is large
+#: enough that running t-SNE / UMAP directly is expensive, we first
+#: PCA-reduce to this intermediate dimensionality. Tip from sklearn
+#: docs: "It is highly recommended to use another dimensionality
+#: reduction method (e.g. PCA for dense data ... to reduce the number
+#: of dimensions to a reasonable amount (e.g. 50) if the number of
+#: features is very high."
+_PCA_PREREDUCE_DIM: int = 50
 
 
 def _reduce(matrix: np.ndarray, *, methods: list[str], n_components: int, prefer_gpu: bool) -> dict[str, np.ndarray]:
-    """Run every method in ``methods`` and return a dict slug -> coords."""
+    """Run every method in ``methods`` and return a dict slug -> coords.
+
+    Performance shortcuts:
+
+    * For high-dim input (>``_PCA_PREREDUCE_DIM`` features) we PCA-
+      prereduce to ``_PCA_PREREDUCE_DIM`` dimensions before feeding
+      t-SNE / UMAP. The ``"pca"`` output column still returns the
+      2D projection.
+    * On corpora above ``_TSNE_SKIP_ABOVE_N`` rows, t-SNE is silently
+      skipped (and ``"tsne_x/y"`` will be absent from the parquet);
+      UMAP is the recommended replacement at that scale.
+    """
     algos = {
         "pca":  PCAReducer(),
         "tsne": TSNEReducer(),
         "umap": UMAPReducer(),
     }
+    n_samples, n_features = matrix.shape
+
+    # PCA-prereduce a copy used as input to t-SNE / UMAP. We always
+    # output a full 2D PCA projection from the original matrix into
+    # the "pca" slot, since PCA is fast even on (16k, 768).
+    matrix_for_manifold = matrix
+    if n_features > _PCA_PREREDUCE_DIM:
+        logger.info(
+            "  PCA pre-reduce: %s -> (%d, %d) for manifold methods",
+            matrix.shape, n_samples, _PCA_PREREDUCE_DIM,
+        )
+        from sklearn.decomposition import PCA
+        matrix_for_manifold = PCA(
+            n_components=min(_PCA_PREREDUCE_DIM, n_samples, n_features),
+            random_state=0,
+        ).fit_transform(matrix).astype(np.float32)
+
     out: dict[str, np.ndarray] = {}
     for m in methods:
         algo = algos.get(m)
         if algo is None:
             logger.warning("unknown reducer method %r; skipping", m)
             continue
-        logger.info("  reducer %s: fit_transform on %s", m, matrix.shape)
+        if m == "tsne" and n_samples > _TSNE_SKIP_ABOVE_N:
+            logger.warning(
+                "  reducer tsne: skipped (n=%d > %d); UMAP is the preferred "
+                "manifold projection at this scale",
+                n_samples, _TSNE_SKIP_ABOVE_N,
+            )
+            continue
+        # PCA runs on the full-rank matrix; t-SNE / UMAP on the prereduced.
+        input_mat = matrix if m == "pca" else matrix_for_manifold
+        logger.info("  reducer %s: fit_transform on %s", m, input_mat.shape)
         try:
             out[m] = np.asarray(algo.fit_transform(
-                matrix, n_components=n_components, prefer_gpu=prefer_gpu,
+                input_mat, n_components=n_components, prefer_gpu=prefer_gpu,
             ), dtype=np.float32)
         except Exception as exc:  # noqa: BLE001
             logger.warning("  reducer %s failed (%s); skipping", m, exc)
@@ -280,6 +372,13 @@ def run(
     parquet_dir.mkdir(parents=True, exist_ok=True)
     out_path = parquet_dir / "terms_reduced.parquet"
 
+    # Per-language embedding cache. Re-running the driver after a
+    # downstream (reducer / cluster) crash reuses the .npy verbatim
+    # when the fingerprint (model_id + text hash) is unchanged, so 25
+    # minutes of CPU encoding never have to be redone.
+    cache_dir = parquet_dir.parent / "embeddings"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
     batch_size_eff = int(embed_batch_size or cfg.embedder.batch_size)
     max_chars_eff = int(
         max_chars
@@ -302,8 +401,16 @@ def run(
         type(backend).__name__, backend.model_id, backend.max_seq_length,
     )
 
-    emb_vi = _embed_column(backend, df["text_vi"].tolist(), batch_size=batch_size_eff, label="VI")
-    emb_en = _embed_column(backend, df["text_en"].tolist(), batch_size=batch_size_eff, label="EN")
+    emb_vi = _embed_column(
+        backend, df["text_vi"].tolist(),
+        batch_size=batch_size_eff, label="VI",
+        cache_path=cache_dir / "embeddings_vi.npy",
+    )
+    emb_en = _embed_column(
+        backend, df["text_en"].tolist(),
+        batch_size=batch_size_eff, label="EN",
+        cache_path=cache_dir / "embeddings_en.npy",
+    )
     embedding_dim = emb_vi.shape[1]
     logger.info("embeddings: VI=%s, EN=%s, dim=%d", emb_vi.shape, emb_en.shape, embedding_dim)
 
