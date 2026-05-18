@@ -1,0 +1,35 @@
+_base: default.yaml
+
+# thuvienphapluat.vn /tnpl/ — legal-terminology dictionary
+#
+# /tnpl/home server-renders only the most-recent ~20 ids + the LinhVuc
+# taxonomy. Full enumeration is brute-force ID probe over
+# [1, max_id + id_buffer]. At the default 2 QPS / 4 workers a fresh
+# run hits the polite envelope at ~2.4 hours for ~17k probes.
+#
+# Increase scraper.qps cautiously: the host is Cloudflare-fronted and
+# starts returning intermittent 5xx above ~5 QPS in our probes.
+
+scraper:
+  num_workers: 4
+  qps: 2.0
+  id_buffer: 200
+
+  # /tnpl/home is Cloudflare-fronted and fingerprints request SHAPE on
+  # top of User-Agent: the absence of Sec-Ch-Ua-* and Sec-Fetch-* hints
+  # is enough to trigger a sustained 403 even from clean residential
+  # IPs. The header set below mirrors what a real Chrome 130 send for a
+  # top-level navigation; do not strip them without re-probing.
+  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+  extra_headers:
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+    Accept-Language: "en-US,en;q=0.9,vi;q=0.8"
+    Accept-Encoding: "gzip, deflate, br, zstd"
+    Sec-Ch-Ua: "\"Chromium\";v=\"130\", \"Google Chrome\";v=\"130\", \"Not?A_Brand\";v=\"99\""
+    Sec-Ch-Ua-Mobile: "?0"
+    Sec-Ch-Ua-Platform: "\"macOS\""
+    Sec-Fetch-Dest: "document"
+    Sec-Fetch-Mode: "navigate"
+    Sec-Fetch-Site: "none"
+    Sec-Fetch-User: "?1"
+    Upgrade-Insecure-Requests: "1"

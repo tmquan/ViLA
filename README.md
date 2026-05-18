@@ -24,8 +24,16 @@ Specification frozen (ontology v1.2.0). Implementation under way:
 - **Parsing backends (Phase 4)**: `PdfParseStage` runs with either
   the NIM `nvidia/nemotron-parse` endpoint or a local `pypdf`
   fallback. OCR + cuDF feature frame + section tagger are spec-only.
-- **Other datasites**: `congbobanan`, `vbpl`, `thuvienphapluat` are
-  planned; the follow-up port mirrors the anle layout file-for-file.
+- **Other datasites**: `congbobanan`, `vbpl` are planned; the
+  follow-up port mirrors the anle layout file-for-file. The
+  thuvienphapluat **`/tnpl/`** (legal-terminology dictionary) surface
+  is shipped at
+  [`packages/datasites/thuvienphapluat_tnpl/`](packages/datasites/thuvienphapluat_tnpl/) —
+  three-stage HTML crawler (harvest → detail → translate) that emits
+  a bilingual VN + EN corpus via the NIM
+  [Nemotron 3 Super 120B-A12B](https://build.nvidia.com/nvidia/nemotron-3-super-120b-a12b)
+  translator and publishes to
+  [`tmquan/thuvienphapluat-vn-tnpl`](https://huggingface.co/datasets/tmquan/thuvienphapluat-vn-tnpl).
 - **Everything else** (Phase 5+: Postgres / MongoDB / Milvus sinks,
   knowledge graph, NAT agent, UI) is spec-only.
 

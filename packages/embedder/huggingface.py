@@ -84,7 +84,14 @@ def _resolve_device(device: str):
     import torch
 
     if device == "auto":
-        return "cuda" if torch.cuda.is_available() else "cpu"
+        if torch.cuda.is_available():
+            return "cuda"
+        # Apple Silicon: prefer MPS when available so embedding /
+        # encoding workloads aren't pinned to CPU. Fall back to CPU
+        # when neither is present.
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
+        return "cpu"
     return device
 
 

@@ -1,0 +1,159 @@
+# Default config for the thuvienphapluat_tnpl crawler.
+#
+# OmegaConf-based. A sibling YAML can override any subset of this via
+# `_base: default.yaml`; lists are REPLACED, mappings are DEEP-MERGED.
+# CLI dotlist overrides via `--override path.to.key=value` are applied
+# last.
+#
+# Unlike anle / congbobanan, thuvienphapluat_tnpl serves HTML-only
+# legal-terminology pages (no PDF, no OCR), so the parser / extractor
+# / embedder / reducer sections below are not consumed by this
+# crawler -- they sit at their schema defaults so a future curation
+# step can pick up where this crawler stops without a config-shape
+# migration. The `translator` section is consumed by the new
+# `translate` pipeline stage and pins the NIM model.
+
+host: thuvienphapluat_vn_tnpl
+output_dir: ./data
+full_text_context: 32768
+
+scraper:
+  num_workers: 4
+  qps: 2.0                          # 2 req/s; polite for the host
+  user_agent: "ViLA-research/0.1 (+https://example.vn/contact)"
+  proxy: null
+  timeout_s: 30.0
+  max_retries: 5                    # HTML page GET retries (exp backoff)
+  verify_tls: true
+  # Detail fragments are tiny (15-25 KB), but the ASP.NET WebForms app
+  # occasionally stalls under WAF interruption; a long flat delay
+  # rides those out cheaply.
+  download_max_retries: 50
+  download_retry_delay_s: 30.0
+
+  # ---- Per-status retry policy --------------------------------------
+  # `retry_statuses` invalidates the on-disk HTML cache for ids whose
+  # prior status matches (forces a fresh GET). `skip_finished_statuses`
+  # filters the work queue down to truly unfinished ids -- ids whose
+  # prior status matches are skipped entirely and their existing
+  # terms.jsonl rows are carried over verbatim. Use together to mop up
+  # transient failures without re-walking 16k cached rows each run:
+  #
+  #   --override 'scraper.skip_finished_statuses=[ok,not_found]'
+  #   --override 'scraper.retry_statuses=[http_403]'
+  retry_statuses: []
+  skip_finished_statuses: []
+
+  # ---- Cloudflare 403 cool-down --------------------------------------
+  # The shared PoliteSession retries 429/5xx with exponential backoff
+  # but treats 403 as terminal. thuvienphapluat.vn's Cloudflare WAF
+  # ban-buckets aggressive IPs into 5-15 min 403 windows; the
+  # downloader sleeps `http_403_initial_delay_s`, doubles up to
+  # `http_403_max_delay_s`, up to `http_403_max_retries` times before
+  # tagging the row `http_403`. Set max_retries=0 to disable.
+  http_403_initial_delay_s: 60.0
+  http_403_max_delay_s: 600.0
+  http_403_max_retries: 5
+
+  # ---- tnpl-specific knobs (consumed by harvester + downloader) -----
+
+  # Homepage. Carries the LinhVuc taxonomy + total count + most-recent
+  # ~20 ids that we use to bootstrap the probe range.
+  index_url: https://thuvienphapluat.vn/tnpl/home
+
+  # Detail-page URL template. {id} is the integer term id; the slug is
+  # decorative (the server returns the same content for any slug).
+  detail_url_template: "https://thuvienphapluat.vn/tnpl/{id}/x?tab=0"
+
+  # Probe-range bounds. When max_id is null the harvester derives it
+  # from the homepage's largest visible id + id_buffer.
+  id_start: 1
+  max_id: null
+  id_buffer: 200                    # safety margin above the homepage's max id
+
+  # Cache HTML so a partial run resumes cheaply.
+  cache_index: true
+  cache_details: true
+
+  # Unused for tnpl (kept for schema compatibility with the other datasites).
+  listing_url: ""
+  pdf_url_template: ""
+  paginated: false
+  fetch_detail_page: false
+  fetch_head_before_download: false
+  walk_lv: false
+  selectors: {}
+  extra_params: {}
+  extra_headers: {}
+
+# ---- NIM Nemotron 3 Super 120B-A12B translator --------------------
+# Pins the chat-completion endpoint used by the `translate` pipeline
+# stage. Model card:
+#   https://build.nvidia.com/nvidia/nemotron-3-super-120b-a12b
+# The endpoint_url is the standard NIM chat-completions root; the
+# model_id is what we send in the request body. Auth uses
+# NVIDIA_API_KEY (consistent with the rest of the repo's NIM usage).
+
+translator:
+  model_id: nvidia/nemotron-3-super-120b-a12b
+  endpoint_url: https://integrate.api.nvidia.com/v1
+  api_key_env: NVIDIA_API_KEY
+  num_workers: 8
+  max_input_chars: 6000             # safety cap on definition fed to the LLM
+  temperature: 0.0
+  top_p: 1.0
+  max_output_tokens: 1024
+  request_timeout_s: 60
+  # Nemotron 3 Super 120B-A12B is a reasoning model; "none" returns
+  # the answer without the inner monologue. Override to "low" /
+  # "medium" / "high" for thinking-on output (verbose; only useful
+  # for audit), or to null to omit the parameter (for non-reasoning
+  # models that would 400 on it).
+  reasoning_effort: none
+  cache_translations: true
+
+# The four downstream stages below have no consumer in tnpl yet; they
+# are kept so a future curation pipeline can read this same config
+# without re-shaping it.
+
+parser:
+  model_id: nvidia/nemoretriever-parse
+  runtime: hybrid
+  num_workers: 4
+
+extractor:
+  run_text_normalization: true
+  run_generic_layer: true
+  run_site_layer: false
+  run_structure_layer: true
+  llm_tier_for_ambiguous: fast
+  max_seq_length: "${..full_text_context}"
+
+embedder:
+  # Multilingual MPNet handles VI + EN with one model, so paired
+  # VI<->EN cosine is comparable (translation-fidelity proxy).
+  # Runtime "hf" loads it locally via sentence-transformers /
+  # transformers + mean-pool, no NVIDIA API key required.
+  model_id: sentence-transformers/paraphrase-multilingual-mpnet-base-v2
+  runtime: hf
+  batch_size: 32
+  max_seq_length: 128
+  device: auto                       # cpu | cuda | mps | auto
+  model_dtype: float32               # float32 | float16 | bfloat16
+  chunking: sliding
+  chunk_overlap: 32
+
+reducer:
+  methods: [pca, tsne, umap]
+  n_components: 2
+  prefer_gpu: true
+  # HDBSCAN over the umap-reduced coords (cluster_id column in
+  # parquet). min_cluster_size scales with corpus; ~50 catches the
+  # tnpl LinhVuc-grained themes without dissolving small specialised
+  # domains.
+  hdbscan_min_cluster_size: 50
+  hdbscan_min_samples: 10
+  # Per-row text truncation before embedding (chars). 128-token
+  # MPNet context = ~400-500 chars; we keep 800 as a soft cap with
+  # mean-pool over a single window (no sliding).
+  max_chars: 800

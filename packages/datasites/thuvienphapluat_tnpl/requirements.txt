@@ -1,0 +1,31 @@
+# thuvienphapluat_tnpl crawler + translator runtime dependencies.
+#
+# This datasite intentionally has no NeMo Curator / Ray dependencies:
+# tnpl serves HTML-only term pages (no PDF, no OCR), so the
+# heavyweight curation stack used by anle / congbobanan is not needed
+# here.  The translator stage uses the NIM chat-completions endpoint
+# via plain `requests`; no openai SDK dependency.
+
+requests>=2.31,<3.0
+beautifulsoup4>=4.12,<5.0
+lxml>=5.0,<6.0
+omegaconf>=2.3,<3.0
+
+# Needed by push_to_hf only.
+huggingface_hub>=0.23
+
+# Needed by analyze.py / viz.py only.
+matplotlib>=3.8,<4.0
+
+# Needed by _embed_reduce_inproc.py (bilingual deep-analysis stage)
+# only. transformers + torch implement the HF embedder backend
+# (multilingual MPNet); umap-learn + hdbscan + scikit-learn implement
+# the per-language 2D reductions + density clustering; pyarrow
+# materialises the parquet consumed by viz / analyze.
+transformers>=4.40
+torch>=2.1
+sentence-transformers>=2.5
+umap-learn>=0.5
+hdbscan>=0.8
+scikit-learn>=1.3
+pyarrow>=14.0

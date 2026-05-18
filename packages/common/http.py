@@ -129,10 +129,20 @@ class PoliteSession:
         download_retry_delay_s: float = DEFAULT_DOWNLOAD_RETRY_DELAY_S,
         dns_max_retries: int = DEFAULT_DNS_MAX_RETRIES,
         dns_retry_delay_s: float = DEFAULT_DNS_RETRY_DELAY_S,
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
         self._bucket = TokenBucket(qps=qps)
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": user_agent})
+        if extra_headers:
+            # Cloudflare-fronted hosts (e.g. thuvienphapluat.vn) fingerprint
+            # request shape beyond UA -- presence/absence of Sec-Ch-Ua-*
+            # and Sec-Fetch-* headers determines whether the WAF treats us
+            # as a browser or a bot. Passing a per-site dict lets a YAML
+            # config inject those without dragging the policy into here.
+            self._session.headers.update({
+                str(k): str(v) for k, v in extra_headers.items()
+            })
         if proxy:
             self._session.proxies.update({"http": proxy, "https": proxy})
         self._session.verify = verify_tls
@@ -408,6 +418,13 @@ def session_from_scraper_cfg(cfg: Any) -> PoliteSession:
     boundaries.
     """
     proxy = cfg.scraper.get("proxy", None)
+    extra_headers_raw = cfg.scraper.get("extra_headers", None)
+    extra_headers: dict[str, str] | None = None
+    if extra_headers_raw:
+        # OmegaConf DictConfig is dict-like; coerce to a plain dict so
+        # downstream session header munging works without DictConfig
+        # interpolation surprises.
+        extra_headers = {str(k): str(v) for k, v in dict(extra_headers_raw).items()}
     return PoliteSession(
         qps=float(cfg.scraper.qps),
         user_agent=str(cfg.scraper.user_agent),
@@ -423,4 +440,5 @@ def session_from_scraper_cfg(cfg: Any) -> PoliteSession:
         dns_retry_delay_s=float(
             cfg.scraper.get("dns_retry_delay_s", DEFAULT_DNS_RETRY_DELAY_S)
         ),
+        extra_headers=extra_headers,
     )

@@ -36,6 +36,17 @@ models:
     native_max_seq: 8192
     notes: hfdata reference; larger 8B parameters, 4096-dim output.
 
+  # ---- Multilingual sentence-transformers (HuggingFace) ----
+  # Lightweight bilingual VI<->EN choice for the tnpl deep-analysis
+  # stage. Same model embeds both languages so a per-row VI<->EN cosine
+  # is meaningful (translation fidelity proxy).
+  - model_id: sentence-transformers/paraphrase-multilingual-mpnet-base-v2
+    runtime: hf
+    embedding_dim: 768
+    supports_32k: false
+    native_max_seq: 128
+    notes: Multilingual MPNet (50+ langs incl. VI); 768-d; 128-token context. Default for tnpl bilingual analysis.
+
   # ---- Microsoft Harrier-OSS family (HuggingFace) ----
   - model_id: microsoft/harrier-oss-v1-270m
     runtime: hf

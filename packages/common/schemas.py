@@ -126,6 +126,54 @@ class ScraperCfg:
     cache_listings: bool = True
     cache_details: bool = True
 
+    # ---- thuvienphapluat_tnpl ID-range crawler ---------------------
+    # The /tnpl/ portal has no listing pagination; the harvester
+    # derives a probe range from the homepage's largest visible id +
+    # ``id_buffer`` (or honours ``max_id`` when set). The downloader
+    # then walks [id_start, max_id] sequentially. Distinct from the
+    # congbobanan ``start_id`` / ``end_id`` knobs above so the two
+    # crawlers can coexist in the same schema. ``cache_index`` is the
+    # tnpl analogue of pbgdpl's ``cache_listings`` flag (one homepage
+    # cache file vs many listing pages).
+    id_start: int = 1
+    max_id: int | None = None
+    id_buffer: int = 200
+    cache_index: bool = True
+    # Per-status retry. When re-running --pipeline detail, ids whose
+    # prior ``fetch_status`` in ``terms.jsonl`` matches any prefix
+    # listed here have their cached HTML invalidated before the fetch
+    # loop, forcing a fresh GET. Default empty == current behaviour
+    # (the on-disk HTML cache is authoritative; ``not_found`` rows
+    # are never re-fetched). Useful values:
+    #   ["http_5", "crash", "empty_fragment"] -- transient errors only
+    #   ["not_found", "empty_fragment"]       -- recover false negatives
+    #                                            from a previous run
+    #   ["http_", "crash", "empty_fragment", "not_found"]
+    #                                         -- retry everything non-ok
+    # Matching is by ``str.startswith`` so e.g. ``http_5`` covers
+    # every 5xx without listing each code individually.
+    retry_statuses: list[str] = field(default_factory=list)
+    # Per-status carry-over. When set, ids whose prior ``fetch_status``
+    # in ``terms.jsonl`` matches any prefix in this list are filtered
+    # OUT of the run's work queue entirely (their existing rows are
+    # preserved verbatim in the merged output). Typical use is
+    # ``["ok", "not_found"]`` to retry every failure flavor without
+    # re-walking the millions of cached cells on every resume. Default
+    # empty == legacy behaviour (walk the full listings each run,
+    # rewrite every row from cache).
+    skip_finished_statuses: list[str] = field(default_factory=list)
+    # Cloudflare 403 cool-down for the tnpl downloader. The shared
+    # PoliteSession retries 429 / 5xx but treats 403 as terminal;
+    # thuvienphapluat.vn's WAF instead returns 403 for 5-15 minutes at
+    # a time when our IP gets rate-bucketed. The downloader sleeps
+    # ``http_403_initial_delay_s``, doubles up to
+    # ``http_403_max_delay_s``, up to ``http_403_max_retries`` times
+    # before tagging the row ``http_403``. Set max_retries=0 to
+    # disable (preserves the historical "tag and move on" behaviour).
+    http_403_initial_delay_s: float = 60.0
+    http_403_max_delay_s: float = 600.0
+    http_403_max_retries: int = 5
+
     # ---- vbpl Playwright crawler -----------------------------------
     # vbpl.vn is a Next.js SPA whose backend (vbpl-bientap-gateway.moj
     # .gov.vn/api/qtdc/public/doc/...) is gated by a reCAPTCHA v3 ->
@@ -280,11 +328,79 @@ class EmbedderCfg:
 
 @dataclass
 class ReducerCfg:
-    """Reducer-stage settings (stage 5: PCA/t-SNE/UMAP)."""
+    """Reducer-stage settings (stage 5: PCA/t-SNE/UMAP + HDBSCAN).
+
+    The ``hdbscan_*`` knobs are read by per-site embed-reduce drivers
+    that cluster the umap-reduced coordinates into ``cluster_id``;
+    ``max_chars`` truncates each row's text before the embedding call
+    so a single overlong definition doesn't blow the embedder's
+    context window.
+    """
 
     methods: list[str] = field(default_factory=lambda: ["pca", "tsne", "umap"])
     n_components: int = 2
     prefer_gpu: bool = True
+    hdbscan_min_cluster_size: int = 50
+    hdbscan_min_samples: int = 10
+    max_chars: int = 4000
+
+
+@dataclass
+class TranslatorCfg:
+    """VI→EN translator settings (consumed by the tnpl ``translate`` stage).
+
+    Drives a NIM chat-completion endpoint per row. Defaults pin
+    Nemotron 3 Super 120B-A12B
+    (https://build.nvidia.com/nvidia/nemotron-3-super-120b-a12b);
+    any other NIM chat model with the same OpenAI-compatible payload
+    shape works via ``--override translator.model_id=...``. Auth uses
+    the env var named in ``api_key_env`` (default ``NVIDIA_API_KEY``),
+    consistent with the rest of the repo's NIM usage.
+
+    Translation is per-row (one request per term, not batched across
+    rows) so a single failure only invalidates one cache file under
+    ``data/<host>/translations/<term_id>.json``. Throughput is gated
+    by ``num_workers`` over the NIM endpoint's concurrency budget;
+    drop this to 2 and bump ``request_timeout_s`` if you're on the
+    free ``build.nvidia.com`` rate tier.
+    """
+
+    model_id: str = "nvidia/nemotron-3-super-120b-a12b"
+    endpoint_url: str = "https://integrate.api.nvidia.com/v1"
+    api_key_env: str = "NVIDIA_API_KEY"
+    num_workers: int = 8
+    max_input_chars: int = 6000        # cap on definition text fed to the LLM
+    temperature: float = 0.0
+    top_p: float = 1.0
+    max_output_tokens: int = 1024
+    request_timeout_s: float = 60.0
+    # OpenAI-compatible reasoning-effort knob. Nemotron 3 Super
+    # 120B-A12B is a *reasoning* model; with the server-side default
+    # the assistant thinks out loud before answering, which we never
+    # want for translation. ``"none"`` suppresses the inner
+    # monologue and returns only the final answer. Set to ``null``
+    # to omit the field entirely (use with non-reasoning models that
+    # would error on the parameter).
+    reasoning_effort: str | None = "none"
+    # vLLM / NIM ``chat_template_kwargs.enable_thinking`` toggle for
+    # Qwen-style reasoning models served on inference-api.nvidia.com.
+    # Setting this to ``false`` suppresses the inner-monologue
+    # ``reasoning_content`` field and returns just the final answer in
+    # ``content`` -- which is what we want for translation. Set to
+    # ``null`` (default) to omit the parameter entirely (other backends
+    # may reject it).
+    enable_thinking: bool | None = None
+    # Per-request retry policy for the LLM client. NIM endpoints (esp.
+    # the free ``build.nvidia.com`` tier on premium models like
+    # qwen/qwen3.5-397b-a17b) issue 429s aggressively when the per-key
+    # rate-bucket fills; the row's translation budget is
+    # ``max_retries * retry_delay_s`` seconds before it crashes. The
+    # defaults below tolerate short bursts but you'll want to bump
+    # both for sustained rate-limited tiers. ``retry_delay_s`` is also
+    # used as the fallback when the server omits ``Retry-After``.
+    max_retries: int = 5
+    retry_delay_s: float = 5.0
+    cache_translations: bool = True
 
 
 @dataclass
@@ -384,6 +500,7 @@ class PipelineCfg:
     embedder: EmbedderCfg = field(default_factory=EmbedderCfg)
     reducer: ReducerCfg = field(default_factory=ReducerCfg)
     visualizer: VisualizerCfg = field(default_factory=VisualizerCfg)
+    translator: TranslatorCfg = field(default_factory=TranslatorCfg)
     executor: ExecutorCfg = field(default_factory=ExecutorCfg)
     ray: RayCfg = field(default_factory=RayCfg)
     # Optional cap on URLs handed to the download stage. Useful for

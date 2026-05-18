@@ -132,6 +132,30 @@ publication of court judgments.
 - **Legal / ethical**: commercial site; respect ToS. Use attribution when
   referencing.
 
+#### 2.3.1 `thuvienphapluat.vn/tnpl/` — Legal-terminology dictionary
+
+- **Content**: ~16 247 free, public Vietnamese legal-terminology
+  entries grouped into 47 legal-domain (LinhVuc) categories. Each
+  entry carries a Vietnamese term name, an optional site-published
+  English label, a definition, a LinhVuc, a status (`Còn hiệu lực` /
+  `Hết hiệu lực` / ...), a last-update timestamp, and in-body
+  cross-references to other terms.
+- **Access method**: HTML only; no JSON / SOAP / SharePoint API and no
+  sitemap shard for `/tnpl/` URLs (probed). Term ids are sequential
+  integers; the only viable harvest strategy is brute-force
+  `[1, max_id + buffer]` enumeration.
+- **Integration method**: shipped at
+  [`packages/datasites/thuvienphapluat_tnpl/`](../packages/datasites/thuvienphapluat_tnpl/).
+  Three pipeline stages — `harvest` (homepage + taxonomy + probe
+  range), `detail` (threaded ID enumeration with on-disk HTML cache),
+  `translate` (per-row NIM Nemotron 3 Super 120B-A12B translator with
+  on-disk LLM cache). The bilingual deliverable lives at
+  [`tmquan/thuvienphapluat-vn-tnpl`](https://huggingface.co/datasets/tmquan/thuvienphapluat-vn-tnpl)
+  on the Hugging Face Hub.
+- **Legal / ethical**: this surface is free-tier on the commercial
+  aggregator (no paywall on `/tnpl/`); the dataset card credits THƯ
+  VIỆN PHÁP LUẬT as the primary source.
+
 ### 2.4 `vbpl.vn` / `vanban.chinhphu.vn` — Statute databases
 
 - **Content**: consolidated statutory text, including Bộ luật Hình sự
