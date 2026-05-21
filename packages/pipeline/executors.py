@@ -20,6 +20,7 @@ local single-node; ``"auto"`` discovers an existing local cluster;
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -120,9 +121,21 @@ def init_ray(cfg: Any) -> bool:
             init_kwargs["num_cpus"] = int(num_cpus)
         if num_gpus is not None:
             init_kwargs["num_gpus"] = int(num_gpus)
+        # Default: include the Ray dashboard. Xenna's monitor calls
+        # ``ray.util.state.list_actors()`` which hits the dashboard's
+        # HTTP API at ``127.0.0.1:8265``; without it the pipeline
+        # crashes on first stats tick. Set ``RAY_INCLUDE_DASHBOARD=0``
+        # only when using non-xenna executors *and* under severe
+        # memory pressure (the dashboard agent is the first OOM
+        # victim on small hosts).
+        dash_env = os.environ.get("RAY_INCLUDE_DASHBOARD")
+        if dash_env is not None:
+            init_kwargs["include_dashboard"] = (
+                dash_env.lower() not in ("0", "false", "")
+            )
         logger.info(
-            "starting local ray runtime (num_cpus=%s num_gpus=%s)",
-            num_cpus, num_gpus,
+            "starting local ray runtime (num_cpus=%s num_gpus=%s dashboard=%s)",
+            num_cpus, num_gpus, init_kwargs.get("include_dashboard", "default"),
         )
     ray.init(**init_kwargs)
     return True

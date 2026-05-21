@@ -37,12 +37,13 @@ only the HF surface drops that local path.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
 from typing import Any
 
-from packages.common.hf import copy_file, transform_jsonl
+from packages.common.hf import copy_file, iter_jsonl
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,13 @@ DEFAULT_OUT_DIR   = Path("data/thuvienphapluat_vn_tnpl/hf")
 #: Update the README's "Data fields" table in lockstep if this set
 #: changes.
 DROP_FIELDS: tuple[str, ...] = ("html_path",)
+
+#: Maximum rows per published JSONL shard. Matches the cross-corpus
+#: convention shared with ``anle`` / ``congbobanan`` / ``phapdien`` /
+#: ``vbpl`` (10 K rows/shard) so every ViLA datasite ships under the
+#: same naming + sizing rule. With ~16 K rows the tnpl corpus fans
+#: out to 2 shards of ~11 MB / ~17 MB (vietnamese / bilingual).
+CHUNK_SIZE = 10_000
 
 #: Sidecar files copied verbatim from ``jsonl/`` into the HF folder
 #: root. ``translation_manifest.json`` is optional; we skip it if the
@@ -71,35 +79,103 @@ def _terms_transform(record: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in record.items() if k not in drop_set}
 
 
+def _chunk_jsonl(
+    src: Path,
+    out_dir: Path,
+    stem: str,
+    *,
+    chunk_size: int = CHUNK_SIZE,
+) -> list[Path]:
+    """Stream ``src`` -> ``<stem>-NNNNN-of-KKKKK.jsonl`` shards under ``out_dir``.
+
+    Two-pass over ``src``: the first pass counts rows so we can name
+    shards deterministically (``-of-KKKKK``); the second pass writes
+    them out. Drops fields in :data:`DROP_FIELDS` row-by-row and
+    wipes any stale shard files / legacy single-file from a previous
+    chunk-count so the published folder stays in sync with the YAML
+    ``data_files: <stem>-*.jsonl`` glob.
+
+    Returns the list of shard paths in shard order.
+    """
+    drop_set = set(DROP_FIELDS)
+    legacy = out_dir / f"{stem}.jsonl"
+    if legacy.exists():
+        logger.info("removing legacy single-file %s", legacy.name)
+        legacy.unlink()
+    for stale in sorted(out_dir.glob(f"{stem}-*-of-*.jsonl")):
+        stale.unlink()
+
+    n_rows = 0
+    for _ in iter_jsonl(src):
+        n_rows += 1
+    if n_rows == 0:
+        raise ValueError(f"{src} is empty")
+    n_shards = max(1, (n_rows + chunk_size - 1) // chunk_size)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    shard_paths = [
+        out_dir / f"{stem}-{i:05d}-of-{n_shards:05d}.jsonl"
+        for i in range(n_shards)
+    ]
+    f_outs = [p.open("w", encoding="utf-8") for p in shard_paths]
+    try:
+        per_shard = [0] * n_shards
+        written = 0
+        for rec in iter_jsonl(src):
+            idx = min(written // chunk_size, n_shards - 1)
+            projected = {k: v for k, v in rec.items() if k not in drop_set}
+            f_outs[idx].write(json.dumps(projected, ensure_ascii=False) + "\n")
+            per_shard[idx] += 1
+            written += 1
+    finally:
+        for f in f_outs:
+            f.close()
+    for i, p in enumerate(shard_paths):
+        logger.info(
+            "wrote shard %s (%d rows, %.1f MB)",
+            p.name, per_shard[i], p.stat().st_size / 1024 / 1024,
+        )
+    return shard_paths
+
+
 def export(jsonl_dir: Path, out_dir: Path) -> dict[str, Path]:
     """Materialise the HF-ready folder. Returns the paths it produced."""
     out_dir.mkdir(parents=True, exist_ok=True)
     paths: dict[str, Path] = {}
 
-    # Prefer the bilingual file; fall back to the raw one with a loud
-    # warning so an operator who forgot to run --pipeline translate
-    # gets a clear signal.
-    src = jsonl_dir / "terms_translated.jsonl"
-    if not src.exists() or src.stat().st_size == 0:
-        fallback = jsonl_dir / "terms.jsonl"
-        if not fallback.exists():
-            raise FileNotFoundError(
-                f"neither {src.name} nor {fallback.name} found in {jsonl_dir}"
-            )
-        logger.warning(
-            "%s missing; falling back to %s (English columns will be "
-            "absent from the published dataset)",
-            src.name, fallback.name,
+    # Bilingual surface (default config): always required when the
+    # translate stage has run. We chunk it into 10 K-row JSONL shards
+    # so the dataset viewer can stream the corpus without
+    # materialising the whole 27 MB file.
+    bilingual_src = jsonl_dir / "terms_translated.jsonl"
+    if bilingual_src.exists() and bilingual_src.stat().st_size > 0:
+        shards = _chunk_jsonl(
+            bilingual_src, out_dir / "data", stem="terms_translated",
         )
-        src = fallback
+        for i, sp in enumerate(shards):
+            paths[f"terms_translated_shard_{i:05d}"] = sp
+    else:
+        logger.warning(
+            "terms_translated.jsonl missing; bilingual config will be "
+            "absent from the published dataset",
+        )
 
-    dst = out_dir / "data" / "terms.jsonl"
-    n = transform_jsonl(src, dst, transform=_terms_transform)
-    logger.info(
-        "wrote %s (%d rows, %.1f MB; dropped: %s)",
-        dst, n, dst.stat().st_size / 1024 / 1024, ", ".join(DROP_FIELDS),
-    )
-    paths["terms"] = dst
+    # Vietnamese-only surface: always required (the ``vietnamese``
+    # config in the dataset card; absent only if neither file exists).
+    vi_src = jsonl_dir / "terms.jsonl"
+    if not vi_src.exists():
+        if not bilingual_src.exists():
+            raise FileNotFoundError(
+                f"neither terms.jsonl nor terms_translated.jsonl found "
+                f"in {jsonl_dir}"
+            )
+        # Fall back to the bilingual source for the vietnamese surface
+        # too. ``_chunk_jsonl`` strips the EN-only columns naturally
+        # because every row carries the VI fields whether or not it
+        # has been translated.
+        vi_src = bilingual_src
+    shards = _chunk_jsonl(vi_src, out_dir / "data", stem="terms")
+    for i, sp in enumerate(shards):
+        paths[f"terms_shard_{i:05d}"] = sp
 
     for name, required in _COPY_VERBATIM:
         src_p = jsonl_dir / name

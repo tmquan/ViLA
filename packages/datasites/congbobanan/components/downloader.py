@@ -3,20 +3,28 @@
 Given a detail-page URL produced by :class:`CongbobananURLGenerator`,
 this downloader:
 
-1. GETs the detail HTML.
-2. Runs :func:`page_has_metadata` to filter out ghost records (IDs that
-   return HTTP 200 with an empty placeholder page). Ghost pages short-
-   circuit: no PDF is fetched and :meth:`download` returns ``None`` so
-   Curator's :class:`DocumentDownloadStage` skips the row.
-3. Streams the binary PDF from ``/3ta{case_id}t1cvn/`` to
-   ``<download_dir>/<case_id>.pdf``.
-4. Writes sibling ``<case_id>.html`` + ``<case_id>.url`` sidecars that
-   the iterator reads back on the next stage.
+1. GETs the detail HTML (best-effort: empty sidebars are tolerated).
+2. Attempts the body download at ``/3ta{case_id}t1cvn/`` regardless of
+   the detail panel's contents. The body endpoint serves real
+   documents for ~30 % of IDs whose detail panel is empty, so gating
+   the fetch on :func:`page_has_metadata` (as the reference scraper
+   did) wrongly discards them. Validation runs *after* the download
+   via :func:`_sniff_body_ext`, which classifies the response by
+   magic header (``%PDF-`` / ``PK\\x03\\x04`` / OLE2 / ``{\\rtf``) and
+   filters out the 6 475-byte HTML 500-error pages the server returns
+   for unrecoverable IDs. The server occasionally serves a judgment
+   as DOCX / DOC / RTF rather than PDF -- the downloader accepts all
+   four formats and saves the body with the sniffed extension.
+3. On success writes ``<case_id>.<sniffed-ext>`` plus sibling ``.html``
+   and ``.url`` sidecars that the iterator reads back on the next
+   stage. The ``.html`` sidecar may be empty when the detail panel was
+   a ghost; the extractor stage then emits ``None`` for the affected
+   sidebar columns without losing the document.
 
 The base class's :meth:`download` is fully overridden so we own the
 atomic ``.tmp -> final`` rename and can cancel the download before any
-bytes are written when the ghost-page check fails. This mirrors the
-anle downloader's approach for the same reason (and for the same
+bytes are written when validation fails. This mirrors the anle
+downloader's approach for the same reason (and for the same
 ``<doc>.pdf.pdf`` bug prevention).
 
 congbobanan.toaan.gov.vn refuses TLS handshakes from non-Vietnamese
@@ -57,6 +65,94 @@ def page_has_metadata(html: str) -> bool:
     return has_case_number and has_sidebar
 
 
+#: Minimum byte length accepted as a valid PDF body. The 500-error
+#: pages congbobanan serves on broken IDs are ~6 475 bytes of HTML, so
+#: a size gate alone is insufficient -- :func:`_is_valid_pdf` also
+#: requires the canonical ``%PDF`` magic header.
+_MIN_VALID_PDF_BYTES = 1_024
+
+#: Minimum byte length per accepted body extension. RTF can be quite
+#: small (a handful of escape sequences); PDF/DOC/DOCX bodies always
+#: carry kilobytes of header/metadata even for one-page judgments.
+_MIN_VALID_BODY_BYTES: dict[str, int] = {
+    ".pdf":  _MIN_VALID_PDF_BYTES,
+    ".docx": 1_024,
+    ".doc":  1_024,
+    ".rtf":  100,
+}
+
+#: ``(magic header bytes, target extension)``. Longer / more specific
+#: magics first so e.g. OLE2 wins over an accidental ``PK`` prefix.
+#: These are the four body formats the congbobanan portal is known to
+#: serve; everything else (HTML error pages, JSON API stubs, RAR /
+#: PE32 garbage observed in the corpus) is rejected by
+#: :func:`_sniff_body_ext` returning ``None``.
+_BODY_MAGICS: tuple[tuple[bytes, str], ...] = (
+    (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", ".doc"),   # OLE2 (legacy .doc)
+    (b"PK\x03\x04",                       ".docx"),  # Office Open XML
+    (b"%PDF-",                            ".pdf"),
+    (b"{\\rtf",                           ".rtf"),
+)
+
+#: Filename extensions the downloader will write and the parser stage
+#: reads. Re-exported so the parse pipeline factory and the existence
+#: check stay in sync from one declaration.
+ACCEPTED_BODY_EXTENSIONS: tuple[str, ...] = (".pdf", ".docx", ".doc", ".rtf")
+
+
+def _sniff_body_ext(path: str) -> str | None:
+    """Return ``.pdf`` / ``.docx`` / ``.doc`` / ``.rtf`` for a valid body, else ``None``.
+
+    Used by :meth:`CongbobananDocumentDownloader.download` to filter
+    the response before promoting ``<id>.body.tmp`` to a final
+    ``<id>.<ext>``. Steps:
+
+    1. Match the leading bytes against :data:`_BODY_MAGICS`.
+    2. Enforce the per-extension minimum size from
+       :data:`_MIN_VALID_BODY_BYTES` so 6 475-byte HTML error pages
+       and one-line stubs are rejected even when the magic header
+       happens to align.
+    3. For PDFs only, additionally require ``%%EOF`` somewhere in the
+       last 1 KB of the file -- the previous downloader's MIME check
+       let through truncated bodies (connection drops mid-stream) that
+       are valid PDFs by header but unusable by the parser. DOCX /
+       DOC / RTF have container-level integrity that the parse stage
+       validates separately, so we don't replicate that here.
+    """
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            head = f.read(16)
+    except OSError:
+        return None
+
+    for magic, ext in _BODY_MAGICS:
+        if not head.startswith(magic):
+            continue
+        if size < _MIN_VALID_BODY_BYTES.get(ext, _MIN_VALID_PDF_BYTES):
+            return None
+        if ext == ".pdf":
+            try:
+                with open(path, "rb") as f:
+                    f.seek(max(0, size - 1024))
+                    if b"%%EOF" not in f.read(1024):
+                        return None
+            except OSError:
+                return None
+        return ext
+    return None
+
+
+def _is_valid_pdf(path: str) -> bool:
+    """Return True iff ``path`` validates specifically as a PDF body.
+
+    Thin alias over :func:`_sniff_body_ext` preserved for backward
+    compatibility with callers / tests that pre-date multi-format
+    support. New code should use :func:`_sniff_body_ext` directly.
+    """
+    return _sniff_body_ext(path) == ".pdf"
+
+
 class CongbobananDocumentDownloader(DocumentDownloader):
     """Ghost-aware downloader for congbobanan detail + PDF endpoints."""
 
@@ -94,57 +190,127 @@ class CongbobananDocumentDownloader(DocumentDownloader):
     # --------------------------------------------------- Curator contract
 
     def download(self, url: str) -> str | None:
-        """Fetch one congbobanan case. Returns the final on-disk path or None."""
+        """Fetch one congbobanan case. Returns the final on-disk path or None.
+
+        Two-step fetch: the detail HTML at ``/2ta<id>t1cvn/chi-tiet-ban-an``
+        and the body at ``/3ta<id>t1cvn/``. The detail panel is best-
+        effort -- some IDs (~30 % of the missing tail) serve a real
+        body even though the sidebar HTML returns an empty
+        ``details_pub`` div with no ``Bản án số:`` / ``Quyết định số:``
+        markers. We still write whatever ``detail_html`` came back so the
+        extractor stage can pick up any partial sidebar fields; rows with
+        a fully-empty panel produce ``None`` sidebar columns in parquet,
+        not a missing document.
+
+        Existence check covers every extension in
+        :data:`ACCEPTED_BODY_EXTENSIONS` because a previous run may
+        have already saved the same case as ``<id>.docx`` / ``.doc`` /
+        ``.rtf`` instead of ``.pdf``; we must not redownload in that
+        case.
+
+        A body is accepted only when :func:`_sniff_body_ext` classifies
+        it as one of the four supported formats. The session
+        ``download()`` call additionally enforces the retry budget on
+        HTTP 5xx / connection failures; bodies that arrive in any
+        other format (HTML error pages, JSON API stubs, etc.) are
+        deleted post-download.
+        """
         case_id = doc_id_from_url(url)
         if not case_id:
             logger.error("could not derive case_id from url %s", url)
             return None
 
-        final_path = Path(self._download_dir) / f"{case_id}.pdf"
-        if final_path.exists() and final_path.stat().st_size > 0:
+        download_dir = Path(self._download_dir)
+        existing = self._existing_body_path(case_id, download_dir)
+        if existing is not None:
             if self._verbose:
-                logger.info("file %s exists; not downloading", final_path)
-            return str(final_path)
+                logger.info("file %s exists; not downloading", existing)
+            return str(existing)
 
         self._ensure_session()
         assert self.session is not None
 
         try:
+            # Detail HTML is best-effort: some IDs serve a real body
+            # even when the sidebar panel is empty. ``_retry_empty_detail``
+            # still applies because the WAF occasionally returns a
+            # stub on the first hit even for valid records.
             detail_html = self._fetch_detail_html(url)
             if not page_has_metadata(detail_html) and self._retry_empty_detail:
-                # Ghost pages sometimes fill in on a second request
-                # (WAF / cache warm-up). One extra attempt is cheap.
                 detail_html = self._fetch_detail_html(url)
 
-            if not page_has_metadata(detail_html):
-                logger.debug("case %s: ghost page; skipping", case_id)
+            body_url = self._pdf_url_template.format(case_id=case_id)
+            # Generic tmp name -- we don't yet know the extension and
+            # don't want to imply ``.pdf`` if the response is DOCX.
+            tmp_path = str(download_dir / f"{case_id}.body.tmp")
+            try:
+                # ``expected_mime`` is left unset: the server lies
+                # about Content-Type (claims ``application/pdf`` even
+                # for DOCX bodies), so MIME-level gating discards
+                # valid documents. Magic-header validation runs
+                # post-download via :func:`_sniff_body_ext`.
+                self.session.download(body_url, tmp_path)
+            except Exception as body_exc:
+                # Most "missing" IDs land here: body endpoint 500s
+                # consistently after the retry budget.
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+                logger.info(
+                    "case %s: body unavailable (%s); skipping",
+                    case_id, body_exc,
+                )
                 return None
 
-            pdf_url = self._pdf_url_template.format(case_id=case_id)
-            tmp_path = str(final_path) + ".tmp"
-            self.session.download(
-                pdf_url, tmp_path, expected_mime="application/pdf"
-            )
-            if os.path.getsize(tmp_path) < 100:
-                # Sub-100-byte response is almost always an HTML error
-                # body the MIME check missed; drop it.
+            ext = _sniff_body_ext(tmp_path)
+            if ext is None:
+                # 200-with-HTML-payload (a 6 475-byte error page),
+                # truncated PDFs, and exotic content (JSON / RAR /
+                # PE32 garbage observed in the corpus) fall here.
                 os.unlink(tmp_path)
-                logger.warning("case %s: PDF payload < 100 bytes; skipping", case_id)
+                logger.info(
+                    "case %s: body not a recognised document format; skipping",
+                    case_id,
+                )
                 return None
-            os.replace(tmp_path, final_path)
 
+            final_path = download_dir / f"{case_id}{ext}"
+            os.replace(tmp_path, final_path)
             final_path.with_suffix(".html").write_text(
-                detail_html, encoding="utf-8"
+                detail_html or "", encoding="utf-8",
             )
             final_path.with_suffix(".url").write_text(url, encoding="utf-8")
 
-            if self._verbose:
+            if not page_has_metadata(detail_html):
+                logger.info(
+                    "case %s: downloaded %s without sidebar metadata "
+                    "(detail panel empty)", case_id, ext,
+                )
+            elif ext != ".pdf":
+                logger.info(
+                    "case %s: downloaded as %s (non-PDF body)",
+                    case_id, ext,
+                )
+            elif self._verbose:
                 logger.info("downloaded %s to %s", url, final_path)
             return str(final_path)
 
         except Exception as exc:  # noqa: BLE001 - Curator boundary
             logger.error("download failed for %s: %s", url, exc)
             return None
+
+    @staticmethod
+    def _existing_body_path(case_id: str, download_dir: Path) -> Path | None:
+        """Return the on-disk body for ``case_id`` if one exists in any accepted ext."""
+        for ext in ACCEPTED_BODY_EXTENSIONS:
+            candidate = download_dir / f"{case_id}{ext}"
+            try:
+                if candidate.stat().st_size > 0:
+                    return candidate
+            except FileNotFoundError:
+                continue
+            except OSError:
+                continue
+        return None
 
     # Abstract on the base class; we satisfy them but never dispatch
     # through this path since :meth:`download` is overridden.
@@ -184,4 +350,8 @@ class CongbobananDocumentDownloader(DocumentDownloader):
         return resp.text
 
 
-__all__ = ["CongbobananDocumentDownloader", "page_has_metadata"]
+__all__ = [
+    "ACCEPTED_BODY_EXTENSIONS",
+    "CongbobananDocumentDownloader",
+    "page_has_metadata",
+]

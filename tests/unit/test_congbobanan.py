@@ -15,7 +15,14 @@ from packages.datasites.congbobanan.components import (
     CongbobananURLGenerator,
     doc_id_from_url,
 )
-from packages.datasites.congbobanan.components.downloader import page_has_metadata
+from packages.datasites.congbobanan.components.downloader import (
+    ACCEPTED_BODY_EXTENSIONS,
+    CongbobananDocumentDownloader,
+    _MIN_VALID_PDF_BYTES,
+    _is_valid_pdf,
+    _sniff_body_ext,
+    page_has_metadata,
+)
 from packages.datasites.congbobanan.pipeline import (
     ALL_PIPELINES_ORDER,
     PIPELINES,
@@ -91,6 +98,119 @@ def test_page_has_metadata_rejects_ghost() -> None:
     assert not page_has_metadata(
         '<div class="search_left_pub details_pub">nothing useful</div>'
     )
+
+
+# --------------------------------------------------------------------- body-format sniff
+
+
+def _well_formed_pdf(size: int = 4096) -> bytes:
+    """Synthetic PDF body with the required header and ``%%EOF`` trailer.
+
+    Sized at ``size`` bytes (>= ``_MIN_VALID_PDF_BYTES``) so the
+    sniffer's size + magic + trailer gates all pass.
+    """
+    body = b"%PDF-1.5\n%\xb5\xb5\xb5\xb5\n1 0 obj\n"
+    trailer = b"\n%%EOF\n"
+    pad = b"\x00" * max(0, size - len(body) - len(trailer))
+    return body + pad + trailer
+
+
+def test_is_valid_pdf_accepts_real_pdf(tmp_path: Any) -> None:
+    """A %PDF-prefixed, ``%%EOF``-terminated body must pass validation."""
+    p = tmp_path / "real.pdf"
+    p.write_bytes(_well_formed_pdf())
+    assert _is_valid_pdf(str(p))
+
+
+def test_is_valid_pdf_rejects_html_error_page(tmp_path: Any) -> None:
+    """500-error pages claim ``application/pdf`` but ship HTML; reject them."""
+    p = tmp_path / "error.html_pretending_to_be.pdf"
+    # 6 475 bytes of HTML is the typical congbobanan 500 body shape; the
+    # important bit is that the first 5 bytes are *not* ``%PDF-``.
+    p.write_bytes(b"<html><head><title>500 Internal Server Error</title>" + b"x" * 8192)
+    assert not _is_valid_pdf(str(p))
+
+
+def test_is_valid_pdf_rejects_truncated_body(tmp_path: Any) -> None:
+    """Anything below ``_MIN_VALID_PDF_BYTES`` is rejected outright."""
+    p = tmp_path / "tiny.pdf"
+    p.write_bytes(b"%PDF-1.5\n" + b"\x00" * (_MIN_VALID_PDF_BYTES // 2))
+    assert not _is_valid_pdf(str(p))
+
+
+def test_is_valid_pdf_returns_false_on_missing_path(tmp_path: Any) -> None:
+    """Non-existent paths must not raise; callers depend on a clean bool."""
+    assert not _is_valid_pdf(str(tmp_path / "does-not-exist.pdf"))
+
+
+def test_is_valid_pdf_rejects_pdf_without_eof_trailer(tmp_path: Any) -> None:
+    """Truncated PDFs (header OK, no ``%%EOF`` in tail) are rejected.
+
+    Streaming downloads that drop mid-transfer leave behind a file that
+    starts with ``%PDF-`` but never reaches the end-of-file marker; the
+    parser stage can't recover from those.
+    """
+    p = tmp_path / "truncated.pdf"
+    p.write_bytes(b"%PDF-1.5\n" + b"\x00" * 4096)  # no %%EOF anywhere
+    assert not _is_valid_pdf(str(p))
+
+
+def test_sniff_body_ext_classifies_each_known_format(tmp_path: Any) -> None:
+    """Every magic header in :data:`_BODY_MAGICS` must round-trip to its extension."""
+    pdf = tmp_path / "case.pdf"
+    pdf.write_bytes(_well_formed_pdf())
+    assert _sniff_body_ext(str(pdf)) == ".pdf"
+
+    # DOCX (Office Open XML): ZIP magic ``PK\x03\x04``.
+    docx = tmp_path / "case.docx"
+    docx.write_bytes(b"PK\x03\x04" + b"\x00" * 4096)
+    assert _sniff_body_ext(str(docx)) == ".docx"
+
+    # Legacy DOC: OLE2 / CFB magic.
+    doc = tmp_path / "case.doc"
+    doc.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 4096)
+    assert _sniff_body_ext(str(doc)) == ".doc"
+
+    # RTF: ``{\rtf`` text header. Allowed to be small (100-byte min).
+    rtf = tmp_path / "case.rtf"
+    rtf.write_bytes(b"{\\rtf1\\ansi\\deff0 Hello}" + b"\x00" * 200)
+    assert _sniff_body_ext(str(rtf)) == ".rtf"
+
+
+def test_sniff_body_ext_rejects_unknown_payloads(tmp_path: Any) -> None:
+    """JSON / HTML / RAR / executables observed in the live corpus are rejected."""
+    for name, payload in (
+        ("json", b'{"sections":[]}' + b" " * 4096),
+        ("html", b"<html><body>404</body></html>" + b"x" * 4096),
+        ("rar",  b"Rar!\x1a\x07\x01\x00" + b"\x00" * 4096),
+        ("exe",  b"MZ\x90\x00\x03\x00" + b"\x00" * 4096),
+        ("rand", b"\x00" * 4096),
+    ):
+        p = tmp_path / f"junk_{name}.bin"
+        p.write_bytes(payload)
+        assert _sniff_body_ext(str(p)) is None, f"sniffer accepted {name}"
+
+
+def test_existing_body_path_finds_any_accepted_extension(tmp_path: Any) -> None:
+    """A previous run may have saved ``<id>.docx``; the existence check must see it.
+
+    Locks the contract that prevents the downloader from re-fetching a
+    case that was already saved under a non-``.pdf`` extension.
+    """
+    for ext in ACCEPTED_BODY_EXTENSIONS:
+        case_id = f"42{ext.replace('.', '_')}"
+        body = tmp_path / f"{case_id}{ext}"
+        body.write_bytes(b"\x00" * 4096)
+        found = CongbobananDocumentDownloader._existing_body_path(case_id, tmp_path)
+        assert found == body, f"missed {ext}"
+
+    # Empty body must be ignored (otherwise we'd skip a re-download that needs to happen).
+    empty_id = "99"
+    (tmp_path / f"{empty_id}.pdf").write_bytes(b"")
+    assert CongbobananDocumentDownloader._existing_body_path(empty_id, tmp_path) is None
+
+    # Truly absent case_id returns None.
+    assert CongbobananDocumentDownloader._existing_body_path("does-not-exist", tmp_path) is None
 
 
 # --------------------------------------------------------------------- extractor

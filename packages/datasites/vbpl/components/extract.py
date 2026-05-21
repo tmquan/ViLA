@@ -223,6 +223,8 @@ class VbplDocumentExtractor:
             "structure": structure_payload,
             "title": meta.get("title"),
             "doc_type": meta.get("doc_type"),
+            "legal_type": meta.get("legal_type"),
+            "legal_area": meta.get("legal_area"),
             "so_hieu": meta.get("so_hieu"),
             "ngay_ban_hanh": meta.get("ngay_ban_hanh"),
             "co_quan_ban_hanh": meta.get("co_quan_ban_hanh"),
@@ -297,6 +299,8 @@ def _scraper_meta_from(meta: dict[str, Any]) -> dict[str, Any]:
     for k in (
         "title",
         "doc_type",
+        "legal_type",
+        "legal_area",
         "so_hieu",
         "ngay_ban_hanh",
         "co_quan_ban_hanh",

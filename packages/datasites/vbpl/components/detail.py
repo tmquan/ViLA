@@ -697,6 +697,8 @@ def _record_to_jsonl_dict(
         "scraped_at": _utc_now_iso(),
         "scrape_run_id": run_id,
         "doc_type": rec.doc_type,
+        "legal_type": rec.legal_type,
+        "legal_area": rec.legal_area,
         "so_hieu": rec.so_hieu,
         "ngay_ban_hanh": rec.ngay_ban_hanh,
         "co_quan_ban_hanh": rec.co_quan_ban_hanh,

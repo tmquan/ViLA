@@ -53,7 +53,9 @@ DETAIL_JSONL_FIELDS: list[str] = [
     "api_url",
     "scraped_at",
     "scrape_run_id",
-    "doc_type",
+    "doc_type",       # canonical short code (e.g. "QĐ", "CT", "NĐ")
+    "legal_type",     # canonical Vietnamese name (e.g. "Quyết định")
+    "legal_area",     # first non-empty area label (e.g. "Đất đai")
     "so_hieu",
     "ngay_ban_hanh",
     "co_quan_ban_hanh",
@@ -141,7 +143,9 @@ EXTRACTOR_JSONL_FIELDS: list[str] = [
     "structure",
     # vbpl sidebar metadata
     "title",
-    "doc_type",
+    "doc_type",       # canonical short code (e.g. "QĐ", "CT", "NĐ")
+    "legal_type",     # canonical Vietnamese name (e.g. "Quyết định")
+    "legal_area",     # first non-empty area label (e.g. "Đất đai")
     "so_hieu",
     "ngay_ban_hanh",
     "co_quan_ban_hanh",

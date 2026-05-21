@@ -40,6 +40,15 @@ DEFAULT_REPO_OWNER = "tmquan"
 DEFAULT_REPO_NAME = "phapdien-moj-gov-vn"
 DEFAULT_LICENSE = "cc-by-4.0"
 
+#: Maximum rows per parquet shard for the ``articles`` table. Matches
+#: the cross-corpus convention shared with ``anle`` / ``congbobanan``
+#: (10 K rows/shard) so every ViLA datasite ships under the same
+#: naming + sizing rule. With ~64 K articles in the codified Bộ Pháp
+#: Điển the corpus fans out to ~7 shards of ~3-4 MB each.  ``demucs``
+#: (202 rows) and ``tree_nodes`` (244 rows) stay single-file because
+#: they're under the chunk size by two orders of magnitude.
+CHUNK_SIZE = 10_000
+
 # Source-of-truth schema. Force types so re-runs are byte-stable and
 # the parquet does not flop between e.g. int / float when one column
 # happens to be entirely zero in a partial corpus.
@@ -153,20 +162,77 @@ def _coerce_tree(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _write_chunked_articles(
+    rows: list[dict[str, Any]],
+    out_dir: Path,
+    *,
+    chunk_size: int = CHUNK_SIZE,
+) -> list[Path]:
+    """Split ``rows`` into ``chunk_size``-row parquet shards.
+
+    File naming follows the HF Datasets convention:
+    ``articles-NNNNN-of-KKKKK.parquet``. Wipes any legacy single-file
+    ``articles.parquet`` and any stale shard files from a previous run
+    with a different chunk count so the published folder stays in
+    sync with the YAML ``data_files: articles-*.parquet`` glob.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from packages.common.hf import coerce_for_schema
+
+    if chunk_size < 1:
+        raise ValueError(f"chunk_size must be >=1, got {chunk_size}")
+
+    legacy = out_dir / "articles.parquet"
+    if legacy.exists():
+        logger.info("removing legacy single-file %s", legacy.name)
+        legacy.unlink()
+    for stale in sorted(out_dir.glob("articles-*-of-*.parquet")):
+        stale.unlink()
+
+    coerced = coerce_for_schema(rows, _ARTICLE_SCHEMA)
+    n_rows = len(coerced)
+    n_shards = max(1, (n_rows + chunk_size - 1) // chunk_size)
+    shard_paths: list[Path] = []
+    for i in range(n_shards):
+        chunk = coerced[i * chunk_size:(i + 1) * chunk_size]
+        if not chunk:
+            continue
+        table = pa.Table.from_pylist(chunk, schema=_ARTICLE_SCHEMA)
+        shard_path = out_dir / f"articles-{i:05d}-of-{n_shards:05d}.parquet"
+        pq.write_table(table, shard_path, compression="zstd")
+        shard_paths.append(shard_path)
+        logger.info(
+            "wrote shard %s (%d rows, %.1f MB)",
+            shard_path.name, table.num_rows,
+            shard_path.stat().st_size / 1024 / 1024,
+        )
+    return shard_paths
+
+
 def export_parquet(jsonl_dir: Path, out_dir: Path) -> dict[str, Path]:
-    """Convert articles/demucs/tree_nodes JSONL to parquet under ``out_dir``."""
+    """Convert articles/demucs/tree_nodes JSONL to parquet under ``out_dir``.
+
+    The 64 K-row ``articles`` table is fanned out into ~7 shards of
+    :data:`CHUNK_SIZE` rows each so it matches the cross-corpus
+    convention shared with ``anle`` / ``congbobanan`` / ``vbpl``;
+    ``demucs`` (202 rows) and ``tree_nodes`` (244 rows) stay
+    single-file because they're under the chunk size by two orders
+    of magnitude.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
 
     articles = _coerce_articles(read_jsonl(jsonl_dir / "articles.jsonl"))
     demucs   = _coerce_demucs(read_jsonl(jsonl_dir / "demucs.jsonl"))
     tree     = _coerce_tree(read_jsonl(jsonl_dir / "tree_nodes.jsonl"))
 
-    paths = {
-        "articles":   out_dir / "articles.parquet",
+    article_shards = _write_chunked_articles(articles, out_dir)
+    paths: dict[str, Path] = {
         "demucs":     out_dir / "demucs.parquet",
         "tree_nodes": out_dir / "tree_nodes.parquet",
     }
-    write_parquet(articles, _ARTICLE_SCHEMA, paths["articles"])
+    for i, sp in enumerate(article_shards):
+        paths[f"articles_shard_{i:05d}"] = sp
     write_parquet(demucs, _DEMUC_SCHEMA, paths["demucs"])
     write_parquet(tree, _TREE_SCHEMA, paths["tree_nodes"])
     return paths
@@ -219,7 +285,7 @@ configs:
   default: true
   data_files:
   - split: train
-    path: articles.parquet
+    path: articles-*.parquet
 - config_name: demucs
   data_files:
   - split: train
@@ -638,7 +704,7 @@ Hugging Face** and **the original source** (Bộ Tư pháp):
 
 ```bibtex
 @misc{{phapdien_2026,
-  title        = {{Bộ Pháp Điển Việt Nam (phapdien.moj.gov.vn)}},
+  title        = {{Vietnamese Codified Law Corpus (phapdien.moj.gov.vn)}},
   author       = {{TMQuan}},
   year         = {{2026}},
   howpublished = {{\\url{{https://huggingface.co/datasets/{repo_owner}/{repo_name}}}}},
@@ -646,11 +712,11 @@ Hugging Face** and **the original source** (Bộ Tư pháp):
 }}
 
 @misc{{phapdien_moj_2026,
-  title        = {{Bộ Pháp Điển Việt Nam}},
-  author       = {{{{Ministry of Justice of Vietnam}}}},
+  title        = {{Vietnamese Codified Law Corpus}},
+  author       = {{{{Bộ Pháp Điển Việt Nam}}}},
   year         = {{2026}},
   howpublished = {{\\url{{https://phapdien.moj.gov.vn/}}}},
-  note         = {{Official codified body of Vietnamese law, published by the Ministry of Justice.}}
+  note         = {{Official codified body of Vietnamese law, published by the Ministry of Justice (Bộ Tư pháp).}}
 }}
 ```
 """

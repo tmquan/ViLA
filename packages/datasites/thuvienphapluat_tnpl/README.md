@@ -30,15 +30,11 @@ tags:
   - bilingual
   - parallel-corpus
 configs:
-  - config_name: bilingual
-    data_files:
-      - split: train
-        path: data/terms_translated.jsonl
-    default: true
-  - config_name: vietnamese
+  - config_name: default
     data_files:
       - split: train
         path: data/terms.jsonl
+    default: true
 ---
 
 # thuvienphapluat.vn `/tnpl/` — Vietnamese Legal Terminology (bilingual VI<->EN)
@@ -50,8 +46,8 @@ configs:
 > **thuật ngữ pháp lý** kèm định nghĩa tiếng Việt, lĩnh vực pháp luật,
 > tình trạng hiệu lực, lịch sử cập nhật và các thuật ngữ liên quan.
 > Mỗi cột tiếng Việt đều có cột song song tiếng Anh được dịch tự động
-> bằng mô hình **Qwen3 27B** (chat-completion), giữ nguyên trích dẫn
-> văn bản pháp luật gốc.
+> bằng mô hình **NVIDIA Nemotron 3 Super 120B-A12B** qua điểm cuối NIM
+> chat-completion, giữ nguyên trích dẫn văn bản pháp luật gốc.
 >
 > 🇬🇧 **Summary.** A complete crawl of the public **Thuật ngữ pháp lý**
 > ("Legal Terminology") section of
@@ -60,8 +56,9 @@ configs:
 > a **legal term** with its Vietnamese definition, legal-domain
 > assignment, validity status, edit history, and cross-references to
 > related terms. Every Vietnamese column has a parallel English column
-> machine-translated by a **Qwen3 27B** chat-completion model, with
-> primary-law citations preserved verbatim.
+> machine-translated by **NVIDIA Nemotron 3 Super 120B-A12B** served on
+> the NIM chat-completion endpoint, with primary-law citations
+> preserved verbatim.
 
 ## Tổng quan · At a glance
 
@@ -70,7 +67,7 @@ configs:
 | Số dòng · Records | 16 625 (16 247 *ok* + 378 *not_found* placeholders) |
 | Ngôn ngữ · Languages | Vietnamese (`vi`, source) + English (`en`, machine-translated) |
 | Phân loại chủ đề · Topic taxonomy | 47 LinhVuc → 6 broad legal domains |
-| Bộ dịch · Translator | Qwen3 27B chat-completion (OpenAI-compatible endpoint) |
+| Bộ dịch · Translator | `nvidia/nemotron-3-super-120b-a12b` (NIM chat-completion, reasoning model) |
 | Cuộc gọi LLM · LLM calls | 31 356 (0 errors) |
 | Nhãn EN do trang nguồn cung cấp · Site-published EN labels | 1 138 / 16 247 = **7.0 %** |
 | Khoảng thời gian · Date range | last-edit timestamps 2009 → 2025 (most rows 2020-2023) |
@@ -101,11 +98,11 @@ Diện tích mỗi cung tỉ lệ với số thuật ngữ.
 Judicial / Commercial / Administrative / Other); outer ring shows the
 **47 LinhVuc topics**. Wedge area is proportional to term count.
 
-![Ontology sunburst](figures/ontology_sunburst.png)
+![Ontology sunburst](./ontology_sunburst.png)
 
 ### Top chủ đề · Top topics
 
-![Top-25 LinhVuc bars](figures/ontology_topics.png)
+![Top-25 LinhVuc bars](./ontology_topics.png)
 
 ### Phân bố theo năm · Year distribution
 
@@ -113,28 +110,18 @@ Judicial / Commercial / Administrative / Other); outer ring shows the
 
 🇬🇧 Year of the `updated_at` field (last-edit timestamp).
 
-![Temporal year distribution](figures/temporal_year.png)
-
-### Phân bố độ dài · Length distribution
-
-🇻🇳 Số ký tự của `definition_vi` (tiếng Việt) và `definition_en` (tiếng
-Anh) — vẽ song song để so sánh.
-
-🇬🇧 Character-length histograms for `definition_vi` (Vietnamese) and
-`definition_en` (English) — side-by-side for visual comparison.
-
-![Definition length distribution](figures/length_distribution.png)
+![Temporal year distribution](./temporal_year.png)
 
 ### Độ phủ tiếng Anh theo LinhVuc · English coverage by LinhVuc
 
 🇻🇳 Tỉ lệ dòng được dịch sang tiếng Anh theo từng lĩnh vực. Phần lớn
-được dịch bằng LLM; ~7 % được trang nguồn ghi sẵn nhãn tiếng Anh.
+được dịch bằng LLM; ≈7 % được trang nguồn ghi sẵn nhãn tiếng Anh.
 
 🇬🇧 Per-LinhVuc share of rows with a machine-translated English
-definition. Most are LLM-translated; ~7 % carry a site-published EN
+definition. Most are LLM-translated; ≈7 % carry a site-published EN
 label that the parser short-circuited.
 
-![English coverage](figures/english_coverage.png)
+![English coverage](./english_coverage.png)
 
 ### Mạng tham chiếu chéo · Cross-reference network
 
@@ -144,7 +131,7 @@ là các khái niệm nền tảng ("luật", "hợp đồng", "cá nhân", …)
 🇬🇧 Top-25 most-referenced terms (by in-degree). These are largely
 foundational concepts ("law", "contract", "person", …).
 
-![Cross-reference network](figures/cross_reference_network.png)
+![Cross-reference network](./cross_reference_network.png)
 
 ### Chất lượng dịch — cosine VI<->EN · Translation quality — paired VI<->EN cosine
 
@@ -161,7 +148,7 @@ then we compute the per-row cosine similarity. A faithful translation
 lands both sides in approximately the same point in the shared
 multilingual space ⇒ high cosine.
 
-![Cross-lingual cosine histogram](figures/embedding_crosslingual_similarity.png)
+![Cross-lingual cosine histogram](./embedding_crosslingual_similarity.png)
 
 | Chỉ số · Stat | Giá trị · Value |
 |---|---|
@@ -172,14 +159,14 @@ multilingual space ⇒ high cosine.
 | share > 0.8 | **69.5 %** |
 | share > 0.9 | **18.7 %** |
 
-🇻🇳 Phân phối lệch phải, đỉnh quanh ~0.84 — bản dịch tiếng Anh trung
+🇻🇳 Phân phối lệch phải, đỉnh quanh ≈0.84 — bản dịch tiếng Anh trung
 thành về mặt ngữ nghĩa với phần lớn ngữ liệu. Đuôi trái không phải là
 lỗi dịch, mà thường là **cụm danh từ kỹ thuật rất ngắn** (ví dụ
 "Ra-đa", "Nợ công") — bộ mã hoá đa ngôn ngữ ít token nên cosine thấp;
 bản dịch tự nó vẫn đúng. Coi đây là tín hiệu *cờ-để-rà soát*, không
 phải tín hiệu loại bỏ.
 
-🇬🇧 Right-skewed distribution peaking near ~0.84 — the LLM-produced
+🇬🇧 Right-skewed distribution peaking near ≈0.84 — the LLM-produced
 English is semantically faithful for the bulk of the corpus. The left
 tail is **not** translation failure but short technical noun-phrases
 ("Ra-đa" / "Radar", "Nợ công" / "Public debt") that the multilingual
@@ -188,44 +175,58 @@ encoder under-represents (very few tokens). Treat the cosine as a
 
 ### Cấu trúc ngữ nghĩa — UMAP · Semantic structure — UMAP
 
-🇻🇳 PCA đưa embedding 768-d xuống 50-d, sau đó UMAP chiếu xuống 2D. Tô
-màu theo **6 lĩnh vực pháp luật rộng** hoặc **47 LinhVuc**, vẽ song
-song cho phía tiếng Việt và phía tiếng Anh để so sánh hình dạng cụm.
+🇻🇳 Tất cả các đồ thị UMAP dưới đây dùng **cùng một phép chiếu canonical**:
+trên mỗi dòng, ta lấy embedding tiếng Việt và tiếng Anh (cùng bộ mã hoá
+MPNet đa ngôn ngữ), chuẩn hoá rồi lấy trung bình thành một *vector
+đồng-ngữ-nghĩa*, PCA xuống 50-d và UMAP xuống 2D. Hai cặp hình bên dưới
+**chỉ khác nhau ở ngôn ngữ chú thích**: vị trí điểm, màu sắc, kích thước
+đều giữ nguyên — chuyển VI ↔ EN không làm “xáo lại” bản đồ.
 
-🇬🇧 PCA pre-reduces the 768-d embeddings to 50 dimensions, then UMAP
-projects to 2D. Colour-coded by either the 6 broad legal *categories*
-or the 47 fine *topics*, side-by-side for the Vietnamese source and
-the English translation to compare cluster shapes.
+🇬🇧 All UMAP plots below share the **same canonical projection**: for
+each row we normalise the VI and EN MPNet embeddings, average them on
+the unit sphere into a *language-agnostic anchor*, PCA-prereduce to 50
+dimensions and UMAP-project to 2D. The two pairs below differ only in
+**legend / title language** — point positions, colours, and figure
+dimensions are byte-identical between the VI and EN variants, so
+flipping between them in a presentation never rearranges the picture.
 
-#### UMAP — VI, theo 6 lĩnh vực · by 6 broad categories
+#### UMAP — 6 lĩnh vực rộng · 6 broad legal domains
 
-![VI UMAP, 6 categories](figures/embedding-category-vi-umap.png)
+##### 🇻🇳 nhãn tiếng Việt · VI legend
 
-#### UMAP — VI, theo 47 LinhVuc · by 47 LinhVuc topics
+![Joint UMAP, 6 categories — VI legend](./embedding-category-vi-umap.png)
 
-![VI UMAP, 47 topics](figures/embedding-topic-vi-umap.png)
+##### 🇬🇧 nhãn tiếng Anh · EN legend
 
-#### UMAP — EN, theo 6 lĩnh vực · by 6 broad categories
+![Joint UMAP, 6 categories — EN legend](./embedding-category-en-umap.png)
 
-![EN UMAP, 6 categories](figures/embedding-category-en-umap.png)
+#### UMAP — 47 LinhVuc · 47 fine topics
 
-#### UMAP — EN, theo 47 LinhVuc · by 47 LinhVuc topics
+##### 🇻🇳 nhãn tiếng Việt · VI legend
 
-![EN UMAP, 47 topics](figures/embedding-topic-en-umap.png)
+![Joint UMAP, 47 topics — VI legend](./embedding-topic-vi-umap.png)
 
-🇻🇳 **Cấu trúc cụm không đối xứng VI vs EN.** HDBSCAN
+##### 🇬🇧 nhãn tiếng Anh · EN legend
+
+![Joint UMAP, 47 topics — EN legend](./embedding-topic-en-umap.png)
+
+🇻🇳 **Cấu trúc cụm không đối xứng VI vs EN** (đo trên các phép chiếu
+*đơn-ngữ* phụ trợ — `cluster_vi_id` / `cluster_en_id` trong parquet,
+không hiển thị ở đây để tránh nhiễu thị giác). HDBSCAN
 (`min_cluster_size=50`) trên VI tìm thấy **75 cụm rời rạc** (28 % noise),
 trên EN chỉ tìm thấy **2 cụm rộng** (0 % noise). Đây là dấu vết quen
 thuộc của LLM dịch theo *văn phong đồng đều*. Tác vụ downstream cần
-*nhóm không giám sát mịn* nên dùng `cluster_id` phía VI rồi gán nhãn
+*nhóm không giám sát mịn* nên dùng `cluster_vi_id` rồi gán nhãn
 sang EN.
 
-🇬🇧 **VI vs EN cluster-structure asymmetry.** HDBSCAN
-(`min_cluster_size=50`) finds **75 dense clusters** on the VI side
-(28 % rows in noise) but only **2 broad clusters** on the EN side
+🇬🇧 **VI vs EN cluster-structure asymmetry** (measured on the auxiliary
+monolingual projections — `cluster_vi_id` / `cluster_en_id` in the
+parquet; not plotted here, to keep the canonical map uncluttered).
+HDBSCAN (`min_cluster_size=50`) finds **75 dense clusters** on the VI
+side (28 % rows in noise) but only **2 broad clusters** on the EN side
 (0 % noise). This is a well-known signature of LLM translation
 producing a more *uniform register*. Downstream tasks needing
-fine-grained *unsupervised grouping* should use the VI `cluster_id`
+fine-grained *unsupervised grouping* should use the VI `cluster_vi_id`
 and propagate the label to the paired EN row.
 
 ### Tính nhất quán theo lĩnh vực · Per-domain semantic coherence
@@ -240,7 +241,7 @@ per-domain centroid (EN side). A tight bar with a high mean indicates
 a narrow specialist domain; a wide bar with a lower mean indicates a
 broad / catch-all topical bucket.
 
-![Per-domain coherence](figures/embedding_domain_coherence.png)
+![Per-domain coherence](./embedding_domain_coherence.png)
 
 - **Cụm chặt nhất · Most coherent**: Accounting (0.66), Fire prevention
   & firefighting (0.65), Securities (0.63), Litigation procedure (0.63).
@@ -353,7 +354,7 @@ placeholder rows (ids retracted or never created on the source portal
   "definition_word_count": 64,
   "definition_hash": "a7f2…",
 
-  "translation_model_id": "qwen/qwen3.6-27b",
+  "translation_model_id": "nvidia/nemotron-3-super-120b-a12b",
   "translated_at": "2026-05-18T17:19:00+00:00",
   "fetch_status": "ok"
 }
@@ -370,7 +371,7 @@ placeholder rows (ids retracted or never created on the source portal
 | `scraped_at` | str | UTC ISO 8601 · Per-record fetch timestamp |
 | `scrape_run_id` | str | UTC `YYYYMMDDTHHMMSSZ` chung cho mọi dòng cùng đợt · Shared by all rows of one detail run |
 | `term_name_vi` / `term_name_en` | str / str | **Cột tiếng Việt / tiếng Anh chuẩn** của tên thuật ngữ (cột EN có giá trị trên 100 % dòng *ok*) · **Canonical VI / EN** term name (EN populated on 100 % of *ok* rows) |
-| `term_name_en_native` | str? | **Cột nguồn gốc** — nhãn EN do trang nguồn tự công bố, *null cho ~93 % dòng* (trang nguồn không in nhãn EN) · **Provenance column** — site-published English label; *null for ~93 % of rows* by source design |
+| `term_name_en_native` | str? | **Cột nguồn gốc** — nhãn EN do trang nguồn tự công bố, *null cho ≈93 % dòng* (trang nguồn không in nhãn EN) · **Provenance column** — site-published English label; *null for ≈93 % of rows* by source design |
 | `term_name_source` | str? | `site` (sao chép từ `term_name_en_native`) / `mt` (dịch bằng LLM) / `null` (`not_found`) · Tells you which path filled `term_name_en` |
 | `definition_vi` / `definition_en` | str / str | Văn bản định nghĩa (đã làm sạch khoảng trắng) — cột EN luôn do LLM dịch · Whitespace-collapsed text — EN is always LLM-translated |
 | `definition_source` | str? | `mt` / `null` (`not_found`) — trang nguồn không bao giờ in song song định nghĩa EN · The source page never publishes a parallel EN definition body |
@@ -383,7 +384,7 @@ placeholder rows (ids retracted or never created on the source portal
 | `related_term_names_vi` / `_en` | str[] / str[] | Tên các thuật ngữ liên quan (song ngữ; tra cứu chéo trong corpus) · Bilingual labels of referenced terms |
 | `definition_char_len` / `_word_count` | int / int | Số ký tự / số từ của `definition_vi` · Char / token counts on VI |
 | `definition_hash` | str? | SHA-256 của `definition_vi` (khoá dedup) · SHA-256 of `definition_vi` (dedup key) |
-| `translation_model_id` | str | ID mô hình dịch dùng cho dòng này, ví dụ `qwen/qwen3.6-27b` · Translator model id (e.g. `qwen/qwen3.6-27b`) |
+| `translation_model_id` | str | ID mô hình dịch dùng cho dòng này, mặc định `nvidia/nemotron-3-super-120b-a12b` · Translator model id (default `nvidia/nemotron-3-super-120b-a12b`) |
 | `translated_at` | str | UTC ISO 8601 |
 | `fetch_status` | str | `ok` / `not_found` / `http_<code>` / `empty_fragment` / `crash:<exc>` |
 | `fetch_error` | str? | Exception repr khi `fetch_status` bắt đầu bằng `crash:` |
@@ -392,53 +393,73 @@ placeholder rows (ids retracted or never created on the source portal
 `definition_en`, `area_name_en`, `status_en`, `related_term_names_en`
 (luôn có giá trị trên dòng *ok*). Các cột `*_native` / `*_source` là
 *metadata kiểm tra nguồn gốc*; đặc biệt `term_name_en_native` *null
-cho ~93 %* dòng theo thiết kế của trang nguồn — kết hợp với
+cho ≈93 %* dòng theo thiết kế của trang nguồn — kết hợp với
 `term_name_source == "site"` để lọc tập có nhãn EN do trang nguồn cấp.
 
 🇬🇧 **Reading guide.** The data columns are `term_name_en`,
 `definition_en`, `area_name_en`, `status_en`, `related_term_names_en`
 (100 % populated on ok rows). The `*_native` / `*_source` columns are
 provenance / audit metadata; `term_name_en_native` in particular is
-null for ~93 % of rows by source-page design — read it together with
+null for ≈93 % of rows by source-page design — read it together with
 `term_name_source == "site"` to identify the site-authored EN subset.
 
 ### Splits & configs
 
 | Config | Split | Số dòng · Records | File |
 |---|---|---:|---|
-| `bilingual` (default) | `train` | 16 625 | `data/terms_translated.jsonl` |
-| `vietnamese`          | `train` | 16 625 | `data/terms.jsonl` |
+| `default` (single split, bilingual) | `train` | 16 625 | `data/terms.jsonl` |
 
-🇻🇳 Dùng `load_dataset("tmquan/thuvienphapluat-vn-tnpl")` để nạp config
-song ngữ mặc định; truyền `name="vietnamese"` để chỉ lấy bản chụp gốc
-tiếng Việt (không có cột `*_en`).
+🇻🇳 Bộ dữ liệu chỉ có **một split** (`train`) gồm song ngữ VI + EN. Để
+lấy bản tiếng Việt thuần, lọc các cột `*_en` ở phía khách:
 
-🇬🇧 Use `load_dataset("tmquan/thuvienphapluat-vn-tnpl")` for the
-default bilingual config; pass `name="vietnamese"` for the raw
-Vietnamese capture (no `*_en` columns).
+🇬🇧 The dataset ships a **single `train` split** containing the
+bilingual VI + EN rows. To work with the Vietnamese-only projection,
+drop the `*_en` columns client-side:
+
+```python
+from datasets import load_dataset
+
+ds = load_dataset("tmquan/thuvienphapluat-vn-tnpl", split="train")
+ds_vi = ds.remove_columns([c for c in ds.column_names if c.endswith("_en")])
+```
+
+### Sidecar files · Tệp phụ trợ
+
+🇻🇳 Bộ dữ liệu còn xuất bản các tệp đi kèm dưới gốc kho HF (không
+thuộc bảng `default`, chỉ để tham chiếu / kiểm toán):
+
+🇬🇧 The repository also ships several sidecar files at the root of
+the HF repo (not part of the loadable table; available for
+reference / audit):
+
+| Tệp · File | Nội dung · Contents |
+|---|---|
+| `taxonomy.json`              | Song ngữ 47 LinhVuc + 4 tình trạng (VI ↔ EN) · Bilingual 47-LinhVuc taxonomy + 4 status labels |
+| `manifest.json`              | Tóm tắt đợt `detail` (số dòng theo `fetch_status`) · `detail`-stage roll-up (counts per `fetch_status`) |
+| `translation_manifest.json`  | Tóm tắt đợt `translate` (mô hình, số cuộc gọi LLM, lỗi) · `translate`-stage roll-up (model id, LLM call count, errors) |
+| `analytics.json`             | Số liệu corpus cho thẻ dataset (độ dài, độ phủ, cụm…) · Corpus roll-ups consumed by this card |
+| `*.png`                      | Hình minh hoạ trong mục [Trực quan hoá](#trực-quan-hoá--visualizations) · The visualisations embedded above |
 
 ## Cách dùng · How to use
 
 ```python
 from datasets import load_dataset
 
-# Song ngữ (mặc định) · Bilingual (default): 16,625 rows, VI + EN columns
+# Song ngữ · Bilingual (single split): 16,625 rows, VI + EN columns
 ds = load_dataset("tmquan/thuvienphapluat-vn-tnpl", split="train")
 ok = ds.filter(lambda r: r["fetch_status"] == "ok")
 print(ok[0]["term_name_vi"], "->", ok[0]["term_name_en"])
 print(ok[0]["definition_en"][:120])
 
-# Chỉ tiếng Việt · Vietnamese-only
-ds_vi = load_dataset(
-    "tmquan/thuvienphapluat-vn-tnpl", name="vietnamese", split="train",
-)
+# Chỉ tiếng Việt · Vietnamese-only: drop the *_en columns client-side
+ds_vi = ds.remove_columns([c for c in ds.column_names if c.endswith("_en")])
 
 # Lọc theo lĩnh vực (ví dụ: Đấu thầu) · Filter by domain
 proc = ok.filter(lambda r: (r["area_name_en"] or "").startswith("Procurement"))
 
 # Lấy các thuật ngữ trang nguồn ghi sẵn nhãn EN · Site-authored EN labels
 site_en = ok.filter(lambda r: r["term_name_source"] == "site")
-print(len(site_en), "rows / 16,247")   # ~1,138
+print(len(site_en), "rows / 16,247")   # ≈1,138
 
 # Đồ thị tham chiếu chéo · Cross-reference graph (in-corpus)
 import collections
@@ -456,37 +477,70 @@ API JSON / OData / SOAP / sitemap nào liệt kê đầy đủ các thuật ng�
 (đã kiểm tra mọi endpoint thông thường — đều 404, soft-404, hoặc chỉ
 trả về 20 ID mới nhất). Phương án thu thập duy nhất khả thi là
 **quét tuần tự theo ID nguyên** trong `[1, max_id + id_buffer]` vì ID
-thuật ngữ là số nguyên tăng dần ở phía backend SQL Server. Pipeline 4
-bước:
+thuật ngữ là số nguyên tăng dần ở phía backend SQL Server. Pipeline
+tách rời theo từng bước, mọi bước đều resumable từ artefact trên đĩa:
 
 🇬🇧 The source portal `thuvienphapluat.vn/tnpl/` exposes no
 JSON / OData / SOAP / sitemap API that enumerates the full term
 catalogue (we probed every standard endpoint — all 404, soft-404, or
 return only the latest 20 ids). The only viable harvest strategy is
 **sequential integer-id enumeration** over `[1, max_id + id_buffer]`
-since term ids are sequential SQL Server keys. Four-stage pipeline:
+since term ids are sequential SQL Server keys. The pipeline is split
+into decoupled stages, every one resumable from on-disk artefacts:
 
-| Stage | Reads | Writes |
-|---|---|---|
-| `harvest` | `/tnpl/home` | `jsonl/{taxonomy.json, listings.jsonl}` |
-| `detail`  | id range  | `html/items/<id>.html`, `jsonl/terms.jsonl`, `manifest.json` |
-| `translate` | `terms.jsonl` + per-row cache `translations/<id>.json` | `jsonl/terms_translated.jsonl`, `translation_manifest.json` |
-| `_embed_reduce_inproc` | `terms_translated.jsonl` | `parquet/terms_reduced.parquet` + `embeddings/*.npy` |
+| Stage | Reads | Writes | Notes |
+|---|---|---|---|
+| `harvest`               | `https://thuvienphapluat.vn/tnpl/home`            | `html/index.html`, `jsonl/{taxonomy.json, listings.jsonl}` | One GET; derives the LinhVuc taxonomy + probe range |
+| `detail`                | `listings.jsonl` + cached `html/items/<id>.html`  | `html/items/<id>.html`, `jsonl/terms.jsonl`, `jsonl/manifest.json` | One HTML fragment per term id; soft-404 ids are kept as `fetch_status="not_found"` |
+| `translate`             | `terms.jsonl` + cache `translations/<id>.json`    | `jsonl/terms_translated.jsonl`, `jsonl/translation_manifest.json`  | NIM Nemotron 3 Super 120B-A12B; per-row cache pinned by `model_id` |
+| `analyze` + `viz`       | `terms_translated.jsonl`                          | `jsonl/analytics.json`, `<host>/hf/*.png`             | Corpus roll-ups + the visualisations embedded in this card |
+| `_embed_reduce_inproc`  | `terms_translated.jsonl`                          | `parquet/terms_reduced.parquet` + `embeddings/*.npy` | Optional bilingual embedding + UMAP / t-SNE / HDBSCAN |
+| `hf_export` + `push_to_hf` | `jsonl/*` + figures                           | `<host>/hf/` → HuggingFace dataset repo               | Strips local-only `html_path`; copies sidecars verbatim |
+
+CLI walkthrough (each step is idempotent and resumable):
+
+```bash
+# 1) Walk /tnpl/home once, derive the probe range + LinhVuc taxonomy.
+python -m packages.datasites.thuvienphapluat_tnpl --pipeline harvest
+
+# 2) Fetch every detail page (≈17k probes at the default 2 QPS / 4 workers).
+#    Re-running picks up where you left off via html/items/<id>.html.
+python -m packages.datasites.thuvienphapluat_tnpl --pipeline detail
+
+# 3) Translate every Vietnamese row through the pinned NIM model.
+#    Requires NVIDIA_API_KEY; resumable from translations/<id>.json caches.
+NVIDIA_API_KEY=nvapi-... \
+python -m packages.datasites.thuvienphapluat_tnpl --pipeline translate
+
+# 4) Compute corpus roll-ups + render the figures consumed by the dataset card.
+python -m packages.datasites.thuvienphapluat_tnpl.analyze
+python -m packages.datasites.thuvienphapluat_tnpl.viz
+
+# 5) (Optional) Bilingual embedding + UMAP / t-SNE / HDBSCAN for the
+#    embedding-scatter PNGs and the cluster_id columns.
+python -m packages.datasites.thuvienphapluat_tnpl._embed_reduce_inproc
+
+# 6) Materialise the HF-ready folder under data/<host>/hf/ and push it.
+python -m packages.datasites.thuvienphapluat_tnpl.hf_export
+python -m packages.datasites.thuvienphapluat_tnpl.push_to_hf \
+    --repo-id tmquan/thuvienphapluat-vn-tnpl
+```
 
 🇻🇳 Tốc độ "lịch sự": 2 QPS / 4 worker (Cloudflare WAF của trang nguồn
 ban-bucket các crawler nhanh trong 5-15 phút; downloader retry HTTP
-403 với exponential backoff). Toàn bộ pipeline lần đầu: ~3 ngày
-(detail) + ~3 giờ (dịch) + ~30 phút (phân tích embedding + viz).
-Mọi bước đều **idempotent** nhờ cache HTML / cache dịch / cache
-embedding fingerprint-validated, nên chạy lại không tốn mạng/LLM.
+403 với exponential backoff lên đến 5 lần × 60-600 s). Toàn bộ pipeline
+lần đầu: ≈3 ngày (detail) + ≈3 giờ (dịch) + ≈30 phút (phân tích
+embedding + viz). Mọi bước đều **idempotent** nhờ cache HTML / cache
+dịch / cache embedding fingerprint-validated, nên chạy lại không tốn
+mạng/LLM.
 
 🇬🇧 Polite envelope: 2 QPS / 4 workers (Cloudflare WAF on the source
 ban-buckets aggressive crawlers into 5-15 min windows; the downloader
-retries HTTP 403 with exponential backoff). Full first-pass: ~3 days
-(detail) + ~3 hours (translate) + ~30 minutes (embed + reduce + viz).
-Every stage is **idempotent** through the HTML / translation / and
-fingerprint-validated embedding caches, so re-runs hit neither the
-network nor the LLM.
+retries HTTP 403 with exponential backoff up to 5× 60-600 s). Full
+first-pass: ≈3 days (detail) + ≈3 hours (translate) + ≈30 minutes
+(embed + reduce + viz). Every stage is **idempotent** through the
+HTML / translation / and fingerprint-validated embedding caches, so
+re-runs hit neither the network nor the LLM.
 
 ## Hạn chế đã biết · Known limitations
 
@@ -499,18 +553,18 @@ khảo". **Không thay thế** Cơ sở dữ liệu Quốc gia về pháp luật
 (`vbpl.vn`) khi cần xác định luật hiện hành.
 (ii) **Lệch chủ đề**: 5 LinhVuc lớn nhất (Tài nguyên - Môi trường,
 Giao thông vận tải, Tiền tệ - Ngân hàng, Y tế, Công nghệ thông tin)
-chiếm ~30 % corpus; nhiều LinhVuc chuyên biệt thưa.
+chiếm ≈30 % corpus; nhiều LinhVuc chuyên biệt thưa.
 (iii) **Cluster EN bị thu gọn**: bản dịch LLM dùng văn phong khá đồng
 đều ⇒ HDBSCAN trên embedding EN chỉ tìm thấy 2 cụm rộng. Khi cần nhóm
 ngữ nghĩa mịn, dùng `cluster_vi_id` thay vì cluster EN.
 (iv) **Cosine VI<->EN thấp trên cụm danh từ ngắn**: không phải lỗi
-dịch — mô hình embedding đa ngôn ngữ ít token (~1-3 token) tạo
+dịch — mô hình embedding đa ngôn ngữ ít token (≈1-3 token) tạo
 nhiễu hình học. Bản dịch tự nó vẫn đúng.
 (v) **Tham chiếu chéo có thể "dangling"**: một số `related_term_ids`
 trỏ đến ID đã bị xoá (`fetch_status="not_found"`); trong trường hợp đó
 `related_term_names_en[i]` rơi về văn bản link tiếng Việt gốc.
 (vi) **`term_name_en_native` *chủ yếu là null***: trang nguồn chỉ in
-nhãn EN cho ~7 % dòng (1 138 / 16 247). Đây là **không phải lỗi**;
+nhãn EN cho ≈7 % dòng (1 138 / 16 247). Đây là **không phải lỗi**;
 dùng `term_name_en` (luôn có giá trị) làm cột EN chuẩn, và
 `term_name_en_native` chỉ làm audit nguồn gốc.
 
@@ -522,13 +576,13 @@ carry article-/clause-level citations, but the source itself adds a
 the National Legal Database (`vbpl.vn`) when determining current law.
 (ii) **Topic skew**: the top-5 LinhVuc (Natural resources &
 environment, Transportation, Currency & banking, Healthcare, IT)
-account for ~30 % of the corpus; many niche LinhVuc are sparse.
+account for ≈30 % of the corpus; many niche LinhVuc are sparse.
 (iii) **Collapsed EN cluster structure**: the LLM translation uses a
 fairly uniform register so HDBSCAN on the EN embeddings finds only
 2 broad clusters. Use `cluster_vi_id` (75 dense clusters) for
 fine-grained semantic grouping.
 (iv) **Low VI<->EN cosine on short noun-phrases**: not translation
-failure — the multilingual encoder has very few tokens (~1-3) for
+failure — the multilingual encoder has very few tokens (≈1-3) for
 short technical labels, producing geometric noise. The translation
 itself is correct.
 (v) **Dangling cross-references**: some `related_term_ids` point to
@@ -536,7 +590,7 @@ retracted ids (`fetch_status="not_found"`); in those cases
 `related_term_names_en[i]` falls back to the original Vietnamese link
 text.
 (vi) **`term_name_en_native` is *mostly null***: the source page
-publishes a parallel EN label for only ~7 % of rows (1,138 / 16,247).
+publishes a parallel EN label for only ≈7 % of rows (1,138 / 16,247).
 This is **not a bug** — use `term_name_en` (always populated on ok
 rows) as the canonical English term name; reserve `term_name_en_native`
 for source-provenance auditing.
@@ -544,7 +598,7 @@ for source-provenance auditing.
 ## Riêng tư & đạo đức · Personal / sensitive information
 
 🇻🇳 `updated_by_vi` / `updated_by_en` ghi tên người sửa lần gần nhất
-trên trang nguồn. Đa số (~70 %) là `Người dùng không đăng nhập` →
+trên trang nguồn. Đa số (≈70 %) là `Người dùng không đăng nhập` →
 `Unauthenticated user` (placeholder ẩn danh do hệ thống tự gán); phần
 còn lại là **tên người Việt thật** mà trang nguồn đã công khai. Các
 tên này **đã** được trang `thuvienphapluat.vn` công khai (do người đóng
@@ -554,7 +608,7 @@ phơi từng dòng nếu có thể. Bộ dữ liệu giữ nguyên cột để b
 audit và quyết định ẩn danh hoá.
 
 🇬🇧 `updated_by_vi` / `updated_by_en` records the last editor as
-published by the source. ~70 % are `Người dùng không đăng nhập`
+published by the source. ≈70 % are `Người dùng không đăng nhập`
 ("Unauthenticated user", an anonymous system placeholder); the rest
 are **real-looking Vietnamese person names** as published by the
 contributor on the source site. These names are **already public**
@@ -599,16 +653,16 @@ non-exclusive expectations:
 
 ```bibtex
 @misc{thuvienphapluat_tnpl_bilingual_2026,
-  title        = {thuvienphapluat.vn /tnpl/ — Bilingual VI<->EN Vietnamese Legal Terminology},
+  title        = {Vietnamese Legal Terminology (thuvienphapluat.vn/tnpl)},
   author       = {TMQuan},
   year         = {2026},
   howpublished = {\url{https://huggingface.co/datasets/tmquan/thuvienphapluat-vn-tnpl}},
-  note         = {Bilingual mirror of the public Thu\d{a}t ng\d{u} ph\'ap l\'y corpus from THƯ VIỆN PHÁP LUẬT; English column produced by a Qwen3 27B chat-completion model.}
+  note         = {Bilingual mirror of the public Thu\d{a}t ng\d{u} ph\'ap l\'y corpus from THƯ VIỆN PHÁP LUẬT; English column produced by the \texttt{nvidia/nemotron-3-super-120b-a12b} NIM chat-completion model.}
 }
 
 @misc{thuvienphapluat_tnpl_source_2026,
-  title        = {Thuật ngữ pháp lý — THƯ VIỆN PHÁP LUẬT},
-  author       = {{THƯ VIỆN PHÁP LUẬT contributors}},
+  title        = {Vietnamese Legal Terminology},
+  author       = {{Thuật ngữ pháp lý — THƯ VIỆN PHÁP LUẬT}},
   year         = {2026},
   howpublished = {\url{https://thuvienphapluat.vn/tnpl/}},
   note         = {Community-authored Vietnamese legal-terminology dictionary.}

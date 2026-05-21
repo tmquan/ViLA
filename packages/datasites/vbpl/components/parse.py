@@ -328,6 +328,8 @@ class VbplDocumentParser:
             "source_url": row.get("source_url"),
             "api_url": row.get("api_url"),
             "doc_type": row.get("doc_type"),
+            "legal_type": row.get("legal_type"),
+            "legal_area": row.get("legal_area"),
             "so_hieu": row.get("so_hieu"),
             "ngay_ban_hanh": row.get("ngay_ban_hanh"),
             "co_quan_ban_hanh": row.get("co_quan_ban_hanh"),
@@ -395,6 +397,18 @@ def _html_to_markdown(html: str) -> str:
             return BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
         except ImportError:
             return ""
+
+    # Strip vbpl-specific gateway scaffolding (``Document Content``
+    # preamble, Word ``<!-- @font-face … -->`` dumps, Ant Design
+    # CSS chains, ``@keyframes`` blocks, malformed inline
+    # ``<span style="…">`` tags). Done here so the cached ``.md``
+    # files on disk -- and every downstream consumer that reads
+    # them -- never sees the junk.
+    from packages.datasites.vbpl.components.parser import (
+        strip_markdown_junk,
+    )
+    md = strip_markdown_junk(md) or ""
+
     # markdownify can leave runs of blank lines; collapse > 2 to 2.
     out_lines: list[str] = []
     blanks = 0

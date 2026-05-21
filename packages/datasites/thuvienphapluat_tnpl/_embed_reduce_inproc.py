@@ -341,16 +341,18 @@ def _hdbscan_clusters(
     return labels.astype(np.int32)
 
 
+def _row_norm(M: np.ndarray) -> np.ndarray:
+    """L2-normalise rows of ``M``; zero rows are left as-is (masked later)."""
+    n = np.linalg.norm(M, axis=1)
+    n = np.where(n == 0.0, 1.0, n)
+    return M / n[:, None]
+
+
 def _crosslingual_cosine(emb_vi: np.ndarray, emb_en: np.ndarray) -> np.ndarray:
     """Per-row cosine similarity between paired VI and EN embeddings.
 
     Returns NaN for rows where either side was empty (zero vector).
     """
-    def _row_norm(M: np.ndarray) -> np.ndarray:
-        n = np.linalg.norm(M, axis=1)
-        n = np.where(n == 0.0, 1.0, n)  # avoid div-by-zero; mask later
-        return M / n[:, None]
-
     a = _row_norm(emb_vi)
     b = _row_norm(emb_en)
     cos = (a * b).sum(axis=1).astype(np.float32)
@@ -358,6 +360,23 @@ def _crosslingual_cosine(emb_vi: np.ndarray, emb_en: np.ndarray) -> np.ndarray:
     bad = (np.linalg.norm(emb_vi, axis=1) == 0.0) | (np.linalg.norm(emb_en, axis=1) == 0.0)
     cos[bad] = np.nan
     return cos
+
+
+def _joint_embedding(emb_vi: np.ndarray, emb_en: np.ndarray) -> np.ndarray:
+    """Multilingual joint representation per row.
+
+    Average of the **unit-normalised** VI and EN embeddings, then
+    L2-normalised again. Since both sides come from the same
+    multilingual MPNet encoder, this places the row at the centroid of
+    its two language renditions on the unit sphere -- a stable,
+    language-agnostic anchor that the canonical UMAP / PCA projection
+    can be fit against. Empty rows (zero on either side) collapse to
+    whichever side is non-zero; rows zero on both stay zero.
+    """
+    a = _row_norm(emb_vi)
+    b = _row_norm(emb_en)
+    mean = (a + b) * 0.5
+    return _row_norm(mean).astype(np.float32)
 
 
 def run(
@@ -423,6 +442,17 @@ def run(
     logger.info("reducing EN (%d methods)", len(methods))
     reduced_en = _reduce(emb_en, methods=methods, n_components=n_components, prefer_gpu=prefer_gpu)
 
+    # Joint multilingual projection: per-row mean of unit-normalised
+    # VI / EN embeddings, re-projected via the same reducers. This is
+    # the **canonical** map consumed by viz.render_embedding_scatter
+    # so the VI- and EN-legend renders of any given figure share the
+    # exact same scatter (only the legend / title language differ).
+    logger.info("reducing JOINT (multilingual centroid; %d methods)", len(methods))
+    emb_joint = _joint_embedding(emb_vi, emb_en)
+    reduced_joint = _reduce(
+        emb_joint, methods=methods, n_components=n_components, prefer_gpu=prefer_gpu,
+    )
+
     min_cs = int(getattr(cfg.reducer, "hdbscan_min_cluster_size", 50))
     min_s  = int(getattr(cfg.reducer, "hdbscan_min_samples", 10))
     cluster_vi_id = _hdbscan_clusters(
@@ -475,6 +505,9 @@ def run(
     for slug, mat in reduced_vi.items():
         out_df[f"{slug}_vi_x"] = mat[:, 0]
         out_df[f"{slug}_vi_y"] = mat[:, 1]
+    for slug, mat in reduced_joint.items():
+        out_df[f"{slug}_joint_x"] = mat[:, 0]
+        out_df[f"{slug}_joint_y"] = mat[:, 1]
 
     out_df["cluster_id"] = cluster_en_id
     out_df["cluster_en_id"] = cluster_en_id

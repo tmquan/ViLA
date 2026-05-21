@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -59,9 +60,22 @@ PALETTE = [
 ]
 
 
-def save(fig: go.Figure, name: str, *, w: int = 1280, h: int = 520) -> Path:
+def save(
+    fig: go.Figure, name: str,
+    *, w: int | None = 1280, h: int | None = 520,
+) -> Path:
+    """Write ``fig`` to ``ASSETS / name``. ``w=None / h=None`` keeps the
+    figure's own ``layout.width`` / ``layout.height`` -- the embedding
+    scatters set those to ``EMBED_FIG_W_PX`` / ``EMBED_FIG_H_PX`` so
+    their on-disk size matches every other embedding figure in the
+    repo. ``scale=2`` is only applied when both ``w`` and ``h`` are
+    set (legacy overview figures); embedding figures render at their
+    declared pixel size so the pinned plot rectangle round-trips."""
     out = ASSETS / name
-    fig.write_image(out, width=w, height=h, scale=2)
+    if w is None or h is None:
+        fig.write_image(out)
+    else:
+        fig.write_image(out, width=w, height=h, scale=2)
     print(f"  wrote {out.relative_to(ROOT)}  ({out.stat().st_size / 1e3:.0f} KB)")
     return out
 
@@ -271,42 +285,77 @@ red_df = red_df.merge(pd.DataFrame(labels), on="doc_name", how="left")
 red_df = red_df.merge(recs[["doc_name", "adopted_year", "applied_article_number"]],
                       on="doc_name", how="left")
 
-METHODS = [("PCA", "pca_x", "pca_y"),
-           ("t-SNE", "tsne_x", "tsne_y"),
-           ("UMAP", "umap_x", "umap_y")]
+# Single-panel UMAP scatter for every facet; pinned plot rectangle +
+# right-sidebar legend match ``packages/common/embed_viz`` so this
+# figure is pixel-aligned with every other embedding PNG across the
+# repo (vbpl, anle/hf_export, congbobanan, ...). PCA / t-SNE
+# projections remain in the reducer parquet for downstream consumers
+# but the dataset card only ships UMAP scatters one-per-row.
+sys.path.insert(0, str(ROOT.parent.parent))
+from packages.common.embed_viz import (  # noqa: E402
+    EMBED_FIG_H_PX, EMBED_FIG_W_PX,
+    EMBED_LEGEND_TOP, EMBED_PLOT_XDOMAIN, EMBED_PLOT_YDOMAIN,
+    EMBED_SIDEBAR_X,
+)
 
 
-def faceted(df, color_col, title, palette):
+def _umap_scatter(
+    df: pd.DataFrame, color_col: str, title: str,
+    palette: dict[str, str],
+) -> go.Figure:
+    """One pinned-axes UMAP scatter coloured by ``color_col``.
+
+    Drops in for the previous 3-up subplot grid (PCA / t-SNE /
+    UMAP). The data rectangle is locked to
+    :data:`EMBED_PLOT_XDOMAIN` x :data:`EMBED_PLOT_YDOMAIN`; the
+    legend lives in the right sidebar (``x=EMBED_SIDEBAR_X``) and is
+    free to wrap into multiple rows / columns without nudging the
+    plot.
+    """
     order = list(palette.keys())
-    fig = make_subplots(rows=1, cols=3, subplot_titles=[m[0] for m in METHODS],
-                        horizontal_spacing=0.06)
-    seen = set()
-    for col_idx, (_, xcol, ycol) in enumerate(METHODS, start=1):
-        for cat in order:
-            sub = df[df[color_col] == cat]
-            if sub.empty:
-                continue
-            fig.add_trace(go.Scattergl(
-                x=sub[xcol], y=sub[ycol], mode="markers",
-                name=cat, legendgroup=cat, showlegend=cat not in seen,
-                marker=dict(size=4, color=palette[cat], opacity=0.8, line=dict(width=0)),
-            ), row=1, col=col_idx)
-            seen.add(cat)
-    fig.update_layout(title=title,
-                      legend=dict(orientation="v", x=1.01, y=1, xanchor="left"),
-                      width=1400, height=520, margin=dict(l=60, r=260, t=80, b=60))
-    for i, (label, xcol, ycol) in enumerate(METHODS, start=1):
-        fig.update_xaxes(title=xcol, row=1, col=i)
-        fig.update_yaxes(title=ycol, row=1, col=i)
+    fig = go.Figure()
+    for cat in order:
+        sub = df[df[color_col] == cat]
+        if sub.empty:
+            continue
+        fig.add_trace(go.Scattergl(
+            x=sub["umap_x"], y=sub["umap_y"], mode="markers",
+            name=cat,
+            marker=dict(size=4, color=palette[cat], opacity=0.75,
+                        line=dict(width=0)),
+        ))
+    fig.update_layout(
+        title={
+            "text": title,
+            "x": (EMBED_PLOT_XDOMAIN[0] + EMBED_PLOT_XDOMAIN[1]) / 2,
+            "xanchor": "center",
+        },
+        width=EMBED_FIG_W_PX, height=EMBED_FIG_H_PX,
+        margin=dict(l=10, r=10, t=70, b=30),
+        legend=dict(
+            x=EMBED_SIDEBAR_X, xanchor="left",
+            y=EMBED_LEGEND_TOP, yanchor="top",
+            itemsizing="constant",
+            font=dict(size=10),
+            bgcolor="rgba(255,255,255,0.85)",
+            bordercolor="rgba(0,0,0,0.05)", borderwidth=0,
+            tracegroupgap=2,
+            title=dict(text=f"<b>{color_col}</b>", font=dict(size=11)),
+        ),
+        xaxis=dict(title="umap_x", domain=list(EMBED_PLOT_XDOMAIN),
+                   automargin=False, showgrid=True, zeroline=False),
+        yaxis=dict(title="umap_y", domain=list(EMBED_PLOT_YDOMAIN),
+                   automargin=False, showgrid=True, zeroline=False),
+    )
     return fig
 
 
 sector_order = red_df["legal_sector"].value_counts().index.tolist()
 sector_palette = _palette(sector_order)
-fig = faceted(red_df, "legal_sector",
-              "Reduced embeddings — coloured by legal sector",
-              sector_palette)
-save(fig, "07_reduced_sector.png", w=1400, h=520)
+fig = _umap_scatter(red_df, "legal_sector",
+                    "Reduced embeddings — coloured by legal sector",
+                    sector_palette)
+save(fig, "07_reduced_sector.png", w=None, h=None)
 
 proc_palette_full = {
     "Sơ thẩm (first instance)":  "#2ca02c",
@@ -316,10 +365,10 @@ proc_palette_full = {
     "Unknown / unparsed":        "#7f7f7f",
 }
 proc_palette = {k: v for k, v in proc_palette_full.items() if k in red_df["procedural_level"].unique()}
-fig = faceted(red_df, "procedural_level",
-              "Reduced embeddings — coloured by procedural level",
-              proc_palette)
-save(fig, "08_reduced_procedural.png", w=1400, h=520)
+fig = _umap_scatter(red_df, "procedural_level",
+                    "Reduced embeddings — coloured by procedural level",
+                    proc_palette)
+save(fig, "08_reduced_procedural.png", w=None, h=None)
 
 red_df["cluster_label"] = np.where(
     red_df["cluster_id"] == -1, "noise", "c" + red_df["cluster_id"].astype(str)
@@ -329,10 +378,10 @@ cluster_order = (["noise"] if (red_df["cluster_id"] == -1).any() else []) + sort
 )
 cluster_palette = {c: PALETTE[i % len(PALETTE)] for i, c in enumerate([c for c in cluster_order if c != "noise"])}
 cluster_palette["noise"] = "#cfcfcf"
-fig = faceted(red_df, "cluster_label",
-              "Reduced embeddings — coloured by HDBSCAN cluster id",
-              {c: cluster_palette[c] for c in cluster_order})
-save(fig, "09_reduced_cluster.png", w=1400, h=520)
+fig = _umap_scatter(red_df, "cluster_label",
+                    "Reduced embeddings — coloured by HDBSCAN cluster id",
+                    {c: cluster_palette[c] for c in cluster_order})
+save(fig, "09_reduced_cluster.png", w=None, h=None)
 
 # ---------------------------------------------------------------------------
 # Stats blob

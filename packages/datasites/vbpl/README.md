@@ -1,6 +1,7 @@
 # vbpl.vn — National Legal Database crawler
 
-Four-stage curator for the public **Cơ sở dữ liệu Quốc gia về pháp luật**
+Six-stage curator (`harvest` → `detail` → `parse` → `extract` → `embed`
+→ `reduce`) for the public **Cơ sở dữ liệu Quốc gia về pháp luật**
 at [vbpl.vn](https://vbpl.vn/), the Ministry of Justice's central +
 provincial legal-document database. As of 2026-05 the corpus is
 ~160 K documents:
@@ -138,7 +139,8 @@ If you skip:
 ## Running
 
 ```bash
-# All four stages end-to-end (harvest -> detail -> parse -> extract).
+# All six stages end-to-end
+# (harvest -> detail -> parse -> extract -> embed -> reduce).
 python -m packages.datasites.vbpl --pipeline all
 
 # Walk the public sitemap chain only (~30 s, 32 shards, ~160 K rows).
@@ -257,10 +259,11 @@ provenance:
 | `doc_name` / `item_id` | str | docs.jsonl | primary key (string form, see above) |
 | `scope` | str | docs.jsonl | `trung_uong` / `dia_phuong` |
 | `source` / `source_url` / `api_url` | str | docs.jsonl | provenance |
-| `doc_type`, `so_hieu`, `ngay_ban_hanh`, `co_quan_ban_hanh`, `trich_yeu`, `title` | str? | docs.jsonl | sidebar metadata |
+| `doc_type`, `legal_type`, `legal_area`, `ngay_ban_hanh`, `co_quan_ban_hanh`, `trich_yeu`, `title` | str? | docs.jsonl | sidebar metadata; `doc_type` is a self-describing ASCII snake_case slug (e.g. `quyet_dinh`, `thong_tu_lien_tich`) auto-derived from `legal_type` via `slugify_vi`, `legal_type` is the canonical Vietnamese full name (e.g. `Quyết định`), `legal_area` the first non-empty area label (e.g. `Đất đai`, defaulting to `Chưa phân loại`); `title` is post-scrub (legal-type head + leading `Lỗi` marker + `<DocType> <DocNum>` cross-refs removed via `clean_title`) and may be `null` for pathological titles that were nothing but a doc-num |
+| `so_hieu` | list&lt;str&gt;? | docs.jsonl | document number(s), one per cell — e.g. `["43/2026/NĐ-CP"]`. A small minority of rows pack multiple identifiers (separated by Vietnamese ` và ` or `,`) and ship as multi-element lists. `normalise_so_hieu_list` peels leading legal-type words, strips trailing annotations (`(1)`, ` ngày ...`, ` 2022`, ` VĂN BẢN TRÙNG`, ` & XH`), and validates each chunk against `^\d+[A-Za-z]?[/-][\w/-]+$`. The `Không số` sentinel is preserved verbatim. |
 | `file_paths` | obj[] | docs.jsonl | downloaded attachment manifest |
 | `html_path` / `md_path` | str | filesystem | absolute paths |
-| `body_source` | str | runtime | which source produced the markdown: `file` (downloaded PDF/.doc/.docx), `body_html` (API-captured), `shell_html` (Next.js shell fallback), or `empty` |
+| `body_source` | str | runtime | which source produced the markdown: `file` (downloaded PDF/.doc/.docx), `body_html` (API-captured), `shell_html` (Next.js shell fallback — the gateway never delivered a real body), or `empty`. In the published parquet, every row whose final `body_source` is still `shell_html` after the **May-2026 live-API recovery sweep** carries `markdown=null` (the source genuinely has no body for those legacy IDs); the bibliographic columns stay populated. |
 | `parser_model` | str | runtime | model id of the backend that won (e.g. `local/pypdf`, `local/markdownify`, `nvidia/nemoretriever-parse`) |
 | `parser_runtime` | str | cfg | the configured `parser.runtime` (`local` / `nim` / `hybrid`) |
 | `num_pages` / `confidence` | int? / float? | runtime | per-doc parser stats |
@@ -279,13 +282,13 @@ One row per parsed document, schema fields and order pinned in
 | `scope` | str | meta | `trung_uong` / `dia_phuong` |
 | `source` / `source_url` / `api_url` | str | meta | provenance |
 | `html_path` / `md_path` / `file_paths` | str / obj[] | meta | filesystem audit trail |
-| `markdown` | str | runtime | NFC-normalised, Vietnamese tone-canonicalised body (the column the embedder will hash + chunk) |
+| `markdown` | str? | runtime | NFC-normalised, Vietnamese tone-canonicalised body (the column the embedder will hash + chunk). Gateway/Word/Next.js scaffolding (`Document Content` preamble, `<!-- @font-face … -->` Word stylesheet dumps, Ant Design `:where(.css-…)` chains, `@keyframes` blocks, malformed inline `<span style="…">` tags) is stripped via `strip_markdown_junk`. **Null** in the published parquet when (a) `body_source == "shell_html"` after the May-2026 live-API recovery (the source has no body for those legacy IDs) or (b) the upstream title starts with the vbpl `"Lỗi "` editorial marker. Bibliographic metadata (title, agency, so_hieu, ...) stays populated on NULL-markdown rows. |
 | `num_pages` / `confidence` / `parser_model` / `parser_runtime` / `body_source` / `parsed_at` | mixed | meta | parse-stage provenance forwarded |
 | `text_hash` | str | runtime | SHA-256 of `markdown` (stable dedup key, deterministic across re-runs) |
 | `char_len` | int | runtime | post-normalisation length |
 | `extracted` | obj | GenericExtractor | `{entities, relations, statute_refs}` (regex NER + Vietnamese statute linker) |
 | `structure` | obj? | LegalStructureExtractor | `{meta, stats, sections, paragraphs, sentences}` -- hierarchical legal-doc model with section / paragraph / sentence backpointers; `null` when `cfg.extractor.run_structure_layer=false` |
-| `title`, `doc_type`, `so_hieu`, `ngay_ban_hanh`, `co_quan_ban_hanh`, `trich_yeu` | str? | meta | sidebar metadata forwarded |
+| `title`, `doc_type`, `legal_type`, `legal_area`, `so_hieu`, `ngay_ban_hanh`, `co_quan_ban_hanh`, `trich_yeu` | str? | meta | sidebar metadata forwarded; `doc_type` is a snake_case Vietnamese slug (e.g. `quyet_dinh`, `thong_tu_lien_tich`), `legal_type` the canonical full name (e.g. `Quyết định`), `legal_area` the first non-empty area label (defaults to `Chưa phân loại`), `title` has the redundant `"<legal_type> số <so_hieu>"` head stripped (90.7% of titles affected) |
 | `scrape_run_id` / `parse_run_id` / `extract_run_id` / `extracted_at` | str | runtime | full provenance chain |
 
 ### `parquet/embeddings/<id>.parquet` (embed output)
@@ -329,12 +332,14 @@ HDBSCAN cluster id. Order pinned in
 | `api_url` | str? | first captured API response | URL of the metadata endpoint |
 | `scraped_at` | str | UTC now | per-record fetch timestamp |
 | `scrape_run_id` | str | UTC at run start | groups records from one run |
-| `doc_type` | str? | API JSON | e.g. "Nghị định", "Thông tư" |
+| `doc_type` | str? | API JSON | self-describing snake_case slug (`quyet_dinh`, `nghi_dinh`, `thong_tu_lien_tich`, …) auto-derived from `legal_type` via `slugify_vi`; the compact short code (`QĐ`, `NĐ`, `TTLT`, …) still appears inside `so_hieu` and is recoverable via `SLUG_TO_CANONICAL_CODE`. Legacy `docType.code` values like `CThi` / `LVB-SLe` are normalised through `packages.datasites.vbpl.codes`. |
+| `legal_type` | str? | API JSON | canonical Vietnamese full name (`Quyết định`, `Nghị định`, `Chỉ thị`, …) |
+| `legal_area` | str? | API JSON | first non-empty area label from `documentFields[]` (`Đất đai`, `Đường bộ`, …). Defaults to `Chưa phân loại` when the doc isn't tagged on the source portal. |
 | `so_hieu` | str? | API JSON | document number (e.g. "43/2026/NĐ-CP") |
 | `ngay_ban_hanh` | str? | API JSON | issue date, ISO `YYYY-MM-DD` |
 | `co_quan_ban_hanh` | str? | API JSON | issuing agency |
 | `trich_yeu` | str? | API JSON | abstract / summary |
-| `title` | str | API JSON / sitemap slug | |
+| `title` | str | API JSON / sitemap slug | NFC + HTML-entity decoded, smart quotes flattened, redundant `"<legal_type> số <so_hieu>"` prefix stripped (e.g. `"Quyết định số 143/QĐ-KHTC Ban hành Quy chế quản lý ngân sách ngành Tư pháp"` becomes `"Ban hành Quy chế quản lý ngân sách ngành Tư pháp"`). The legal-type + document-number facts already live in dedicated columns so the boilerplate head would only dilute downstream embeddings. |
 | `body_html` | str | API JSON | preserved verbatim |
 | `body_text` | str | derived | tag-stripped, whitespace-collapsed |
 | `body_char_len` | int | derived | for length analysis |
@@ -362,6 +367,42 @@ HDBSCAN cluster id. Order pinned in
      consumers can see the gap.
   4. **Empty** -- recorded with `body_source="empty"` so audits land
      a row instead of silently dropping.
+* **Markdown junk stripping** (`strip_markdown_junk`, applied at
+  the tail of `_html_to_markdown` in `parse.py` and again
+  defensively in `hf_export._project_record`). The vbpl gateway
+  ships every body wrapped in a small CSS shim
+  (`Document Content\n\nbody { font-family: … }\np { … }`); Word-
+  authored docs add 1-30 KB of `<!-- @font-face … p.MsoNormal { … }
+  -->` Word stylesheet on top; `body_source="shell_html"` docs
+  pick up 100-200 KB of Ant Design / Next.js framework CSS
+  (`:where(.css-…){…}@keyframes …{…}…`) plus boot scripts. All of
+  it is pure scaffolding -- it pads the embedding text without
+  carrying any Vietnamese legal signal. The cleaner removes it in
+  layered passes (`Document Content` preamble; HTML comments;
+  iterative `selector { props }` blocks gated by property /
+  selector / structural CSS tells; orphan selector fragments;
+  malformed inline `<span style="…">` tags), then collapses the
+  blank-line runs. About **90 % of bodies are touched** and
+  **~1.77 GB / 42 %** of the markdown corpus is removed (audit
+  numbers as of 2026-05-20). `shell_html` rows that survived the
+  May-2026 live-API recovery (Phase A) are NULL-marked in the
+  published parquet (`markdown=null`); the bibliographic columns
+  stay populated so consumers retain the citation handle.
+
+### May-2026 live-API recovery (`scripts/recovery-rerun`)
+
+A targeted retry against the public
+`https://vbpl-bientap-gateway.moj.gov.vn/api/qtdc/public/doc/<id>`
+endpoint (no auth required) recovered **3,849 / 15,351** previously
+`shell_html`-classified documents that the gateway now publishes a
+real body for. The remaining 11,505 are genuinely bodyless on the
+official source -- those, plus 3 `body_html` rows whose title
+begins with the vbpl `"Lỗi "` (Error) editorial marker, ship with
+`markdown=null` in the parquet. The recovered IDs are tagged with
+`extract_run_id="recovery-<utc-stamp>"` in `extract.jsonl` for
+audit; embedding parquets for the NULL'd rows are deleted entirely
+so the embedding corpus only carries embeddable docs (reduces
+embedding parquet from 158,822 to 147,317 per-doc shards).
 * **Vietnamese normalization** (`extract.py`, gated by
   `cfg.extractor.run_text_normalization`): NFC + ftfy mojibake fix +
   modern tone-mark canonicalization (Toà -> Tòa, hoà -> hòa,
@@ -391,8 +432,18 @@ extra modules materialise the HF dataset folder and upload it:
 
 ```bash
 # Materialise data/vbpl.vn/hf/ from jsonl/extract.jsonl
-# + parquet/reduced/. Writes README.md, documents.parquet,
-# manifest.json, and 8 embedding scatter PNGs.
+# + parquet/reduced/. Writes:
+#   * README.md (bilingual VI/EN dataset card)
+#   * manifest.json (corpus roll-ups consumed by the card)
+#   * 32 parquet shards (documents-NNNNN-of-00032.parquet,
+#     ~60 MB each so the HF dataset viewer can stream them
+#     without hitting JobManagerCrashedError on the 1.9 GB
+#     corpus)
+#   * 6 overview figures (overview-{legalarea-treemap,
+#     scope-doctype-sunburst, doctype-bars, year-stack,
+#     doctype-year-heatmap, agency-bars}.png) rendered
+#     via plotly + kaleido (headless Chromium)
+#   * 6 UMAP embedding scatter PNGs (one per colour facet)
 python -m packages.datasites.vbpl.hf_export
 
 # Inspect what would be uploaded (no HF API contact).
@@ -407,6 +458,59 @@ python -m packages.datasites.vbpl.push_to_hf \
     --repo-id myorg/vbpl --private
 ```
 
+In addition to `documents-*.parquet` (the default config the
+HF dataset viewer renders), the published repo also ships the
+**embed** and **reduce** pipeline outputs as separate sharded
+parquet bundles co-located in the same folder, mirroring the
+anle / congbobanan layout:
+
+* `embed-*.parquet` -- 15 shards (~93 MB each, ~1.33 GB total),
+  10 000 rows per shard, one row per **embeddable** doc
+  (147 317 = 158 822 docs − 11 505 NULL-markdown rows for
+  which there is no body to embed). Columns: `doc_name`,
+  `text_hash`, `embedding` (float64 list, 2 048-D from
+  `nvidia/llama-nemotron-embed-1b-v2`), `embedding_dim`,
+  `embedding_model_id`, `embedding_text_hash`,
+  `embedding_chunks_used`, `embedding_chunking`. Schema is
+  byte-identical to the anle corpus's `embed-*.parquet`
+  bundle so cross-corpus joins are straightforward.
+* `reduce-*.parquet` -- 15 shards (~0.5 MB each, ~7 MB total),
+  same 147 317 rows. Columns: `doc_name`, `text_hash`,
+  `pca_x` / `pca_y` (PCA 2-D), `tsne_x` / `tsne_y` (t-SNE 2-D),
+  `umap_x` / `umap_y` (UMAP 2-D — the projection used in the
+  card's six scatter PNGs), `cluster_id` (int64, HDBSCAN
+  cluster label; `-1` is the noise bucket). The on-disk
+  per-doc shards carry `*_z` columns too, but they're all-null
+  because `cfg.reducer.n_components=2` and we drop them at
+  consolidation time.
+
+Both consolidated bundles are produced from the per-doc shards
+under `data/vbpl.vn/parquet/{embeddings,reduced}/<id>.parquet`
+via the same DuckDB `LIMIT/OFFSET` stream that
+`data/anle.toaan.gov.vn/_to_hf.py` uses for anle (10 K rows /
+shard, deterministic `doc_name` ordering, ZSTD compression).
+
+Consumers can pull each stage with `load_dataset` by pointing
+at the right glob:
+
+```python
+from datasets import load_dataset
+
+# Default config -- documents + markdown + structure (one row / doc).
+docs   = load_dataset("tmquan/vbpl-vn", split="train")
+
+# 2 048-D dense vectors (one row per embeddable doc).
+embed  = load_dataset("tmquan/vbpl-vn",
+                     data_files="embed-*.parquet", split="train")
+
+# PCA / t-SNE / UMAP 2-D + HDBSCAN cluster id (one row per embeddable doc).
+reduce = load_dataset("tmquan/vbpl-vn",
+                     data_files="reduce-*.parquet", split="train")
+```
+
+Each bundle joins back to the others on the `doc_name` primary
+key.
+
 The dataset card ([rendered example](https://huggingface.co/datasets/tmquan/vbpl-vn))
 is **dual-lingual Vietnamese / English** -- every section ships
 both `🇻🇳 Tóm tắt / Tổng quan / Phạm vi / ...` and the matching
@@ -419,14 +523,47 @@ of stats. Both audiences see:
 * Corpus rollups (rows, dropped-empty, structure coverage,
   attachment coverage, char/page/paragraph/sentence medians).
 * Scope split (`trung_uong` vs `dia_phuong`).
-* Top `doc_type` (Luật / Nghị định / Thông tư / ...) and top
-  issuing-agency tables.
+* Top `doc_type` (snake_case slugs: `quyet_dinh`, `nghi_dinh`, `thong_tu`, `chi_thi`, …),
+  top `legal_type` (canonical full names: `Quyết định`, `Nghị định`,
+  `Thông tư`, …), top `legal_area` (`Đất đai`, `Đường bộ`,
+  `Lĩnh vực giá`, …), and top issuing-agency tables.
 * Year-of-issue distribution and body-source distribution
   (file-vs-body_html-vs-shell_html).
-* Full parquet schema (28 columns, three families:
+* Full parquet schema (30 columns, three families:
   identification + meta, body + stats, hierarchy + entities).
-* Eight embedding scatter PNGs (4 facets x 2 projections):
-  `scope`, `doc_type`, `year`, `cluster_id`, each in t-SNE + UMAP.
+* **Six corpus-overview figures**, plotly + kaleido headless
+  Chromium → static PNG, embedded at the top of the card just
+  below "At a glance":
+  * `overview-legalarea-treemap.png` — top-25 `legal_area`
+    rectangles sized by document count, with the long tail
+    rolled into one `Khác / Other` cell so the eye lands on
+    informative areas.
+  * `overview-scope-doctype-sunburst.png` — two-level radial
+    split (`scope` → top-12 `doc_type` per scope) showing where
+    corpus weight concentrates.
+  * `overview-doctype-bars.png` — top-20 `doc_type` slugs with
+    trilingual labels (slug + Vietnamese full name + English
+    gloss).
+  * `overview-year-stack.png` — stacked area of documents-per-
+    year split by `scope`. Only meaningful after the
+    so_hieu/date/agency backfill restored `ngay_ban_hanh` (was
+    0% populated in the legacy parquet).
+  * `overview-doctype-year-heatmap.png` — top-12 `doc_type` ×
+    year heatmap (log₁₀ scale) showing the legal-instrument mix
+    over time.
+  * `overview-agency-bars.png` — top-15 `co_quan_ban_hanh`.
+    Likewise only meaningful after the backfill.
+* **Six embedding scatter PNGs** (one per colour facet, UMAP
+  only):
+  * `embedding-{scope, doc-type, legal-type, legal-area, year,
+    cluster-id}-umap.png`. High-cardinality facets bucket the
+    long tail into a grey *Khác / Other* group beyond the top 18.
+  * We dropped the parallel t-SNE plots because the two
+    projections separate the same clusters on this corpus and
+    shipping both doubled the card's visual footprint without
+    adding insight; the published `parquet/reduced/<doc>.parquet`
+    still carries `tsne_x` / `tsne_y` columns so downstream
+    consumers can re-render t-SNE themselves.
 * Build provenance and source citation in BibTeX.
 
 The export drops rows with empty `markdown` (typically detail

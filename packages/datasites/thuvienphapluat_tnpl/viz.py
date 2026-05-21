@@ -14,9 +14,6 @@ Outputs (default ``out_dir = data/<host>/hf/``):
 * ``ontology_topics.png`` -- top-25 LinhVuc horizontal bars (VI + EN
   bilingual labels).
 * ``temporal_year.png`` -- ``cập_nhật_lúc`` year distribution.
-* ``length_distribution.png`` -- definition char-length histogram
-  rendered side-by-side for ``định_nghĩa`` (VI) and ``definition``
-  (EN) when the corpus is bilingual; VI only otherwise.
 * ``english_coverage.png`` -- per-LinhVuc share of rows with a
   machine-translated ``definition`` (analogue of pbgdpl's
   ``citation_density.png``).
@@ -121,10 +118,14 @@ _FALLBACK_CATEGORY = "Khác / Other"
 #: Embedding scatter plots rendered from the reducer parquet.
 #:
 #: Each entry is ``(color_by, dim, lang, slug)`` -> ``embedding-<slug>.png``.
-#: ``lang`` selects which embedding column is plotted: ``"en"`` reads the
-#: default ``<dim>_x/y`` columns (back-compat), ``"vi"`` reads the
-#: ``<dim>_vi_x/y`` bilingual extension columns. The full 2x2x2 grid
-#: gives a side-by-side visual diff of VI vs EN clustering structure.
+#: All renders share the **canonical multilingual joint projection**
+#: (``<dim>_joint_x/y``, computed by ``_embed_reduce_inproc`` from the
+#: per-row mean of unit-normalised VI and EN embeddings). ``lang``
+#: therefore only selects the *language of the legend / title*: the
+#: scatter itself -- point positions, colours, axes ranges -- is
+#: byte-for-byte identical between the VI and EN variants of any
+#: ``(color_by, dim)`` pair, so audiences can flip between language
+#: renders during a talk without the picture rearranging itself.
 _EMBED_SCATTER_GRID: tuple[tuple[str, str, str, str], ...] = (
     ("category", "tsne", "en", "category-en-tsne"),
     ("category", "umap", "en", "category-en-umap"),
@@ -135,6 +136,68 @@ _EMBED_SCATTER_GRID: tuple[tuple[str, str, str, str], ...] = (
     ("topic",    "tsne", "vi", "topic-vi-tsne"),
     ("topic",    "umap", "vi", "topic-vi-umap"),
 )
+
+
+#: Fallback chain when the joint multilingual coords are missing from
+#: the parquet (older reducer runs). The renderer walks the list in
+#: order until it finds a column that exists and has any non-NaN
+#: rows. ``joint`` is preferred, ``en`` is the historical default.
+_EMBED_COORD_FALLBACK: tuple[str, ...] = ("joint", "en", "vi")
+
+
+def _category_parts(bilingual: str) -> tuple[str, str]:
+    """Split a "Dân sự / Civil"-style label into ``(vi, en)``.
+
+    Falls back to ``(s, s)`` when the slash separator is absent so
+    callers always get a usable pair.
+    """
+    if " / " in bilingual:
+        vi, en = bilingual.split(" / ", 1)
+        return vi.strip(), en.strip()
+    return bilingual, bilingual
+
+
+#: Fixed layout for the embedding scatter PNGs so the scatter region is
+#: byte-for-byte identical across the VI / EN renders of the same
+#: ``(color_by, dim)`` pair. The legend lives in a reserved zone on the
+#: right of the figure and never reflows the axes.
+#:
+#: Keyed by ``color_by``: ``(scatter_size, scatter_alpha,
+#: legend_kwargs)``. The canvas size, plot-area rectangle and legend
+#: anchor are pulled from :mod:`packages.common.embed_viz` and shared
+#: with every other embedding figure across the repo so the data
+#: rectangle is pixel-aligned across facets and across datasites
+#: (vbpl, anle, congbobanan, pbgdpl, tnpl). Only the marker size /
+#: alpha and the legend font-size differ between
+#: ``color_by="category"`` (~6 entries) and ``color_by="topic"``
+#: (~47 entries; smaller font so the column fits vertically).
+#:
+#: All facets use ``ncol=1``. A two-column legend would let column-2
+#: labels collide with column-1 labels whenever a label (e.g.
+#: ``Tài nguyên — Môi trường (n=180)``) is wider than half the
+#: sidebar -- which happens routinely on the long-tail topic facet
+#: and looks like scrambled text in the rendered PNG.
+_EMBED_LAYOUT: dict[str, dict[str, Any]] = {
+    "category": {
+        "scatter_size": 10,
+        "scatter_alpha": 0.6,
+        "legend_kwargs": dict(
+            loc="upper left", fontsize=8.5, frameon=False,
+            markerscale=2.0, handletextpad=0.4, labelspacing=0.4,
+            borderaxespad=0.0, ncol=1,
+        ),
+    },
+    "topic": {
+        "scatter_size": 6,
+        "scatter_alpha": 0.55,
+        "legend_kwargs": dict(
+            loc="upper left", fontsize=6.5, frameon=False,
+            markerscale=2.0, ncol=1,
+            handletextpad=0.4, labelspacing=0.32,
+            borderaxespad=0.0,
+        ),
+    },
+}
 
 
 def _configure_matplotlib() -> None:
@@ -151,6 +214,24 @@ def _configure_matplotlib() -> None:
     rcParams["axes.unicode_minus"] = False
     rcParams["savefig.dpi"] = 144
     rcParams["savefig.bbox"] = "tight"
+
+
+def _savefig_fixed(fig: Any, out_path: Path) -> None:
+    """Save ``fig`` at its declared figsize, ignoring ``savefig.bbox='tight'``.
+
+    Pairs with :func:`render_embedding_scatter` (and its kin) which pin
+    the data axes to a fixed figure-coord rectangle so the rendered
+    scatter region must be identical across VI / EN runs. The global
+    ``savefig.bbox='tight'`` rcParam would otherwise re-crop each PNG
+    to the legend's bounding box and reintroduce the very wobble we
+    paid for the pinned layout to eliminate.
+    """
+    from matplotlib.transforms import Bbox
+
+    bbox = Bbox.from_extents(
+        0.0, 0.0, fig.get_figwidth(), fig.get_figheight(),
+    )
+    fig.savefig(out_path, bbox_inches=bbox)
 
 
 def _color_for_index(i: int) -> str:
@@ -383,104 +464,6 @@ def render_year_distribution(analytics: dict[str, Any], out_path: Path) -> Path:
     return out_path
 
 
-# ---- length distribution -------------------------------------------
-
-
-def render_length_distribution(analytics: dict[str, Any], out_path: Path) -> Path:
-    """Side-by-side VI + EN definition length histograms (when bilingual)."""
-    import matplotlib.pyplot as plt
-
-    _configure_matplotlib()
-
-    corpus = analytics.get("corpus") or {}
-    bilingual = bool(analytics.get("bilingual"))
-
-    # Bucketise the per-row char counts. We don't have the raw arrays
-    # here, but we have the length summary; for a bucketed histogram
-    # we recompute by reading the JSONL when needed. Keep this self-
-    # contained by reading terms.jsonl / terms_translated.jsonl.
-    rows = _read_rows_for_viz()
-    if not rows:
-        logger.warning("no rows for length distribution; skipping")
-        return out_path
-
-    from packages.datasites.thuvienphapluat_tnpl.analyze import _LENGTH_BUCKETS
-
-    def _bucketise(values: list[int]) -> list[tuple[str, int]]:
-        out_b = []
-        for lo, hi, label in _LENGTH_BUCKETS:
-            out_b.append((label, sum(1 for v in values if lo <= v < hi)))
-        return out_b
-
-    vi_chars = [r.get("định_nghĩa_char_len") or 0 for r in rows]
-    vi_buckets = _bucketise(vi_chars)
-    en_buckets: list[tuple[str, int]] | None = None
-    if bilingual:
-        en_chars = [len(r.get("definition") or "") for r in rows]
-        en_buckets = _bucketise(en_chars)
-
-    ncols = 2 if en_buckets is not None else 1
-    fig, axes_raw = plt.subplots(1, ncols, figsize=(7 * ncols, 4.6))
-    axes = list(axes_raw) if ncols > 1 else [axes_raw]
-
-    panels = [
-        (axes[0], vi_buckets,
-         "Định nghĩa tiếng Việt · Vietnamese definition (chars)", "#3182bd"),
-    ]
-    if en_buckets is not None:
-        panels.append((axes[1], en_buckets,
-                       "Definition (English MT) (chars)", "#e6550d"))
-
-    for ax, buckets, title, color in panels:
-        labels = [b[0] for b in buckets]
-        counts = [b[1] for b in buckets]
-        bars = ax.bar(labels, counts, color=color, alpha=0.9)
-        ax.set_title(title, fontsize=11, pad=8)
-        ax.set_ylabel("Số thuật ngữ · count")
-        ymax = max(counts) if counts and max(counts) > 0 else 1
-        for bar, c in zip(bars, counts):
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + ymax * 0.012,
-                f"{c:,}",
-                ha="center", va="bottom",
-                fontsize=8, color="#333",
-            )
-        for label in ax.get_xticklabels():
-            label.set_rotation(20)
-            label.set_ha("right")
-        ax.set_ylim(0, ymax * 1.16)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-    fig.suptitle(
-        "Phân bố độ dài định nghĩa  /  Definition length distribution",
-        fontsize=12,
-        y=1.02,
-    )
-    fig.tight_layout()
-    fig.savefig(out_path)
-    plt.close(fig)
-    logger.info("wrote %s", out_path)
-    return out_path
-
-
-def _read_rows_for_viz() -> list[dict[str, Any]]:
-    """Best-effort read of the bilingual JSONL (falls back to raw)."""
-    cwd = Path("data/thuvienphapluat_vn_tnpl/jsonl")
-    for name in ("terms_translated.jsonl", "terms.jsonl"):
-        p = cwd / name
-        if p.exists() and p.stat().st_size > 0:
-            out = []
-            with p.open("r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    out.append(json.loads(line))
-            return out
-    return []
-
-
 # ---- english coverage ----------------------------------------------
 
 
@@ -604,6 +587,27 @@ def render_mermaid_mindmap(analytics: dict[str, Any], top_k: int = 30) -> str:
 # ---- embedding scatter --------------------------------------------
 
 
+def _resolve_embed_coords(df: Any, dim: str, requested: str) -> tuple[str, str, str] | None:
+    """Pick the best available ``(x_col, y_col, slug)`` for ``dim``.
+
+    Walks ``(requested, *_EMBED_COORD_FALLBACK)`` and returns the
+    first column pair that exists in ``df`` and has at least one
+    non-NaN entry. ``slug`` is one of ``{"joint","en","vi"}`` and is
+    only used for diagnostic logging. Returns ``None`` if none of the
+    candidates are present.
+    """
+    seen: set[str] = set()
+    for cand in (requested, *_EMBED_COORD_FALLBACK):
+        if cand in seen:
+            continue
+        seen.add(cand)
+        suffix = "" if cand == "en" else f"_{cand}"
+        x_col, y_col = f"{dim}{suffix}_x", f"{dim}{suffix}_y"
+        if x_col in df.columns and df[x_col].notna().sum() > 0:
+            return x_col, y_col, cand
+    return None
+
+
 def render_embedding_scatter(
     reduced_path: Path,
     out_path: Path,
@@ -612,21 +616,26 @@ def render_embedding_scatter(
     dim: str,
     lang: str = "en",
 ) -> Path | None:
-    """Render a 2D scatter of term embeddings.
+    """Render a 2D scatter of term embeddings — single canvas, switchable legend.
 
     Reads the in-process embed+reduce output produced by
-    :mod:`._embed_reduce_inproc` (bilingual parquet with ``tsne_x/y``,
-    ``tsne_vi_x/y``, ``umap_x/y``, ``umap_vi_x/y``, ``lĩnh_vực``,
-    ``cluster_id``) and renders one projection coloured either by the
-    six broad legal domains (``color_by="category"``) or by the active
-    LinhVuc topics (``color_by="topic"``). ``lang="en"`` reads the
-    default ``<dim>_x/y`` columns; ``lang="vi"`` reads the
-    ``<dim>_vi_x/y`` extension columns so side-by-side comparison of
-    monolingual cluster structures is possible.
+    :mod:`._embed_reduce_inproc` (bilingual parquet with
+    ``<dim>_joint_x/y`` for the canonical multilingual projection,
+    plus per-language ``<dim>_(vi|en)_x/y`` for diagnostics) and
+    renders one projection coloured either by the six broad legal
+    domains (``color_by="category"``) or by the active LinhVuc topics
+    (``color_by="topic"``).
+
+    ``lang`` selects the **legend / title language only**: the scatter
+    positions, colours, axes, and figure dimensions are byte-for-byte
+    identical between ``lang="vi"`` and ``lang="en"``, so a
+    presentation can flip between the two without the picture
+    rearranging itself. The canvas coordinates always come from
+    ``<dim>_joint_x/y`` when available; older parquets fall back to
+    EN-side then VI-side coords.
 
     Returns ``None`` (with a logged warning) when the parquet is
-    missing or the requested projection columns are absent / entirely
-    NaN.
+    missing or no projection columns are present for ``dim``.
     """
     if not reduced_path.exists():
         logger.warning(
@@ -643,94 +652,139 @@ def render_embedding_scatter(
 
     _configure_matplotlib()
 
-    df = pd.read_parquet(reduced_path)
-    topic_col = "area_name_vi" if "area_name_vi" in df.columns else (
-        "lĩnh_vực" if "lĩnh_vực" in df.columns else None
-    )
-    if topic_col is None:
-        logger.warning(
-            "%s missing 'lĩnh_vực' column; skipping (color_by=%s, dim=%s, lang=%s)",
-            reduced_path, color_by, dim, lang,
-        )
-        return None
-
-    df["topic"] = df[topic_col].fillna("(unknown)")
-    df["category"] = df["topic"].map(
-        lambda t: _TOPIC_CATEGORY.get(t, _FALLBACK_CATEGORY)
-    )
-
-    if lang == "en":
-        x_col, y_col = f"{dim}_x", f"{dim}_y"
-    elif lang == "vi":
-        x_col, y_col = f"{dim}_vi_x", f"{dim}_vi_y"
-    else:
+    if lang not in ("vi", "en"):
         raise ValueError(f"lang must be 'vi' or 'en'; got {lang!r}")
-    if x_col not in df.columns or df[x_col].notna().sum() == 0:
-        logger.warning(
-            "no %s coords (%s) on %s; skipping (color_by=%s, lang=%s)",
-            dim, x_col, reduced_path, color_by, lang,
-        )
-        return None
-    df = df.dropna(subset=[x_col, y_col]).copy()
-
-    label = "UMAP" if dim == "umap" else "t-SNE"
-    lang_label = "Vietnamese" if lang == "vi" else "English"
-
-    if color_by == "category":
-        cat_order = sorted(df["category"].unique())
-        cmap = plt.colormaps.get_cmap("tab10")
-        fig, ax = plt.subplots(figsize=(11, 7.5))
-        for i, cat in enumerate(cat_order):
-            sub = df[df["category"] == cat]
-            ax.scatter(
-                sub[x_col], sub[y_col],
-                s=10, alpha=0.6, color=cmap(i / 10.0),
-                label=f"{cat} (n={len(sub):,})",
-                edgecolors="none",
-            )
-        legend_kwargs: dict[str, Any] = dict(
-            loc="upper left", bbox_to_anchor=(1.02, 1.0),
-            fontsize=8, frameon=False, markerscale=2.0,
-        )
-    elif color_by == "topic":
-        cmap1 = plt.colormaps.get_cmap("tab20")
-        cmap2 = plt.colormaps.get_cmap("tab20b")
-        palette = np.concatenate([cmap1.colors, cmap2.colors])
-        topic_counts = df["topic"].value_counts()
-        topic_order = list(topic_counts.index)
-        fig, ax = plt.subplots(figsize=(14.5, 8.5))
-        for i, topic in enumerate(topic_order):
-            sub = df[df["topic"] == topic]
-            ax.scatter(
-                sub[x_col], sub[y_col],
-                s=6, alpha=0.55, color=palette[i % len(palette)],
-                label=f"{_shorten(topic, 28)} (n={len(sub):,})",
-                edgecolors="none",
-            )
-        legend_kwargs = dict(
-            loc="upper left", bbox_to_anchor=(1.02, 1.0),
-            fontsize=6.5, frameon=False, markerscale=2.0, ncol=2,
-        )
-    else:
+    if color_by not in _EMBED_LAYOUT:
         raise ValueError(
             f"color_by must be 'category' or 'topic'; got {color_by!r}"
         )
 
-    ax.set_title(
-        f"TNPL — {label} of {lang_label} definition embeddings  /  "
-        f"coloured by `{color_by}`  ({len(df):,} terms)",
-        fontsize=11, pad=12,
+    df = pd.read_parquet(reduced_path)
+
+    topic_col_vi = "area_name_vi" if "area_name_vi" in df.columns else (
+        "lĩnh_vực" if "lĩnh_vực" in df.columns else None
     )
-    ax.set_xlabel(x_col)
-    ax.set_ylabel(y_col)
+    if topic_col_vi is None:
+        logger.warning(
+            "%s missing 'area_name_vi' / 'lĩnh_vực' column; skipping "
+            "(color_by=%s, dim=%s, lang=%s)",
+            reduced_path, color_by, dim, lang,
+        )
+        return None
+
+    # The *canonical* projection: joint multilingual coords when
+    # present (post-polish reducer runs), falling back to EN- or VI-
+    # only for back-compat with older parquets. The same slug is used
+    # for both lang renders so the canvas is invariant.
+    coords = _resolve_embed_coords(df, dim, requested="joint")
+    if coords is None:
+        logger.warning(
+            "no %s coords on %s (tried joint / en / vi); skipping "
+            "(color_by=%s, lang=%s)",
+            dim, reduced_path, color_by, lang,
+        )
+        return None
+    x_col, y_col, coord_slug = coords
+
+    df = df.copy()
+    topic_vi_series = df[topic_col_vi].astype("string").fillna("").str.strip()
+    df["topic_vi"] = topic_vi_series.where(topic_vi_series.ne(""), "(unknown)")
+    if "area_name_en" in df.columns:
+        topic_en_series = df["area_name_en"].astype("string").fillna("").str.strip()
+        df["topic_en"] = topic_en_series.where(topic_en_series.ne(""), "(unknown)")
+    else:
+        # No EN side -- fall back to VI labels so the EN render at
+        # least produces something readable.
+        df["topic_en"] = df["topic_vi"]
+
+    # Canonical bilingual category label (e.g. ``"Dân sự / Civil"``)
+    # is the language-invariant key we sort by, so colour <-> category
+    # identity stays fixed across VI / EN renders.
+    df["category_bilingual"] = df["topic_vi"].map(
+        lambda t: _TOPIC_CATEGORY.get(t, _FALLBACK_CATEGORY)
+    )
+    df = df.dropna(subset=[x_col, y_col]).copy()
+
+    layout = _EMBED_LAYOUT[color_by]
+    from packages.common.embed_viz import pinned_subplots
+    fig, ax = pinned_subplots()
+
+    if color_by == "category":
+        cmap = plt.colormaps.get_cmap("tab10")
+        cat_order = sorted(df["category_bilingual"].unique())
+        for i, cat in enumerate(cat_order):
+            sub = df[df["category_bilingual"] == cat]
+            vi_lbl, en_lbl = _category_parts(cat)
+            display = vi_lbl if lang == "vi" else en_lbl
+            ax.scatter(
+                sub[x_col], sub[y_col],
+                s=layout["scatter_size"], alpha=layout["scatter_alpha"],
+                color=cmap(i / 10.0),
+                label=f"{display} (n={len(sub):,})",
+                edgecolors="none",
+            )
+    else:  # color_by == "topic"
+        cmap1 = plt.colormaps.get_cmap("tab20")
+        cmap2 = plt.colormaps.get_cmap("tab20b")
+        palette = np.concatenate([cmap1.colors, cmap2.colors])
+        # Order topics by VI-name frequency: language-invariant since
+        # the row identities don't change, only their displayed name.
+        topic_order_vi = list(df["topic_vi"].value_counts().index)
+        for i, topic_vi in enumerate(topic_order_vi):
+            sub = df[df["topic_vi"] == topic_vi]
+            if lang == "vi":
+                display = topic_vi
+            else:
+                # Pick the modal EN label for this VI topic. With our
+                # taxonomy this is 1:1, but guard against drift.
+                en_vals = sub["topic_en"].value_counts()
+                display = en_vals.index[0] if len(en_vals) else topic_vi
+            ax.scatter(
+                sub[x_col], sub[y_col],
+                s=layout["scatter_size"], alpha=layout["scatter_alpha"],
+                color=palette[i % len(palette)],
+                label=f"{_shorten(display, 28)} (n={len(sub):,})",
+                edgecolors="none",
+            )
+
+    method_lbl = "UMAP" if dim == "umap" else "t-SNE"
+    coord_lbl = {
+        "joint": "multilingual joint",
+        "en":    "EN-side",
+        "vi":    "VI-side",
+    }.get(coord_slug, coord_slug)
+    if lang == "vi":
+        color_word = {"category": "lĩnh vực", "topic": "chuyên đề"}[color_by]
+        title = (
+            f"TNPL — {method_lbl} embedding ({coord_lbl}) · "
+            f"tô màu theo `{color_word}` · {len(df):,} thuật ngữ"
+        )
+    else:
+        color_word = {"category": "domain", "topic": "topic"}[color_by]
+        title = (
+            f"TNPL — {method_lbl} embedding ({coord_lbl}) · "
+            f"coloured by `{color_word}` · {len(df):,} terms"
+        )
+    ax.set_title(title, fontsize=11, pad=10, loc="left")
+    ax.set_xlabel(f"{method_lbl.lower()}_x", fontsize=9)
+    ax.set_ylabel(f"{method_lbl.lower()}_y", fontsize=9)
     for spine in ("top", "right"):
         ax.spines[spine].set_visible(False)
     ax.tick_params(labelsize=8)
-    legend = ax.legend(**legend_kwargs)
+
+    from packages.common.embed_viz import EMBED_LEGEND_BBOX, save_pinned
+
+    handles, labels = ax.get_legend_handles_labels()
+    legend = fig.legend(
+        handles, labels,
+        bbox_to_anchor=EMBED_LEGEND_BBOX,
+        bbox_transform=fig.transFigure,
+        **layout["legend_kwargs"],
+    )
     if legend is not None and legend.get_frame() is not None:
         legend.get_frame().set_linewidth(0.0)
-    fig.tight_layout()
-    fig.savefig(out_path)
+
+    save_pinned(fig, out_path)
     plt.close(fig)
     logger.info("wrote %s", out_path)
     return out_path
@@ -777,7 +831,8 @@ def render_crosslingual_similarity(
     p10, p50, p90 = (float(np.percentile(v, q)) for q in (10, 50, 90))
     mean = float(v.mean())
 
-    fig, ax = plt.subplots(figsize=(10, 5.5))
+    fig = plt.figure(figsize=(10.0, 5.5))
+    ax = fig.add_axes((0.085, 0.135, 0.885, 0.760))
     ax.hist(v, bins=60, color="#3182bd", alpha=0.8, edgecolor="white", linewidth=0.5)
     for label, x, col in (
         ("p10", p10, "#e6550d"),
@@ -805,8 +860,7 @@ def render_crosslingual_similarity(
     for spine in ("top", "right"):
         ax.spines[spine].set_visible(False)
     ax.tick_params(labelsize=9)
-    fig.tight_layout()
-    fig.savefig(out_path)
+    _savefig_fixed(fig, out_path)
     plt.close(fig)
     logger.info("wrote %s", out_path)
     return out_path
@@ -881,7 +935,12 @@ def render_domain_coherence(
     p90 = np.asarray([r[4] for r in rows])
 
     y = np.arange(len(rows))
-    fig, ax = plt.subplots(figsize=(11.5, max(5.5, 0.32 * len(rows) + 1.5)))
+    fig_h = max(5.5, 0.32 * len(rows) + 1.5)
+    fig = plt.figure(figsize=(11.5, fig_h))
+    # Reserve a wide left gutter for long legal-domain labels (the
+    # bilingual ones can reach ~38 chars) so the axes rectangle stays
+    # stable regardless of the longest label in any given run.
+    ax = fig.add_axes((0.305, 1.05 / fig_h, 0.665, 1.0 - 2.2 / fig_h))
     ax.barh(
         y, p90 - p10, left=p10,
         height=0.55, color="#bcbddc", alpha=0.85, label="p10..p90",
@@ -900,8 +959,7 @@ def render_domain_coherence(
         ax.spines[spine].set_visible(False)
     ax.legend(loc="lower right", fontsize=8, frameon=False)
     ax.grid(True, axis="x", linestyle=":", alpha=0.35)
-    fig.tight_layout()
-    fig.savefig(out_path)
+    _savefig_fixed(fig, out_path)
     plt.close(fig)
     logger.info("wrote %s", out_path)
     return out_path
@@ -923,7 +981,6 @@ def render_all(
         "sunburst":  render_topic_sunburst(analytics, out_dir / "ontology_sunburst.png"),
         "topics":    render_topic_bars(analytics, out_dir / "ontology_topics.png"),
         "year":      render_year_distribution(analytics, out_dir / "temporal_year.png"),
-        "length":    render_length_distribution(analytics, out_dir / "length_distribution.png"),
         "crossref":  render_cross_reference(analytics, out_dir / "cross_reference_network.png"),
     }
     if analytics.get("bilingual"):

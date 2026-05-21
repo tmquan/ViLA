@@ -18,13 +18,14 @@ tags:
 - supreme-court
 configs:
 - config_name: parse
-  data_files: data/parse.parquet
+  default: true
+  data_files: "data/parse-*.parquet"
 - config_name: extract
-  data_files: data/extract.parquet
+  data_files: "data/extract-*.parquet"
 - config_name: embed
-  data_files: data/embed.parquet
+  data_files: "data/embed-*.parquet"
 - config_name: reduce
-  data_files: data/reduce.parquet
+  data_files: "data/reduce-*.parquet"
 ---
 
 # Án lệ — Vietnamese Legal Precedents
@@ -103,21 +104,29 @@ hash that joins every config back to the per-doc shards under `raw/`.
 
 ## Repo layout
 
+Each config under `data/` is a **sharded parquet bundle** capped at
+**10 000 rows per shard**: small enough for the HF datasets-server
+statistics engine, streaming-friendly, and stable on re-publish
+(documents are deterministically sorted on `doc_name` before
+sharding). With 1 963 documents the entire anle corpus collapses into
+a single shard per config; on the 6.4 M-doc `congbobanan` mirror the
+same scheme produces ~640 shards per config.
+
 ```
-README.md                     this dataset card
-notebook.ipynb                end-to-end EDA notebook (Plotly, LaTeX-style theme)
+README.md                                     this dataset card
+notebook.ipynb                                end-to-end EDA notebook (Plotly, LaTeX-style theme)
 data/
-  parse.parquet               15 MB · `text` + parse metadata
-  extract.parquet             16 MB · `text` + structured extraction
-  embed.parquet               23 MB · 2 048-d dense vectors
-  reduce.parquet              90 KB · PCA / t-SNE / UMAP + cluster id
-assets/                       static PNGs embedded in this README
+  parse-<NNNNN>-of-<KKKKK>.parquet            `text` + parse metadata
+  extract-<NNNNN>-of-<KKKKK>.parquet          `text` + structured extraction
+  embed-<NNNNN>-of-<KKKKK>.parquet            2 048-d dense vectors
+  reduce-<NNNNN>-of-<KKKKK>.parquet           PCA / t-SNE / UMAP + cluster id
+assets/                                       static PNGs embedded in this README
 raw/
-  pdf/<doc_name>.pdf          original scraped PDF (1.4 GB total)
-  pdf/<doc_name>.url          source detail URL
-  md/<doc_name>.md            parsed markdown body
-  md/<doc_name>.meta.json     parser metadata sidecar
-  jsonl/<doc_name>.jsonl      one-record JSONL extract (mirror of pipeline output)
+  pdf/<doc_name>.pdf                          original scraped PDF (1.4 GB total)
+  pdf/<doc_name>.url                          source detail URL
+  md/<doc_name>.md                            parsed markdown body
+  md/<doc_name>.meta.json                     parser metadata sidecar
+  jsonl/<doc_name>.jsonl                      one-record JSONL extract (mirror of pipeline output)
 ```
 
 | Bucket       | Files     | Size      |
@@ -365,9 +374,14 @@ python data/anle.toaan.gov.vn/_to_hf.py --repo tmquan/anle-toaan-gov-vn
 `_to_hf.py` does three things in order:
 
 1. **Consolidate** every per-doc shard under `parquet/embeddings/`,
-   `parquet/reduced/` and `jsonl/` into the three ZSTD parquet files in
-   `data/`. DuckDB is used because PyArrow ≥ 17 occasionally fails on the
-   per-doc embedding shards with `Repetition level histogram size mismatch`.
+   `parquet/reduced/` and `jsonl/` into the four ZSTD parquet bundles
+   in `data/`, each capped at **10 000 rows per shard** and named
+   `<stage>-<NNNNN>-of-<KKKKK>.parquet`. Rows are deterministically
+   sorted on `doc_name` before sharding so re-runs produce
+   byte-identical shard membership. DuckDB drives the `embed` /
+   `reduce` consolidation because PyArrow ≥ 17 occasionally fails on
+   the per-doc embedding shards with
+   `Repetition level histogram size mismatch`.
 2. **Render** all 9 static plot PNGs in `assets/` and the `_stats.json`
    snapshot embedded in this card (delegates to `_render_assets.py`).
 3. **Upload** every artefact to the Hub at the right path. Importantly it
@@ -396,10 +410,18 @@ redistribution:
 
 ```bibtex
 @misc{anle_toaan_2026,
-  title        = {Án lệ — Vietnamese Legal Precedents},
+  title        = {Vietnamese Legal Precedents (anle.toaan.gov.vn)},
   author       = {TMQuan},
   year         = {2026},
   howpublished = {\url{https://huggingface.co/datasets/tmquan/anle-toaan-gov-vn}},
-  note         = {Mirror of the Án lệ corpus published at https://anle.toaan.gov.vn}
+  note         = {Document-level mirror of the Vietnamese án lệ + bản án corpus, with a hierarchical structure layer (DocumentMeta + Section + Paragraph + Sentence) over the source PDFs.}
+}
+
+@misc{anle_toaan_source_2026,
+  title        = {Vietnamese Legal Precedents},
+  author       = {{Án lệ — Tòa án nhân dân tối cao}},
+  year         = {2026},
+  howpublished = {\url{https://anle.toaan.gov.vn/}},
+  note         = {Official portal for Vietnamese án lệ (precedents) + nguồn án lệ (precedent source materials), published by the Supreme People's Court (Tòa án nhân dân tối cao).}
 }
 ```

@@ -574,10 +574,19 @@ def render_embedding_scatter(
 
     label = "UMAP" if dim == "umap" else "t-SNE"
 
+    # Single canvas size + pinned plot rectangle for every facet so
+    # `category` (~6 entries, single-column legend) and `topic` (~29
+    # entries, two-column legend) produce on-disk PNGs whose data
+    # rectangles share a pixel grid. See packages.common.embed_viz
+    # for the layout primitives.
+    from packages.common.embed_viz import (
+        EMBED_LEGEND_BBOX, pinned_subplots, save_pinned,
+    )
+
+    fig, ax = pinned_subplots()
     if color_by == "category":
         cat_order = sorted(df["category"].unique())
         cmap = plt.colormaps.get_cmap("tab10")
-        fig, ax = plt.subplots(figsize=(11, 7.5))
         for i, cat in enumerate(cat_order):
             sub = df[df["category"] == cat]
             ax.scatter(
@@ -587,20 +596,23 @@ def render_embedding_scatter(
                 edgecolors="none",
             )
         legend_kwargs: dict[str, Any] = dict(
-            loc="upper left", bbox_to_anchor=(1.02, 1.0),
-            fontsize=8, frameon=False, markerscale=2.0,
+            fontsize=8, markerscale=2.0, ncol=1,
         )
     elif color_by == "topic":
         # 29 active topics > tab10's 10 entries; concatenate tab20 +
         # tab20b to get 40 distinct colours. Iterate by descending
         # count so the legend reads largest -> smallest, and the
         # ordering is stable across the t-SNE and UMAP renders.
+        # ``ncol=1``: a two-column legend lets column-1 labels collide
+        # with column-2 labels whenever any single label is wider than
+        # half the sidebar (every topic line ends with ``(n=...)`` and
+        # the long ones blow past the column boundary -- looks like
+        # scrambled text in the rendered PNG).
         cmap1 = plt.colormaps.get_cmap("tab20")
         cmap2 = plt.colormaps.get_cmap("tab20b")
         palette = np.concatenate([cmap1.colors, cmap2.colors])
         topic_counts = df["topic"].value_counts()
         topic_order = list(topic_counts.index)
-        fig, ax = plt.subplots(figsize=(14.5, 8.5))
         for i, topic in enumerate(topic_order):
             sub = df[df["topic"] == topic]
             ax.scatter(
@@ -610,8 +622,7 @@ def render_embedding_scatter(
                 edgecolors="none",
             )
         legend_kwargs = dict(
-            loc="upper left", bbox_to_anchor=(1.02, 1.0),
-            fontsize=6.5, frameon=False, markerscale=2.0, ncol=2,
+            fontsize=7.0, markerscale=2.0, ncol=1,
         )
     else:
         raise ValueError(
@@ -621,18 +632,31 @@ def render_embedding_scatter(
     ax.set_title(
         f"PBGDPL Q&A — {label} of answer embeddings  /  "
         f"coloured by `{color_by}`  ({len(df):,} Q&A pairs)",
-        fontsize=11, pad=12,
+        fontsize=11, pad=8,
     )
     ax.set_xlabel(f"{dim}_x")
     ax.set_ylabel(f"{dim}_y")
     for spine in ("top", "right"):
         ax.spines[spine].set_visible(False)
     ax.tick_params(labelsize=8)
-    legend = ax.legend(**legend_kwargs)
+    # Anchor the legend to the right sidebar instead of letting
+    # matplotlib reflow the axes around it.
+    # ``mode="expand"`` deliberately *omitted*: it stretches the legend
+    # to fill the bbox width, which when paired with ``ncol > 1`` made
+    # adjacent columns overlap on every long-tail facet. With
+    # ``ncol=1`` the natural legend width is small enough to sit
+    # comfortably inside the sidebar without expansion.
+    legend = ax.legend(
+        loc="upper left",
+        bbox_to_anchor=EMBED_LEGEND_BBOX,
+        bbox_transform=fig.transFigure,
+        frameon=False,
+        handletextpad=0.4, labelspacing=0.35, borderaxespad=0.0,
+        **legend_kwargs,
+    )
     if legend is not None and legend.get_frame() is not None:
         legend.get_frame().set_linewidth(0.0)
-    fig.tight_layout()
-    fig.savefig(out_path)
+    save_pinned(fig, out_path)
     plt.close(fig)
     logger.info("wrote %s", out_path)
     return out_path

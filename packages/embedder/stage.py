@@ -156,7 +156,17 @@ class NimEmbedderStage(ProcessingStage[DocumentBatch, DocumentBatch]):
                 f"registered: {sorted(registry.keys())}"
             )
         self._entry = registry[model_id]
-        self._backend = _build_nim_backend(self._entry, self.cfg)
+        # ``runtime=hf`` swaps the NIM HTTP backend for an in-process
+        # HuggingFace transformers backend so the same chunking +
+        # mean-pool aggregation works against a local GPU. The remote-NIM
+        # path stays the default; this branch unlocks the existing
+        # ``HuggingFaceEmbedder`` so a site can run on a single host
+        # without an NVIDIA_API_KEY round-trip.
+        runtime = str(self.cfg.embedder.get("runtime", self._entry.runtime)).lower()
+        if runtime == "hf":
+            self._backend = _build_hf_backend(self._entry, self.cfg)
+        else:
+            self._backend = _build_nim_backend(self._entry, self.cfg)
 
     def process(self, task: DocumentBatch) -> DocumentBatch:
         if self._backend is None or self._entry is None:
@@ -376,11 +386,29 @@ def build_hf_embedder_stage(cfg: Any) -> ProcessingStage:
 
 
 def build_embedder_stage(cfg: Any) -> ProcessingStage:
-    """Pick the embedder stage based on ``cfg.embedder.runtime``."""
+    """Pick the embedder stage based on ``cfg.embedder.runtime``.
+
+    Both ``runtime=nim`` and ``runtime=hf`` use the in-house
+    :class:`NimEmbedderStage` so the parquet schema stays uniform
+    across backends (``embedding`` plus the
+    ``embedding_dim``/``model_id``/``text_hash``/``chunks_used``/``chunking``
+    metadata columns the writer expects). Only the underlying
+    :class:`EmbedderBackend` differs (NIM HTTP vs in-process HF).
+    The HF path needs a GPU, so we reserve one per actor.
+
+    ``runtime=curator-hf`` falls through to Curator's off-the-shelf
+    :class:`EmbeddingCreatorStage` for sites that don't need the
+    metadata columns (no current vbpl/anle pipeline uses this).
+    """
     runtime = str(cfg.embedder.runtime).lower()
-    if runtime == "nim":
-        return NimEmbedderStage(cfg=cfg)
-    if runtime == "hf":
+    if runtime in ("nim", "hf"):
+        stage = NimEmbedderStage(cfg=cfg)
+        if runtime == "hf":
+            # HuggingFaceEmbedder needs a GPU; tell the Curator
+            # scheduler to allocate one so only one actor lands per GPU.
+            stage.resources = Resources(cpus=1.0, gpus=1.0)
+        return stage
+    if runtime == "curator-hf":
         return build_hf_embedder_stage(cfg)
     if runtime == "auto":
         # Heuristic: NIM for known NVIDIA/NIM slugs; HF otherwise.

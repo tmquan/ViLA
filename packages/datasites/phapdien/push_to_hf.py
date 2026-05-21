@@ -31,22 +31,39 @@ DEFAULT_REPO_ID = "tmquan/phapdien-moj-gov-vn"
 
 #: Files we expect ``hf_export`` to have produced. Push is rejected if
 #: any are missing -- prevents accidentally pushing an empty / partial
-#: repo.
+#: repo. ``articles-*-of-*.parquet`` is the sharded glob the dataset
+#: card points the viewer at; we validate the shard count separately
+#: in :func:`_validate_shards` so a half-written export run that left
+#: only a handful of shards on disk can't silently ship a truncated
+#: corpus.
+MIN_ARTICLE_SHARDS = 4
+
 REQUIRED_FILES = (
     "README.md",
-    "articles.parquet",
     "demucs.parquet",
     "tree_nodes.parquet",
 )
 
 
+def _validate_shards(folder: Path) -> None:
+    """Reject the push if the ``articles-*-of-*.parquet`` shard count is suspicious."""
+    shards = sorted(folder.glob("articles-*-of-*.parquet"))
+    if len(shards) < MIN_ARTICLE_SHARDS:
+        raise FileNotFoundError(
+            f"only {len(shards)} article parquet shards in {folder}; "
+            f"expected at least {MIN_ARTICLE_SHARDS}. Re-run "
+            f"`python -m packages.datasites.phapdien.hf_export` first."
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
+    _validate_shards(DEFAULT_HF_DIR)
     return run_push_cli(
         default_hf_dir=DEFAULT_HF_DIR,
         default_repo_id=DEFAULT_REPO_ID,
         required_files=REQUIRED_FILES,
         description="Push the materialised phapdien HF folder to HuggingFace.",
-        default_commit_message="Initial dataset upload",
+        default_commit_message="Shard articles into 10K-row chunks",
         argv=argv,
     )
 
