@@ -190,7 +190,19 @@ class VbplDetailDownloader:
         total_in_sitemap = len(rows)
         if self._limit is not None:
             rows = rows[: int(self._limit)]
-        rows_to_fetch = [r for r in rows if _needs_fetch(r, self.layout)]
+        # Dedup pass: even if the HTML cache was wiped, a previous run
+        # may already have written a DETAIL row for this id to
+        # ``docs.jsonl``. Skip those too so the append-mode writer
+        # below doesn't duplicate rows on resume.
+        already_in_docs: set[tuple[str, str]] = _docs_jsonl_index(
+            self.layout.jsonl_dir / "docs.jsonl",
+        )
+        rows_to_fetch = [
+            r for r in rows
+            if _needs_fetch(r, self.layout)
+            and (str(r.get("scope") or ""), str(r.get("item_id") or ""))
+            not in already_in_docs
+        ]
         skipped = len(rows) - len(rows_to_fetch)
         logger.info(
             "detail run: %d/%d sitemap rows in scope; skip-existing=%d; "
@@ -726,6 +738,33 @@ def _needs_fetch(row: dict[str, Any], layout: SiteLayout) -> bool:
         return True
     cache = scope_html_dir(layout, scope) / f"{item_id}.html"
     return not (cache.exists() and cache.stat().st_size > 0)
+
+
+def _docs_jsonl_index(path: Path) -> set[tuple[str, str]]:
+    """Return the set of ``(scope, item_id)`` pairs already in ``docs.jsonl``.
+
+    Used to guard the append-mode writer in :class:`DetailFetcher`
+    against re-emitting rows when the HTML cache has been deleted but
+    the prior detail-run JSONL is still on disk. Missing / empty /
+    malformed files return an empty set so the caller treats every
+    sitemap row as eligible.
+    """
+    if not path.exists() or path.stat().st_size == 0:
+        return set()
+    seen: set[tuple[str, str]] = set()
+    try:
+        for row in _iter_jsonl(path):
+            scope = str(row.get("scope") or "")
+            item_id = str(row.get("item_id") or "")
+            if scope and item_id:
+                seen.add((scope, item_id))
+    except (OSError, json.JSONDecodeError):
+        logger.warning(
+            "could not index %s for dedup; proceeding without resume guard",
+            path, exc_info=True,
+        )
+        return set()
+    return seen
 
 
 def _iter_jsonl(path: Path):

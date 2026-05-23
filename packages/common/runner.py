@@ -58,12 +58,13 @@ def _resolve_cfg(
     *,
     site: str,
     accept_ray_flags: bool,
-) -> tuple[Any, list[str]]:
-    """Turn parsed args into a (cfg, selected_pipelines)-shaped tuple.
+) -> Any:
+    """Turn parsed args into a resolved :class:`PipelineCfg`.
 
     ``accept_ray_flags=False`` (crawler sites) emits an info log if the
     user passes ``--executor`` or ``--ray-address`` rather than
-    silently dropping them.
+    silently dropping them. Pipeline selection is computed by the
+    caller from ``args.pipeline`` -- this helper is config-only.
     """
     apply_log_level(args.log_level)
 
@@ -91,12 +92,11 @@ def _resolve_cfg(
             f"output_dir={str(Path(args.output).expanduser().resolve())}"
         )
 
-    cfg = load_and_override(
+    return load_and_override(
         config_path=config_path,
         overrides=overrides,
         schema_cls=PipelineCfg,
     )
-    return cfg
 
 
 # ----------------------------------------------------- curator runner
@@ -143,18 +143,32 @@ def run_curator_site(
     init_ray(cfg)
     rc = 0
     try:
-        for name in selected:
-            pipeline = build_pipeline(cfg, name)
-            logger.info("=== pipeline %s ===\n%s", name, pipeline.describe())
-            executor = build_executor(cfg)
-            results = pipeline.run(executor=executor)
+        # Fail-fast contract: the first pipeline to raise -- either
+        # during ``build_pipeline`` or ``pipeline.run`` -- aborts the
+        # remaining ``selected`` list. ``rc=1`` is returned and the
+        # stage name + traceback land in the log via ``exception``.
+        # Sites that want soft-fail-across-pipelines should call this
+        # function per pipeline and aggregate their own return codes.
+        for idx, name in enumerate(selected):
+            try:
+                pipeline = build_pipeline(cfg, name)
+                logger.info(
+                    "=== pipeline %s ===\n%s", name, pipeline.describe(),
+                )
+                executor = build_executor(cfg)
+                results = pipeline.run(executor=executor)
+            except Exception:
+                skipped = list(selected[idx + 1:])
+                logger.exception(
+                    "pipeline %s failed; aborting remaining pipelines: %s",
+                    name, skipped,
+                )
+                rc = 1
+                break
             logger.info(
                 "pipeline %s finished: %d output tasks",
                 name, len(results or []),
             )
-    except Exception:
-        logger.exception("pipeline run failed")
-        rc = 1
     finally:
         if not cfg.ray.get("address"):
             shutdown_ray()
@@ -208,14 +222,20 @@ def run_crawler_site(
     logger.info("running pipelines: %s", selected)
 
     rc = 0
-    try:
-        for name in selected:
-            logger.info("=== pipeline %s ===", name)
+    # Fail-fast contract: first pipeline to raise aborts the remainder.
+    for idx, name in enumerate(selected):
+        logger.info("=== pipeline %s ===", name)
+        try:
             out = run_pipeline(cfg, name)
-            logger.info("pipeline %s finished: %s", name, out)
-    except Exception:
-        logger.exception("pipeline run failed")
-        rc = 1
+        except Exception:
+            skipped = list(selected[idx + 1:])
+            logger.exception(
+                "pipeline %s failed; aborting remaining pipelines: %s",
+                name, skipped,
+            )
+            rc = 1
+            break
+        logger.info("pipeline %s finished: %s", name, out)
     return rc
 
 

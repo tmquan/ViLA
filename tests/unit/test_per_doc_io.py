@@ -139,3 +139,107 @@ def test_parquet_per_doc_writer_preserves_column_order(tmp_path: Path) -> None:
     df = pd.read_parquet(tmp_path / "DOC002.parquet")
     assert list(df.columns) == ["doc_name", "text_hash", "embedding"]
     assert df["text_hash"].iloc[0] == "h2"
+
+
+# --------------------------------------------------------------------- security
+
+
+def _malicious_batch(doc_names: list[str]) -> DocumentBatch:
+    df = pd.DataFrame(
+        {
+            "doc_name": doc_names,
+            "markdown": [f"# {n}" for n in doc_names],
+            "text_hash": [f"h{i}" for i in range(len(doc_names))],
+            "extracted": [
+                {"entities": [{"tag": "X", "text": n}]} for n in doc_names
+            ],
+            "embedding": [[0.0, 0.0, 0.0] for _ in doc_names],
+            "pdf_bytes": [b"" for _ in doc_names],
+        }
+    )
+    return DocumentBatch(task_id="t", dataset_name="anle", data=df)
+
+
+def test_per_doc_writers_reject_path_traversal_doc_names(
+    tmp_path: Path,
+) -> None:
+    """Unsafe ``doc_name`` values must be skipped, not written to disk.
+
+    A regression test for the path-traversal hardening in
+    ``_doc_name_or_empty``: rows with ``doc_name`` containing path
+    separators, ``..`` segments, NUL bytes, or absolute paths must
+    never land a file outside ``self.path``. The writer also
+    short-circuits on dot-only names that would shadow ``.meta.json``
+    sidecars.
+    """
+    from packages.pipeline.io import (
+        JsonlPerDocWriter,
+        MarkdownPerDocWriter,
+        ParquetPerDocWriter,
+    )
+
+    unsafe = [
+        "../evil",
+        "../../etc/passwd",
+        "/abs/path",
+        "a/b",
+        "a\\b",
+        ".",
+        "..",
+        "  ../bad  ",
+        "with\x00null",
+    ]
+    # Plus one safe name to confirm the writer keeps working.
+    safe_name = "DOC_OK"
+
+    batch = _malicious_batch([*unsafe, safe_name])
+
+    for writer in (
+        JsonlPerDocWriter(path=str(tmp_path / "j")),
+        ParquetPerDocWriter(path=str(tmp_path / "p")),
+        MarkdownPerDocWriter(path=str(tmp_path / "m")),
+    ):
+        writer.setup(None)
+        out = writer.process(batch)
+
+        # Whatever the extension, the only files on disk must be the
+        # single safe-name artefact(s) under the writer's own dir.
+        target = Path(writer.path)
+        written = [p for p in target.rglob("*") if p.is_file()]
+        assert written, f"{writer.__class__.__name__} wrote nothing"
+        assert all(
+            p.is_relative_to(target) for p in written
+        ), f"{writer.__class__.__name__} escaped its target dir: {written}"
+        assert all(
+            p.name.startswith(safe_name) for p in written
+        ), f"{writer.__class__.__name__} wrote unexpected files: {written}"
+
+        # FileGroupTask.data only references safe-name files.
+        for path_str in out.data:
+            assert Path(path_str).is_relative_to(target)
+            assert Path(path_str).name.startswith(safe_name)
+
+
+def test_per_doc_writers_skip_nan_and_empty_doc_names(
+    tmp_path: Path,
+) -> None:
+    """NaN / None / empty strings continue to short-circuit unchanged."""
+    from packages.pipeline.io import JsonlPerDocWriter
+
+    df = pd.DataFrame(
+        {
+            "doc_name": [None, "", "   ", "OK"],
+            "markdown": ["m1", "m2", "m3", "m4"],
+            "text_hash": ["a", "b", "c", "d"],
+            "extracted": [{"entities": []} for _ in range(4)],
+            "embedding": [[0.0]] * 4,
+            "pdf_bytes": [b""] * 4,
+        }
+    )
+    batch = DocumentBatch(task_id="t", dataset_name="anle", data=df)
+    writer = JsonlPerDocWriter(path=str(tmp_path))
+    writer.setup(None)
+    writer.process(batch)
+
+    files = sorted(p.name for p in tmp_path.glob("*.jsonl"))
+    assert files == ["OK.jsonl"]

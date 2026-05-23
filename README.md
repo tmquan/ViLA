@@ -14,26 +14,39 @@ indictments, statutes) remains in Vietnamese.
 
 Specification frozen (ontology v1.2.0). Implementation under way:
 
-- **Curation (Phase 3)**: the reference datasite
-  [`packages/datasites/anle/`](packages/datasites/anle/) ships five
-  NeMo Curator pipelines (`download` / `parse` / `extract` / `embed`
-  / `reduce`), chained via disk and executed by any of the three
-  Curator-shipped Ray backends (`XennaExecutor`,
-  `RayActorPoolExecutor`, `RayDataExecutor`). Full test suite passes
-  (`pytest -q`: 60+ tests).
+- **Curation (Phase 3)** — six datasites shipped:
+  - **Family A (PDF curator, five-pipeline chain
+    `download` / `parse` / `extract` / `embed` / `reduce`)**:
+    [`anle`](packages/datasites/anle/) (reference),
+    [`congbobanan`](packages/datasites/congbobanan/) (integer-ID
+    portal crawl).
+  - **Family B (HTML crawlers, three- to four-stage chains)**:
+    [`pbgdpl`](packages/datasites/pbgdpl/) (legal Q&A),
+    [`phapdien`](packages/datasites/phapdien/) (codification tree
+    + articles),
+    [`thuvienphapluat_tnpl`](packages/datasites/thuvienphapluat_tnpl/)
+    (legal-terminology dictionary — bilingual VN + EN via the
+    NIM
+    [Nemotron 3 Super 120B-A12B](https://build.nvidia.com/nvidia/nemotron-3-super-120b-a12b)
+    translator, published to
+    [`tmquan/thuvienphapluat-vn-tnpl`](https://huggingface.co/datasets/tmquan/thuvienphapluat-vn-tnpl)).
+  - **Hybrid (Playwright + Curator embed / reduce)**:
+    [`vbpl`](packages/datasites/vbpl/) (Vietnamese National Legal
+    Database) — 6-stage chain
+    `harvest` / `detail` / `parse` / `extract` / `embed` / `reduce`.
+  - Every Curator pipeline runs on any of the three Curator-shipped
+    Ray backends (`XennaExecutor`, `RayActorPoolExecutor`,
+    `RayDataExecutor`).
 - **Parsing backends (Phase 4)**: `PdfParseStage` runs with either
-  the NIM `nvidia/nemotron-parse` endpoint or a local `pypdf`
-  fallback. OCR + cuDF feature frame + section tagger are spec-only.
-- **Other datasites**: `congbobanan`, `vbpl` are planned; the
-  follow-up port mirrors the anle layout file-for-file. The
-  thuvienphapluat **`/tnpl/`** (legal-terminology dictionary) surface
-  is shipped at
-  [`packages/datasites/thuvienphapluat_tnpl/`](packages/datasites/thuvienphapluat_tnpl/) —
-  three-stage HTML crawler (harvest → detail → translate) that emits
-  a bilingual VN + EN corpus via the NIM
-  [Nemotron 3 Super 120B-A12B](https://build.nvidia.com/nvidia/nemotron-3-super-120b-a12b)
-  translator and publishes to
-  [`tmquan/thuvienphapluat-vn-tnpl`](https://huggingface.co/datasets/tmquan/thuvienphapluat-vn-tnpl).
+  the NIM `nvidia/nemoretriever-parse` endpoint (cloud — the older
+  `nvidia/nemotron-parse` slug 404s) or a local `pypdf` fallback,
+  with a hybrid runtime that routes image-only scans to the NIM.
+  OCR + cuDF feature frame + section tagger are spec-only.
+- **Test suite**: `pytest -q` — 157 tests, all in-process (no live
+  network, GPU, or Ray required). Coverage skews toward
+  `anle` / `congbobanan` + shared `packages/*`; HTML crawlers carry
+  registry smoke + per-site `_shared` checks (see audit notes for
+  the open coverage gaps).
 - **Everything else** (Phase 5+: Postgres / MongoDB / Milvus sinks,
   knowledge graph, NAT agent, UI) is spec-only.
 

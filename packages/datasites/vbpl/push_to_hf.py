@@ -104,9 +104,6 @@ def _validate_shards(folder: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    # Pre-flight: catch a half-written sharded parquet before the
-    # generic validator complains about the sentinel shard.
-    _validate_shards(DEFAULT_HF_DIR)
     return run_push_cli(
         default_hf_dir=DEFAULT_HF_DIR,
         default_repo_id=DEFAULT_REPO_ID,
@@ -117,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
             "with structure + embedding layers"
         ),
         argv=argv,
+        extra_validators=(_validate_shards,),
     )
 
 

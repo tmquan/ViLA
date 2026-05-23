@@ -589,6 +589,25 @@ fidelity with the source portal and are deliberate.
 
 ## 3.5 The two-tier output rule (file layout spine)
 
+> **Implementation status (May 2026).** §3.5 describes the target
+> contract. As of this revision:
+>
+> * **Raw per-doc tier** (§3.5.1) is fully implemented for every
+>   site via `MarkdownPerDocWriter` / `JsonlPerDocWriter` /
+>   `ParquetPerDocWriter` in `packages/pipeline/io.py`.
+> * **Parquet consumption tier** (§3.5.2) is implemented for `vbpl`
+>   via `coalesce_jsonl_to_parquet_shards` /
+>   `coalesce_per_doc_parquet_to_shards` in `packages/common/io.py`
+>   (named `shard_filename` instead of `ParquetShardWriter`; both
+>   take the same row-sorted, deterministic-shard-naming contract).
+>   `anle` and `congbobanan` still emit per-doc parquet under
+>   `parquet/embeddings/` and `parquet/reduced/`; the
+>   coalesce-to-shards step runs only inside `hf_export.py`.
+> * **`ParquetShardWriter` as a single Curator stage does NOT exist
+>   yet.** Treat the diagrams below as the design target; the
+>   migration to a unified shard writer is tracked under §3.5
+>   follow-up work in `docs/99-implementation-roadmap.md`.
+
 §3 fixed the **column shape** every datasite must ship. This
 section fixes the **file shape**. Every pipeline stage emits
 output into one of two tiers — **never both for the same row**,

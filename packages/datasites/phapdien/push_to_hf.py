@@ -57,7 +57,6 @@ def _validate_shards(folder: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    _validate_shards(DEFAULT_HF_DIR)
     return run_push_cli(
         default_hf_dir=DEFAULT_HF_DIR,
         default_repo_id=DEFAULT_REPO_ID,
@@ -65,6 +64,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Push the materialised phapdien HF folder to HuggingFace.",
         default_commit_message="Shard articles into 10K-row chunks",
         argv=argv,
+        extra_validators=(_validate_shards,),
     )
 
 

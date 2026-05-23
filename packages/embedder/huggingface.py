@@ -25,18 +25,28 @@ class HuggingFaceEmbedder(EmbedderBackend):
         max_seq_length: int,
         device: str = "auto",
         dtype: str = "bfloat16",
+        trust_remote_code: bool = False,
     ) -> None:
         from transformers import AutoModel, AutoTokenizer
 
         resolved_device = _resolve_device(device)
         torch_dtype = _resolve_dtype(dtype)
 
+        if trust_remote_code:
+            logger.warning(
+                "loading HF model %s with trust_remote_code=True; "
+                "remote code in the model card will execute in-process "
+                "(see EmbedderCfg.trust_remote_code).",
+                model_id,
+            )
         self.model_id = model_id
-        self._tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            model_id, trust_remote_code=trust_remote_code,
+        )
         self._model = AutoModel.from_pretrained(
             model_id,
             torch_dtype=torch_dtype,
-            trust_remote_code=True,
+            trust_remote_code=trust_remote_code,
         ).to(resolved_device)
         self._model.eval()
         self._device = resolved_device

@@ -90,12 +90,12 @@ def _validate_shards(folder: Path) -> None:
                 f"only {len(shards)} {stem!r} JSONL shards under "
                 f"{folder / 'data'}; expected at least "
                 f"{MIN_JSONL_SHARDS}. Re-run "
-                f"`python data/thuvienphapluat_vn_tnpl/_rechunk.py` first."
+                f"`python -m packages.datasites.thuvienphapluat_tnpl.hf_export` "
+                f"first to regenerate the shard set."
             )
 
 
 def main(argv: list[str] | None = None) -> int:
-    _validate_shards(DEFAULT_HF_DIR)
     return run_push_cli(
         default_hf_dir=DEFAULT_HF_DIR,
         default_repo_id=DEFAULT_REPO_ID,
@@ -109,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
             "(bilingual VN legal terminology corpus)"
         ),
         argv=argv,
+        extra_validators=(_validate_shards,),
     )
 
 

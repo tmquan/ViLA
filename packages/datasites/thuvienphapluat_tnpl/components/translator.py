@@ -438,19 +438,26 @@ class TnplTranslator:
             "for %d rows (id->en map size: %d)",
             len(rows), len(id_to_en),
         )
-        write_lock = threading.Lock()
         out_path = self.layout.jsonl_dir / "terms_translated.jsonl"
-        with out_path.open("w", encoding="utf-8") as out_f, ThreadPoolExecutor(
-            max_workers=self._num_workers,
-        ) as pool:
-            futs = [
-                pool.submit(self._resolve_remainder, r, id_to_en)
-                for r in rows
-            ]
-            for i, fut in enumerate(as_completed(futs), 1):
-                rec: dict[str, Any] | None
+        # Translate in parallel, then write in deterministic input
+        # order. Earlier versions used ``as_completed`` to stream
+        # writes, which made the JSONL row order depend on per-call
+        # latency and reshuffled the file between identical reruns.
+        # We now keep an indexed result vector and emit it sorted by
+        # the original ``rows`` index after pass-2 completes; the LLM
+        # request order is still pool-driven so throughput is
+        # unchanged.
+        results: list[dict[str, Any] | None] = [None] * len(rows)
+        with ThreadPoolExecutor(max_workers=self._num_workers) as pool:
+            futs = {
+                pool.submit(self._resolve_remainder, r, id_to_en): idx
+                for idx, r in enumerate(rows)
+            }
+            completed = 0
+            for fut in as_completed(futs):
+                idx = futs[fut]
                 try:
-                    rec = fut.result()
+                    results[idx] = fut.result()
                 except Exception as exc:  # noqa: BLE001 - logged
                     with self._stats_lock:
                         self._stats.rows_errored += 1
@@ -458,24 +465,26 @@ class TnplTranslator:
                             f"pass2: {exc!r}"
                         )
                     logger.exception("pass 2 crashed")
-                    continue
-                if rec is None:
-                    continue
-                with write_lock:
-                    out_f.write(
-                        json.dumps(
-                            {k: rec.get(k) for k in TRANSLATED_JSONL_FIELDS},
-                            ensure_ascii=False,
-                        )
-                    )
-                    out_f.write("\n")
-                if i % 500 == 0:
+                completed += 1
+                if completed % 500 == 0:
                     logger.info(
                         "pass 2: %d/%d (ok=%d, errored=%d)",
-                        i, len(rows),
+                        completed, len(rows),
                         self._stats.rows_ok,
                         self._stats.rows_errored,
                     )
+
+        with out_path.open("w", encoding="utf-8") as out_f:
+            for rec in results:
+                if rec is None:
+                    continue
+                out_f.write(
+                    json.dumps(
+                        {k: rec.get(k) for k in TRANSLATED_JSONL_FIELDS},
+                        ensure_ascii=False,
+                    )
+                )
+                out_f.write("\n")
 
         logger.info(
             "translate done: ok=%d cached=%d llm=%d site=%d errored=%d -> %s",

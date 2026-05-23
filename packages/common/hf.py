@@ -34,7 +34,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -131,11 +131,18 @@ def run_push_cli(
     description: str,
     default_commit_message: str = "Update dataset",
     argv: list[str] | None = None,
+    extra_validators: Sequence[Callable[[Path], None]] = (),
 ) -> int:
     """Run a complete ``push_to_hf`` CLI parameterised by per-site defaults.
 
     Per-site ``push_to_hf.py`` modules collapse to a single call into
     this function plus a ``__main__`` entry point.
+
+    ``extra_validators`` are called with the **parsed** ``--folder``
+    (after the standard required-files check). Each callable raises
+    ``FileNotFoundError`` to abort the push with rc=2. Use this to add
+    per-site shard-count checks, manifest checks, etc., without
+    bypassing the user's ``--folder`` override.
 
     Returns the exit code (0 on success, 2 on validation failure).
     """
@@ -181,6 +188,8 @@ def run_push_cli(
     print("contents:")
     try:
         validate_folder(folder, required_files)
+        for extra in extra_validators:
+            extra(folder)
     except FileNotFoundError as exc:
         print(f"\nERROR: {exc}")
         return 2

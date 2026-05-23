@@ -123,10 +123,17 @@ def register_normalizer(
 def resolve_normalizer_names(cfg: Any) -> list[str]:
     """Return the resolved normalizer list from ``cfg.extractor``.
 
-    Honours the new ``cfg.extractor.normalizers`` list when set.
-    Falls back to the legacy ``run_text_normalization`` boolean
-    (yields ``["vietnamese_text"]`` when true, ``[]`` when false) so
-    sites that haven't migrated keep working.
+    Resolution order:
+
+    1. ``cfg.extractor.normalizers`` -- the canonical declarative
+       list. When present (including the empty list), this is the
+       full answer. An empty list explicitly disables normalization.
+    2. Legacy ``run_text_normalization`` boolean -- only consulted
+       when ``normalizers`` is missing entirely from cfg (older
+       schema). Emits a deprecation warning on every hit so sites
+       still on the legacy knob get a nudge to migrate. ``true``
+       maps to ``["vietnamese_text"]``; ``false`` (or missing) maps
+       to ``[]`` (no normalization).
     """
     if cfg is None:
         return []
@@ -146,17 +153,33 @@ def resolve_normalizer_names(cfg: Any) -> list[str]:
             return []
 
     legacy = _safe_attr(extractor_cfg, "run_text_normalization")
-    if legacy is None or bool(legacy):
-        return ["vietnamese_text"]
-    return []
+    if legacy is None:
+        return []
+    logger.warning(
+        "cfg.extractor.run_text_normalization=%r is deprecated; "
+        "declare `extractor.normalizers: [vietnamese_text]` in the "
+        "site config instead. Honoured for backward-compat in this "
+        "run.", legacy,
+    )
+    return ["vietnamese_text"] if bool(legacy) else []
 
 
 def build_normalizer_chain(cfg: Any) -> "NormalizerChainStage | None":
-    """Return a chain stage from ``cfg``, or ``None`` if the chain is empty."""
+    """Return a chain stage from ``cfg``, or ``None`` if the chain is empty.
+
+    ``cfg.extractor.normalizer_fail_fast`` (optional, default False)
+    promotes per-step exceptions from warning-and-skip to hard abort.
+    """
     names = resolve_normalizer_names(cfg)
     if not names:
         return None
-    return NormalizerChainStage(normalizers=tuple(names))
+    fail_fast = False
+    extractor_cfg = _safe_attr(cfg, "extractor")
+    if extractor_cfg is not None:
+        ff = _safe_attr(extractor_cfg, "normalizer_fail_fast")
+        if ff is not None:
+            fail_fast = bool(ff)
+    return NormalizerChainStage(normalizers=tuple(names), fail_fast=fail_fast)
 
 
 # --------------------------------------------------------------------- chain stage
@@ -179,6 +202,12 @@ class NormalizerChainStage(ProcessingStage[DocumentBatch, DocumentBatch]):
     resources: Resources = field(default_factory=lambda: Resources(cpus=1.0))
     batch_size: int = 16
     name: str = field(init=False, default="normalizer_chain")
+    # If True, an exception from any normalizer aborts the stage
+    # instead of silently dropping that normalizer's contribution.
+    # Defaults to False to preserve the historical "best-effort"
+    # contract; flip on for runs where partial normalization would
+    # poison downstream extractors.
+    fail_fast: bool = False
 
     _resolved: tuple[Normalizer, ...] = field(
         default_factory=tuple, init=False, repr=False,
@@ -219,7 +248,13 @@ class NormalizerChainStage(ProcessingStage[DocumentBatch, DocumentBatch]):
         for normalizer in self._resolved:
             try:
                 df = normalizer.apply(df)
-            except Exception:  # noqa: BLE001
+            except Exception:
+                if self.fail_fast:
+                    logger.exception(
+                        "normalizer %s raised on task %s; aborting (fail_fast)",
+                        normalizer.name, task.task_id,
+                    )
+                    raise
                 logger.exception(
                     "normalizer %s raised on task %s; skipping",
                     normalizer.name, task.task_id,

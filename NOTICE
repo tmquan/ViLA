@@ -1,0 +1,80 @@
+ViLA — Vietnamese Legal Assistant
+Copyright (c) 2025 the ViLA authors
+
+This product is licensed under the GNU General Public License v3.0
+(see LICENSE). The notices below identify upstream open-source
+components ViLA depends on and the licenses they ship under. The
+absence of a component from this list is not a waiver; this file is
+informational and is not part of the License.
+
+----------------------------------------------------------------------
+NVIDIA NeMo Curator (Apache License 2.0)
+  https://github.com/NVIDIA/NeMo-Curator
+  Used as the pipeline runtime (`ProcessingStage`, `DocumentBatch`,
+  `Pipeline`, `XennaExecutor` / `RayActorPoolExecutor` /
+  `RayDataExecutor`, file readers/writers, download composite).
+
+NVIDIA NIM endpoints on build.nvidia.com (proprietary cloud API,
+  Terms of Service apply)
+  Used at runtime by the parser (`nvidia/nemoretriever-parse`),
+  embedder (`nvidia/llama-nemotron-embed-1b-v2`), and the
+  thuvienphapluat_tnpl translator (`nvidia/nemotron-3-super-120b-a12b`).
+
+Ray (Apache License 2.0)
+  https://github.com/ray-project/ray
+
+OmegaConf (BSD 3-Clause)
+  https://github.com/omry/omegaconf
+
+Hugging Face `huggingface_hub`, `datasets`, `transformers` (Apache 2.0)
+  https://github.com/huggingface
+  Used by the embedder HF backend, the per-site `hf_export.py` shard
+  writers, and `push_to_hf.py` upload wrappers.
+
+sentence-transformers (Apache 2.0)
+  https://github.com/UKPLab/sentence-transformers
+  Used by `scripts/classify_anle.py`.
+
+Microsoft Playwright (Apache 2.0)
+  https://github.com/microsoft/playwright
+  Used by the vbpl detail fetcher to drive a real headless Chromium
+  through the reCAPTCHA-gated vbpl.vn gateway.
+
+pypdf (BSD 3-Clause)
+  https://github.com/py-pdf/pypdf
+  Used by the local PDF parser fallback.
+
+cuDF, cuML, cuVS, cuGraph, cuxfilter (Apache 2.0 — RAPIDS)
+  https://rapids.ai/
+  Optional GPU acceleration for reducer + visualizer paths.
+
+plotly (MIT), matplotlib (PSF-based), kaleido (MIT)
+  Used by the per-site visualizer renderers.
+
+scikit-learn (BSD 3-Clause)
+  https://scikit-learn.org/
+  Used by the reducer fallback (PCA, t-SNE, HDBSCAN).
+
+umap-learn (BSD 3-Clause), opentsne (BSD 3-Clause)
+  Reducer algorithms (CPU paths).
+
+ftfy (Apache 2.0)
+  Used by the Vietnamese text normalizer.
+
+requests, urllib3 (Apache 2.0)
+  Used by the shared `PoliteSession` HTTP transport.
+
+----------------------------------------------------------------------
+Source-corpus attribution
+----------------------------------------------------------------------
+The published corpora are derived from Vietnamese government open
+data and third-party legal-knowledge portals. See each datasite's
+`README.md` for the source URL, robots.txt compliance posture, and
+licensing implications:
+
+  packages/datasites/anle/README.md
+  packages/datasites/congbobanan/README.md
+  packages/datasites/pbgdpl/README.md
+  packages/datasites/phapdien/README.md
+  packages/datasites/thuvienphapluat_tnpl/README.md
+  packages/datasites/vbpl/README.md

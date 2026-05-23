@@ -49,7 +49,18 @@ def _resources_for(cfg: Any) -> Resources:
 
 @dataclass
 class ReducerStage(ProcessingStage[DocumentBatch, DocumentBatch]):
-    """Fit PCA / t-SNE / UMAP + HDBSCAN across a full DocumentBatch."""
+    """Fit PCA / t-SNE / UMAP + HDBSCAN across a full DocumentBatch.
+
+    Reducer fits are PER-BATCH. The Curator pipeline contract therefore
+    requires the upstream reader to deliver every per-doc embedding in
+    a single :class:`DocumentBatch`; that is enforced by
+    :func:`packages.pipeline.factories.build_reduce_pipeline` setting
+    ``DEFAULT_FPP["reduce"]`` to a corpus-large value. If the reducer
+    sees multiple batches, the resulting ``cluster_id`` and reducer
+    coordinates will be partition-local and NOT comparable across the
+    dataset -- a silent semantic corruption for visualization and HF
+    export.
+    """
 
     cfg: Any
     name: str = "reducer"
@@ -152,7 +163,16 @@ class ReducerStage(ProcessingStage[DocumentBatch, DocumentBatch]):
                     column[tgt_i] = float(coords[src_i, i])
                 df[f"{algo.name}_{axis}"] = column
 
-        valid_cluster_ids = _cluster(matrix, prefer_gpu=prefer_gpu)
+        valid_cluster_ids = _cluster(
+            matrix,
+            prefer_gpu=prefer_gpu,
+            min_cluster_size_cfg=int(
+                getattr(self.cfg.reducer, "hdbscan_min_cluster_size", 0) or 0
+            ),
+            min_samples_cfg=int(
+                getattr(self.cfg.reducer, "hdbscan_min_samples", 0) or 0
+            ),
+        )
         cluster_column: list[int] = [-1] * len(df)
         for src_i, tgt_i in enumerate(valid_indices):
             cluster_column[tgt_i] = valid_cluster_ids[src_i]
@@ -167,31 +187,55 @@ class ReducerStage(ProcessingStage[DocumentBatch, DocumentBatch]):
         )
 
 
-def _cluster(matrix: np.ndarray, *, prefer_gpu: bool) -> list[int]:
+def _cluster(
+    matrix: np.ndarray,
+    *,
+    prefer_gpu: bool,
+    min_cluster_size_cfg: int = 0,
+    min_samples_cfg: int = 0,
+) -> list[int]:
     """Run HDBSCAN on ``matrix``; -1 encodes noise points.
 
     Prefers ``cuml.HDBSCAN`` when GPU + cuML are available; falls back
     to ``sklearn.cluster.HDBSCAN`` (scikit-learn >=1.3). Returns a
     plain ``list[int]`` so the column round-trips through parquet.
+
+    ``min_cluster_size_cfg`` / ``min_samples_cfg`` come from
+    :class:`packages.common.schemas.ReducerCfg.hdbscan_*`. When zero
+    (the historical default), falls back to a size-adaptive heuristic
+    so existing pipelines keep their tuning. ``min_samples`` is only
+    forwarded when explicitly set -- HDBSCAN defaults to
+    ``min_cluster_size`` otherwise, which is the recommended behaviour.
     """
     n = len(matrix)
     if n < 2:
         return [-1] * n
-    min_cluster_size = max(2, min(20, n // 10))
+    min_cluster_size = (
+        min_cluster_size_cfg
+        if min_cluster_size_cfg > 0
+        else max(2, min(20, n // 10))
+    )
+    extra_kwargs: dict[str, int] = {}
+    if min_samples_cfg > 0:
+        extra_kwargs["min_samples"] = min_samples_cfg
     if prefer_gpu and have_cuml():
         try:
             from cuml.cluster import HDBSCAN as CumlHDBSCAN
             import cupy as cp
 
             X = cp.asarray(matrix)
-            labels = CumlHDBSCAN(min_cluster_size=min_cluster_size).fit_predict(X)
+            labels = CumlHDBSCAN(
+                min_cluster_size=min_cluster_size, **extra_kwargs,
+            ).fit_predict(X)
             return [int(x) for x in labels.get().tolist()]
         except Exception:
             logger.warning("cuml HDBSCAN failed; falling back to sklearn")
     try:
         from sklearn.cluster import HDBSCAN
 
-        labels = HDBSCAN(min_cluster_size=min_cluster_size).fit_predict(matrix)
+        labels = HDBSCAN(
+            min_cluster_size=min_cluster_size, **extra_kwargs,
+        ).fit_predict(matrix)
         return [int(x) for x in labels.tolist()]
     except Exception:
         logger.exception("HDBSCAN failed; emitting all-noise cluster labels")

@@ -22,15 +22,20 @@ def render_scatter(
     title: str,
     out_path: Path,
     theme: str,
-) -> None:
-    """Write one scatter HTML colored by ``color_by`` for reducer ``algo``."""
+) -> bool:
+    """Write one scatter HTML colored by ``color_by`` for reducer ``algo``.
+
+    Returns ``True`` if a file was written, ``False`` if the inputs
+    couldn't be plotted (so callers can keep an honest ``written``
+    count instead of incrementing on a no-op).
+    """
     import plotly.express as px
 
     x_col = f"{algo}_x"
     y_col = f"{algo}_y"
     if x_col not in df.columns or y_col not in df.columns:
         logger.info("skip scatter %s: %s not in columns", algo, x_col)
-        return
+        return False
     hover = [
         c
         for c in (
@@ -54,6 +59,7 @@ def render_scatter(
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.write_html(out_path, include_plotlyjs="cdn", full_html=True)
+    return True
 
 
 class ScatterRenderer(Renderer):
@@ -82,7 +88,7 @@ class ScatterRenderer(Renderer):
                 out = out_dir / f"scatter-{color_by}-{dim}-{slug}.html"
                 if out.exists() and not force:
                     continue
-                render_scatter(
+                if render_scatter(
                     df=df,
                     color_by=color_by,
                     algo=dim,
@@ -90,8 +96,8 @@ class ScatterRenderer(Renderer):
                     title=f"{title} : {dim.upper()} colored by {color_by}",
                     out_path=out,
                     theme=theme,
-                )
-                written += 1
+                ):
+                    written += 1
         return written
 
 

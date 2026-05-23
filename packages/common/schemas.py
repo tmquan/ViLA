@@ -299,6 +299,13 @@ class ExtractorCfg:
     #: instead. When ``normalizers`` is non-empty this flag is
     #: ignored.
     run_text_normalization: bool = True
+    #: When True, a single normalizer raising aborts the
+    #: :class:`packages.extractor.normalizers.NormalizerChainStage`
+    #: instead of being logged and skipped. Off by default to keep the
+    #: historical best-effort contract; flip on for production runs
+    #: where a half-normalized markdown column would corrupt
+    #: downstream extractors.
+    normalizer_fail_fast: bool = False
     run_generic_layer: bool = True
     run_site_layer: bool = True
     run_structure_layer: bool = True
@@ -331,6 +338,18 @@ class EmbedderCfg:
     chunk_overlap: int = 256    # in tokens (converted to chars via chars_per_token)
     model_dtype: str = "bfloat16"
     device: str = "auto"    # auto / cuda / cpu
+    # NIM base URL for the embedder runtime. Defaults to the parser's
+    # ``nim_base_url`` via OmegaConf interpolation so the common case
+    # (single NIM cluster for both parser + embedder) needs no extra
+    # config. Override to point the embedder at a different endpoint
+    # (e.g. a dedicated embedding NIM) without disturbing the parser.
+    nim_base_url: str = "${..parser.nim_base_url}"  # type: ignore[assignment]
+    # Allow loading HuggingFace embedder models that include arbitrary
+    # Python in their model card (``trust_remote_code=True``). Off by
+    # default because flipping it is RCE-equivalent if the model_id is
+    # compromised. Sites that genuinely need a remote-code model must
+    # opt in explicitly via ``embedder.trust_remote_code: true``.
+    trust_remote_code: bool = False
     # Pre-flight chunk-size heuristic. Vietnamese legal text tokenizes
     # denser than English: the nvidia/llama-nemotron-embed-1b-v2
     # tokenizer empirically lands near 2 chars/token in the worst

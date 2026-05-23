@@ -156,8 +156,12 @@ ViLA/
           iterator.py             # AnleDocumentIterator   (nemo_curator DocumentIterator)
           extractor.py            # AnleDocumentExtractor  (nemo_curator DocumentExtractor)
         configs/                  # anle.yaml, default.yaml
-      # congbobanan / vbpl / thuvienphapluat are Family A; the follow-up
-      # port mirrors the anle layout file-for-file.
+      # Family A siblings: congbobanan (integer-ID PDF crawler) ships
+      # the same five-pipeline Curator chain as anle. vbpl is a hybrid
+      # (Playwright detail fetch + Curator embed/reduce) -- its scraper
+      # is registered with run_crawler_site(accept_ray_flags=True), not
+      # run_curator_site. thuvienphapluat_tnpl is Family B (HTML
+      # harvester + LLM translator), NOT Family A.
       pbgdpl/                     # Family B (HTML crawler): pbgdpl.gov.vn (legal Q&A)
         __main__.py               # CLI: --pipeline {harvest,detail,all}
         scraper.py                # PIPELINES + run_pipeline(cfg, name)
@@ -263,10 +267,14 @@ ViLA/
   the per-site `_shared.py` layout helper, but the orchestration
   entry-point and contracted files differ.
 
-  **Family A — Curator multi-stage** (`anle`, `congbobanan`, `vbpl`).
+  **Family A — Curator multi-stage** (`anle`, `congbobanan`).
   For source corpora that ship as PDF / DOCX (digital or scanned) and
   need the full parse → extract → embed → reduce chain. Entry-point
-  is `packages/common/runner.py::run_curator_site`. Depends on
+  is `packages/common/runner.py::run_curator_site`. `vbpl` is a
+  closely-related hybrid: same downstream Curator stages, but its
+  detail fetcher is Playwright-driven and dispatched via
+  `run_crawler_site(accept_ray_flags=True)` so it can mix in-process
+  stages with the Curator embed / reduce sub-pipeline. Depends on
   `packages/common` + `packages/pipeline` +
   `nemo_curator.stages.text.download.base` + the stage-wrapper
   packages (parser / extractor / embedder / reducer). Each site

@@ -17,8 +17,13 @@ def render_distribution(
     onto: Ontology,
     out_path: Path,
     theme: str,
-) -> None:
-    """Write one distribution bar chart for a closed ontology enum."""
+) -> bool:
+    """Write one distribution bar chart for a closed ontology enum.
+
+    Returns ``True`` when a file was written; ``False`` when the enum
+    isn't mapped or its column is missing from ``df``. Callers use the
+    return value to keep ``written`` counts honest.
+    """
     import plotly.express as px
 
     mapping = {
@@ -27,7 +32,7 @@ def render_distribution(
     }
     col = mapping.get(enum_name)
     if col is None or col not in df.columns:
-        return
+        return False
     counts = df[col].value_counts(dropna=False).rename_axis(col).reset_index(name="count")
     # Enforce ontology value order where known; append off-ontology at end.
     vocab = onto.enums.get(enum_name, [])
@@ -49,6 +54,7 @@ def render_distribution(
     fig.update_traces(textposition="outside")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.write_html(out_path, include_plotlyjs="cdn", full_html=True)
+    return True
 
 
 class DistributionRenderer(Renderer):
@@ -73,8 +79,8 @@ class DistributionRenderer(Renderer):
             out = out_dir / f"distribution-{enum}.html"
             if out.exists() and not force:
                 continue
-            render_distribution(df, enum, onto, out, theme)
-            written += 1
+            if render_distribution(df, enum, onto, out, theme):
+                written += 1
         return written
 
 

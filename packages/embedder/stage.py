@@ -74,15 +74,40 @@ def _is_oversize_error(exc: BaseException) -> bool:
 # ----------------------------------------------------------- backend factory
 
 
+def _resolve_nim_base_url(cfg: Any) -> str:
+    """Pick the embedder's NIM endpoint with a graceful fallback chain.
+
+    Preference order:
+
+    1. ``cfg.embedder.nim_base_url`` -- the canonical knob since
+       commit f1xH2. Defaults to ``${..parser.nim_base_url}`` so a
+       site with a single shared NIM cluster needs no extra config.
+    2. ``cfg.parser.nim_base_url`` -- legacy path; honoured for sites
+       on older config schemas.
+    3. ``https://integrate.api.nvidia.com/v1`` -- the public cloud
+       NIM, used only when both knobs are missing or left as raw
+       OmegaConf interpolation placeholders (``${...}``).
+    """
+    candidates: list[str] = []
+    embedder_cfg = getattr(cfg, "embedder", None)
+    if embedder_cfg is not None and hasattr(embedder_cfg, "nim_base_url"):
+        candidates.append(str(embedder_cfg.nim_base_url))
+    parser_cfg = getattr(cfg, "parser", None)
+    if parser_cfg is not None and hasattr(parser_cfg, "nim_base_url"):
+        candidates.append(str(parser_cfg.nim_base_url))
+    for url in candidates:
+        if url and not (url.startswith("${") and url.endswith("}")):
+            return url
+    return "https://integrate.api.nvidia.com/v1"
+
+
 def _build_nim_backend(entry: ModelEntry, cfg: Any) -> EmbedderBackend:
     api_key = os.environ.get("NVIDIA_API_KEY") or os.environ.get("NVIDIA_NIM_API_KEY")
     if not api_key:
         raise RuntimeError(
             "NVIDIA_API_KEY is required for a NIM-runtime embedder model."
         )
-    base_url = str(cfg.parser.nim_base_url)
-    if base_url.startswith("${") and base_url.endswith("}"):
-        base_url = "https://integrate.api.nvidia.com/v1"
+    base_url = _resolve_nim_base_url(cfg)
     return NimEmbedder(
         model_id=entry.model_id,
         api_key=api_key,
@@ -98,6 +123,7 @@ def _build_hf_backend(entry: ModelEntry, cfg: Any) -> EmbedderBackend:
         max_seq_length=int(cfg.embedder.max_seq_length),
         device=str(cfg.embedder.device),
         dtype=str(cfg.embedder.model_dtype),
+        trust_remote_code=bool(getattr(cfg.embedder, "trust_remote_code", False)),
     )
 
 

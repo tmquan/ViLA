@@ -116,7 +116,8 @@ def _validate_shards(folder: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     # Pre-flight: catch a half-written sharded parquet before the
     # generic validator looks at the static surface files.
-    _validate_shards(DEFAULT_HF_DIR)
+    # ``extra_validators`` receives the parsed ``--folder`` so a
+    # ``--folder /some/other/hf`` override still gets validated.
     return run_push_cli(
         default_hf_dir=DEFAULT_HF_DIR,
         default_repo_id=DEFAULT_REPO_ID,
@@ -127,6 +128,7 @@ def main(argv: list[str] | None = None) -> int:
             "embedding + reduce layers"
         ),
         argv=argv,
+        extra_validators=(_validate_shards,),
     )
 
 

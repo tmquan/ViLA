@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import html as _html
+import json
 from pathlib import Path
 from typing import Any
 
@@ -12,19 +14,35 @@ from packages.visualizer.base import Renderer
 
 
 def render_dashboard(out_dir: Path, title: str) -> None:
-    """Emit ``dashboard.html`` that iframes every viz file in ``out_dir``."""
+    """Emit ``dashboard.html`` that iframes every viz file in ``out_dir``.
+
+    All interpolations are escaped:
+
+    * filenames -> ``html.escape`` for HTML attributes/text,
+      ``json.dumps`` for JS string literals (handles quotes, backslashes,
+      and ``</script>`` sequences).
+    * ``title`` -> ``html.escape`` for HTML text contexts.
+    """
     htmls = sorted(p.name for p in out_dir.glob("*.html") if p.name != "dashboard.html")
-    tabs = "\n".join(
-        f'<div class="tab"><button onclick="show(\'{name}\')">{name}</button></div>'
-        for name in htmls
-    )
-    frames = "\n".join(
-        f'<iframe id="f_{i}" data-name="{name}" src="{name}" '
-        f'style="width:100%;height:90vh;border:none;display:none"></iframe>'
-        for i, name in enumerate(htmls)
-    )
+    safe_title = _html.escape(title, quote=True)
+    tabs_parts: list[str] = []
+    for name in htmls:
+        js = json.dumps(name)
+        txt = _html.escape(name, quote=True)
+        tabs_parts.append(
+            f'<div class="tab"><button onclick="show({js})">{txt}</button></div>'
+        )
+    tabs = "\n".join(tabs_parts)
+    frames_parts: list[str] = []
+    for i, name in enumerate(htmls):
+        attr = _html.escape(name, quote=True)
+        frames_parts.append(
+            f'<iframe id="f_{i}" data-name="{attr}" src="{attr}" '
+            f'style="width:100%;height:90vh;border:none;display:none"></iframe>'
+        )
+    frames = "\n".join(frames_parts)
     html = f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>{title}</title>
+<html><head><meta charset="utf-8"><title>{safe_title}</title>
 <style>
   body {{ font-family: sans-serif; margin: 0; padding: 0; }}
   .tabs {{ display:flex; flex-wrap:wrap; background:#222; }}
@@ -45,7 +63,7 @@ def render_dashboard(out_dir: Path, title: str) -> None:
   }});
 </script>
 </head><body>
-<h1>{title}</h1>
+<h1>{safe_title}</h1>
 <div class="tabs">{tabs}</div>
 {frames}
 </body></html>"""

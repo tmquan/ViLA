@@ -12,9 +12,9 @@
 # PoliteSession; the detail stage drives a real headless Chromium
 # via Playwright so reCAPTCHA solves itself just like for a regular
 # visitor. The four downstream curation stages (parser / extractor /
-# embedder / reducer) have no consumer here yet -- defaults are kept
-# so a future curation pipeline can read this same config without a
-# config-shape migration.
+# embedder / reducer) are wired and consumed by the corresponding
+# pipelines in ``packages/datasites/vbpl/{parse,extract,embed,reduce}.py``
+# -- see ``scraper.py`` for the dispatch table.
 
 host: vbpl.vn
 output_dir: ./data
@@ -228,4 +228,6 @@ ray:
 
 stage_overrides:
   embed_files_per_partition: 4
-  reduce_files_per_partition: 64
+  # Reducer fits per partition; keep the whole corpus in ONE partition
+  # so PCA/UMAP coordinates and cluster_ids stay globally comparable.
+  reduce_files_per_partition: 100000

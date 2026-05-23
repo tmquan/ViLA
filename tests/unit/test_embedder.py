@@ -309,6 +309,44 @@ def test_process_row_with_empty_markdown_short_circuits() -> None:
     assert all(all(t.strip() for t in batch) for batch in calls)
 
 
+def test_resolve_nim_base_url_prefers_embedder_then_parser_then_default() -> None:
+    """Regression for H2: embedder NIM URL no longer reads from ``cfg.parser``.
+
+    Resolution chain:
+      embedder.nim_base_url -> parser.nim_base_url -> cloud fallback.
+    Raw ``${...}`` placeholders (an interpolation that the host config
+    framework never resolved to a concrete value) are skipped so the
+    public cloud NIM is the last-resort default. We use plain Python
+    objects here rather than OmegaConf because OmegaConf throws on
+    unresolved interpolations at access time.
+    """
+    from packages.embedder.stage import _resolve_nim_base_url
+
+    class _Bag:
+        def __init__(self, url: str) -> None:
+            self.nim_base_url = url
+
+    class _Cfg:
+        def __init__(self, embedder_url: str, parser_url: str) -> None:
+            self.embedder = _Bag(embedder_url)
+            self.parser = _Bag(parser_url)
+
+    # embedder explicit -> wins.
+    assert _resolve_nim_base_url(
+        _Cfg("https://embedder.example/v1", "https://parser.example/v1")
+    ) == "https://embedder.example/v1"
+
+    # embedder placeholder, parser explicit -> parser wins.
+    assert _resolve_nim_base_url(
+        _Cfg("${unresolved}", "https://parser.example/v1")
+    ) == "https://parser.example/v1"
+
+    # Both placeholders -> public cloud NIM fallback.
+    assert _resolve_nim_base_url(
+        _Cfg("${unresolved}", "${also_unresolved}")
+    ) == "https://integrate.api.nvidia.com/v1"
+
+
 def test_chars_per_token_from_cfg_controls_chunk_budget() -> None:
     cfg = _cfg()
     cfg.embedder.chars_per_token = 2.4

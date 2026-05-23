@@ -46,10 +46,17 @@ from packages.reducer.stage import ReducerStage
 # Default ``files_per_partition`` for each stage. Sites with smaller
 # corpora typically lower these; sites with larger corpora raise them.
 # Override per-site via ``cfg.stage_overrides.<stage>_files_per_partition``.
+#
+# Reduce: the reducer (PCA / t-SNE / UMAP / HDBSCAN) is fit
+# per-partition. To keep coordinates and ``cluster_id`` globally
+# comparable, the reducer reader must emit ONE partition containing
+# every per-doc embedding. ``100_000`` is "every file we'd ever see"
+# for current corpora; lower only when you explicitly want
+# incremental, partition-local fits (e.g. debug runs on a slice).
 DEFAULT_FPP: dict[str, int] = {
     "extract": 8,
     "embed": 4,
-    "reduce": 64,
+    "reduce": 100_000,
 }
 
 
@@ -198,7 +205,18 @@ def build_reduce_pipeline(
     description: str | None = None,
     files_per_partition: int | None = None,
 ) -> Pipeline:
-    """Return the Reducer :class:`Pipeline`: embeddings -> reduced parquet."""
+    """Return the Reducer :class:`Pipeline`: embeddings -> reduced parquet.
+
+    Critical contract: ``files_per_partition`` defaults to a very
+    large value (``DEFAULT_FPP["reduce"]``) so the ``ParquetReader``
+    delivers every per-doc embedding in a single ``DocumentBatch``.
+    :class:`packages.reducer.stage.ReducerStage` fits PCA / t-SNE /
+    UMAP / HDBSCAN **per batch**; splitting the corpus into multiple
+    partitions yields per-partition coordinates that are not
+    comparable across the dataset (cluster IDs reused, PCA axes
+    rotated). Lower this only when an incremental / partition-local
+    fit is explicitly desired.
+    """
     fpp = files_per_partition or _stage_override(
         cfg, "reduce_files_per_partition", DEFAULT_FPP["reduce"],
     )

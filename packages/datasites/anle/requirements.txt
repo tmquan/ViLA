@@ -70,10 +70,11 @@ kaleido>=0.2               # static image export (PNG)
 networkx>=3.2
 nbformat>=5.9
 
-# --- analysis notebook + HF dataset push (data/anle.toaan.gov.vn) ---
-# Used by data/anle.toaan.gov.vn/notebook.ipynb (corpus EDA) and
-# data/anle.toaan.gov.vn/{_render_assets.py, _to_hf.py} (rebuild the static
-# README assets and consolidate per-doc shards into a HF-friendly bundle).
+# --- HF dataset publish (packages.datasites.anle.{hf_export,push_to_hf}) ---
+# The canonical export + push surfaces live under
+# packages/datasites/anle/. The historical
+# data/anle.toaan.gov.vn/{_to_hf.py, _render_assets.py, notebook.ipynb}
+# tooling has been retired in favour of those modules.
 # duckdb is required because PyArrow >= 17 occasionally chokes on the
 # embedding parquet shards with `Repetition level histogram size mismatch`.
 duckdb>=1.0

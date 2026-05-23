@@ -129,3 +129,71 @@ def test_reducer_stage_all_empty_batch_emits_nan_coords_and_noise_cluster() -> N
 
     assert all(math.isnan(x) for x in out["pca_x"])
     assert (out["cluster_id"] == -1).all()
+
+
+def test_reducer_stage_honours_hdbscan_cfg_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``cfg.reducer.hdbscan_{min_cluster_size,min_samples}`` flows into the clusterer.
+
+    Regression for the M2 finding: the schema exposed these knobs but
+    the stage hardcoded a size-adaptive heuristic and ignored them.
+    """
+    captured: dict[str, Any] = {}
+
+    class _FakeHDBSCAN:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        def fit_predict(self, X: Any) -> list[int]:
+            return [0] * len(X)
+
+    from packages.reducer import stage as stage_mod
+
+    fake_sklearn_cluster = type(
+        "FakeSklearnCluster", (), {"HDBSCAN": _FakeHDBSCAN},
+    )
+    monkeypatch.setitem(
+        __import__("sys").modules, "sklearn.cluster", fake_sklearn_cluster,
+    )
+    monkeypatch.setattr(stage_mod, "have_cuml", lambda: False)
+
+    cfg = _cfg(["pca"])
+    cfg.reducer.hdbscan_min_cluster_size = 7
+    cfg.reducer.hdbscan_min_samples = 3
+
+    stage = ReducerStage(cfg=cfg)
+    stage.process(_batch(n=16, dim=8))
+    assert captured == {"min_cluster_size": 7, "min_samples": 3}
+
+
+def test_reducer_stage_falls_back_to_size_heuristic_when_cfg_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Leaving ``hdbscan_min_cluster_size`` at its sentinel preserves
+    the legacy size-adaptive heuristic (max(2, min(20, n // 10)))."""
+    captured: dict[str, Any] = {}
+
+    class _FakeHDBSCAN:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        def fit_predict(self, X: Any) -> list[int]:
+            return [0] * len(X)
+
+    from packages.reducer import stage as stage_mod
+
+    fake_sklearn_cluster = type(
+        "FakeSklearnCluster", (), {"HDBSCAN": _FakeHDBSCAN},
+    )
+    monkeypatch.setitem(
+        __import__("sys").modules, "sklearn.cluster", fake_sklearn_cluster,
+    )
+    monkeypatch.setattr(stage_mod, "have_cuml", lambda: False)
+
+    cfg = _cfg(["pca"])
+    cfg.reducer.hdbscan_min_cluster_size = 0
+    cfg.reducer.hdbscan_min_samples = 0
+
+    stage = ReducerStage(cfg=cfg)
+    stage.process(_batch(n=16, dim=8))
+    # Heuristic on n=16 -> max(2, min(20, 16 // 10)) == max(2, 1) == 2.
+    assert captured == {"min_cluster_size": 2}

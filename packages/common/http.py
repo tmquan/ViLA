@@ -151,6 +151,14 @@ class PoliteSession:
             import urllib3
 
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            logger.warning(
+                "PoliteSession created with verify_tls=False; ALL TLS "
+                "certificates will be accepted unconditionally. This is "
+                "intended for VN .gov.vn hosts whose CAs are not in the "
+                "Mozilla bundle -- for any other endpoint, prefer "
+                "shipping a custom CA bundle via the REQUESTS_CA_BUNDLE "
+                "env var and leaving verify_tls=True."
+            )
         # Mount a single adapter; retries are handled in a loop below so we
         # can honor the token bucket between attempts.
         self._session.mount("http://", HTTPAdapter(pool_connections=16, pool_maxsize=32))

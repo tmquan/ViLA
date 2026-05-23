@@ -23,7 +23,13 @@ scraper:
   proxy: null               # congbobanan refuses non-VN IPs; set a VN proxy
   timeout_s: 30.0
   max_retries: 5
-  verify_tls: false         # congbobanan's cert is not in the Mozilla bundle
+  # WARNING: disables TLS verification for ALL congbobanan traffic.
+  # The .gov.vn certificate chain is not in the Mozilla bundle, so the
+  # supported path is shipping a custom CA bundle via REQUESTS_CA_BUNDLE
+  # and overriding this to ``true``. The default stays ``false`` only
+  # because that's what current operators rely on -- review per
+  # deployment.
+  verify_tls: false
   download_max_retries: 50
   download_retry_delay_s: 30.0
   # Separate, longer-budget retry channel for DNS resolution failures
@@ -121,4 +127,6 @@ stage_overrides:
   parse_files_per_partition: 32
   extract_files_per_partition: 32
   embed_files_per_partition: 16
-  reduce_files_per_partition: 64
+  # Reducer fits per partition; keep the whole corpus in ONE partition
+  # so PCA/UMAP coordinates and cluster_ids stay globally comparable.
+  reduce_files_per_partition: 100000

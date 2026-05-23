@@ -12,7 +12,7 @@ is given in weeks; durations can compress with more parallelism.
 |---|---|---|---|---|
 | M-1 | Planning freeze | 0 w | GREEN | Ontology v1.2.0 (`00-overview/ontology.md`), legal timeline (`00-overview/vn-legal-timeline.md`), glossary, and schemas all consistent. Readiness checklist (section 10) all green. |
 | M0 | Foundations | 2 w | IN PROGRESS | Monorepo scaffolded; CI green; shared schemas stood up; LLM + embed clients callable. Seed data for `vila.codes` loaded from the legal-timeline doc. |
-| M1 | Ingest baseline | 3 w | PARTIAL | anle reference datasite live (five Curator pipelines, 60+ unit tests). congbobanan + vbpl pending (mirror the anle layout). Object-store + Postgres sinks + lineage table not yet wired -- pipeline currently terminates at on-disk parquet/JSONL. |
+| M1 | Ingest baseline | 3 w | PARTIAL | Six datasites live: Family A (`anle`, `congbobanan`), Family B (`pbgdpl`, `phapdien`, `thuvienphapluat_tnpl`), and hybrid `vbpl` (Playwright + Curator embed/reduce). All ship the per-doc tier; the §3.5.2 sharded-parquet consumption tier is wired only on `vbpl` (anle/congbobanan still emit per-doc parquet under `parquet/embeddings/` + `parquet/reduced/`). 157 unit/e2e tests; object-store + Postgres sinks + lineage table not yet wired (pipelines terminate at on-disk parquet/JSONL + the HF publish surface). |
 | M2 | Parse + extract | 4 w | PARTIAL | `PdfParseStage` (nemo-parse NIM + local pypdf fallback) + regex-based `LegalExtractStage` shipped. OCR fallback, Vietnamese section tagger (YAML rules), ML-based NER, statute linker F1 targets -- all pending. |
 | M3 | Storage | 2 w | PENDING | Postgres schema applied. Mongo raw bodies loaded. Milvus collections populated w/ cuVS GPU index. Curator sink stages wired as a fifth terminal writer pair alongside the current parquet/JSONL output. |
 | M4 | Knowledge graph | 2 w | PENDING | cuGraph build pipeline. Query API. Basic cuxfilter dashboard. |
@@ -66,11 +66,26 @@ have a local-NIM container as fallback.
 
 ### M1 — Ingest baseline (3 weeks; PARTIAL)
 
-- **Datasites**: five-pipeline Curator chain (`download` / `parse` /
-  `extract` / `embed` / `reduce`) landed under
-  [`packages/datasites/anle/`](../packages/datasites/anle/). `congbobanan`
-  (incremental + historical backfill) and `vbpl` (article diff) are
-  next; both mirror the anle layout file-for-file.
+- **Datasites**: six sites shipped, three families:
+  - **Family A** (PDF curator, five-pipeline Curator chain
+    `download` / `parse` / `extract` / `embed` / `reduce`):
+    [`anle`](../packages/datasites/anle/) (reference),
+    [`congbobanan`](../packages/datasites/congbobanan/) (integer-ID
+    judgment portal).
+  - **Family B** (HTML crawler, three- to four-stage chains via
+    `run_crawler_site`):
+    [`pbgdpl`](../packages/datasites/pbgdpl/),
+    [`phapdien`](../packages/datasites/phapdien/),
+    [`thuvienphapluat_tnpl`](../packages/datasites/thuvienphapluat_tnpl/)
+    (adds an LLM translator stage on top of harvest / detail /
+    parse).
+  - **Hybrid** (Playwright detail fetch + Curator embed / reduce):
+    [`vbpl`](../packages/datasites/vbpl/) — 6-stage chain
+    `harvest` / `detail` / `parse` / `extract` / `embed` / `reduce`.
+  - Open follow-ups: migrate `anle` + `congbobanan` `embed` /
+    `reduce` from per-doc parquet (`parquet/embeddings/` /
+    `parquet/reduced/`) onto the sharded consumption tier described
+    in `wiki.md` §3.5.2.
 - **Curator primitives**: four site-specific subclasses per datasite
   under `<site>/components/` (`URLGenerator`, `DocumentDownloader`,
   `DocumentIterator`, `DocumentExtractor`). The ad-hoc "Downloader

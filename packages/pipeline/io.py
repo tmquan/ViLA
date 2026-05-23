@@ -364,13 +364,23 @@ class ParquetPerDocWriter(ProcessingStage[DocumentBatch, FileGroupTask]):
 # --------------------------------------------------------------------- helpers
 
 
+_UNSAFE_DOC_NAME_CHARS = ("/", "\\", "\x00")
+
+
 def _doc_name_or_empty(value: Any) -> str:
-    """Return a non-empty ``doc_name`` or ``""`` for skip-this-row semantics.
+    """Return a safe, non-empty ``doc_name`` or ``""`` for skip semantics.
 
     Pandas coerces missing ``doc_name`` cells to ``NaN``; stringifying
     that blindly yields ``"nan"`` and lands a file called
     ``nan.<ext>`` on disk. Treat NaN / None / empty / whitespace as a
     skip signal instead.
+
+    Also rejects values that could escape the writer's target directory
+    (path separators, ``..``, absolute paths, NUL bytes, dot-only
+    components). The contract is: the returned string -- when joined to
+    a writer's ``self.path`` -- never resolves outside that directory.
+    Sites that need exotic doc_name shapes must sanitize upstream
+    (e.g. URL-escape) before reaching the writer.
     """
     try:
         if pd.isna(value):
@@ -379,7 +389,29 @@ def _doc_name_or_empty(value: Any) -> str:
         pass
     if value is None:
         return ""
-    return str(value).strip()
+    candidate = str(value).strip()
+    if not candidate:
+        return ""
+    if any(ch in candidate for ch in _UNSAFE_DOC_NAME_CHARS):
+        logger.warning(
+            "unsafe doc_name %r contains path separator or NUL; skipping",
+            candidate,
+        )
+        return ""
+    if candidate in (".", "..") or candidate.startswith(".."):
+        logger.warning(
+            "unsafe doc_name %r resolves outside writer directory; skipping",
+            candidate,
+        )
+        return ""
+    # Final invariant: the candidate must equal its own basename.
+    if Path(candidate).name != candidate:
+        logger.warning(
+            "unsafe doc_name %r does not equal its basename; skipping",
+            candidate,
+        )
+        return ""
+    return candidate
 
 
 def _project_columns(
