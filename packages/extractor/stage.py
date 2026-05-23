@@ -11,6 +11,7 @@ on top. Emits flat columns the downstream embedder / writer expects
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -85,9 +86,16 @@ class LegalExtractStage(ProcessingStage[DocumentBatch, DocumentBatch]):
         run_structure = bool(
             getattr(self.cfg.extractor, "run_structure_layer", True)
         )
+        # Skip inline normalization when an upstream
+        # :class:`NormalizerChainStage` already ran (the new
+        # declarative chain owns normalization end-to-end —
+        # wiki.md §3.5). The legacy ``run_text_normalization``
+        # boolean keeps the inline path alive for sites that
+        # haven't migrated to the chain yet.
+        chain_names = getattr(self.cfg.extractor, "normalizers", None) or []
         run_normalize = bool(
             getattr(self.cfg.extractor, "run_text_normalization", True)
-        )
+        ) and not chain_names
 
         df = task.to_pandas().copy()
 
@@ -204,8 +212,18 @@ def _row_scraper_metadata(row: Any) -> dict[str, Any]:
     )
     out: dict[str, Any] = {}
     for k in keys:
-        if k in row and row[k] is not None:
-            out[k] = row[k]
+        if k not in row:
+            continue
+        v = row[k]
+        if v is None:
+            continue
+        # pandas surfaces missing values as ``float('nan')`` which
+        # is truthy in ``or "" `` short-circuits and crashes
+        # downstream ``str``-only consumers; skip those exactly
+        # like None.
+        if isinstance(v, float) and math.isnan(v):
+            continue
+        out[k] = v
     return out
 
 

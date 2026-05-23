@@ -1,8 +1,10 @@
 """Materialise the vbpl corpus as a HuggingFace-ready dataset folder.
 
-Reads the extractor JSONL output from ``data/<host>/jsonl/extract.jsonl``
-and the optional reducer parquets from ``data/<host>/parquet/reduced/*``,
-writing a self-contained ``hf/`` tree that can be uploaded with
+Reads the extractor raw per-doc JSONL tier
+(``data/<host>/jsonl/<doc_name>.jsonl``, one record per file, per
+wiki.md §3.5) and the optional reducer parquets from
+``data/<host>/parquet/reduced/*``, writing a self-contained ``hf/``
+tree that can be uploaded with
 :mod:`packages.datasites.vbpl.push_to_hf`::
 
     data/vbpl.vn/hf/
@@ -50,6 +52,7 @@ import argparse
 import hashlib
 import json
 import logging
+import math
 import re
 import sys
 from collections import Counter
@@ -72,18 +75,26 @@ from packages.datasites.vbpl.codes import (
     legal_area_label,
     legal_type_name,
 )
-from packages.datasites.vbpl.components.parser import (
-    clean_title,
-    normalise_co_quan_ban_hanh,
-    normalise_so_hieu_list,
-    strip_markdown_junk,
-)
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_JSONL_PATH = Path("data/vbpl.vn/jsonl/extract.jsonl")
+DEFAULT_JSONL_DIR = Path("data/vbpl.vn/jsonl")
 DEFAULT_REDUCED_DIR = Path("data/vbpl.vn/parquet/reduced")
 DEFAULT_OUT_DIR = Path("data/vbpl.vn/hf")
+
+#: Stage / sidecar filenames that live under the raw per-doc JSONL
+#: directory but are NOT document rows. The extractor pipeline
+#: shipped some of these historically (single-file ``extract.jsonl``,
+#: manifests, prior stages' jsonl) and they must be skipped when
+#: enumerating per-doc inputs.
+_NON_DOC_JSONL_NAMES = frozenset({
+    "sitemap.jsonl",
+    "docs.jsonl",
+    "extract.jsonl",
+    "extract_manifest.json",
+    "parse_manifest.json",
+    "manifest.json",
+})
 DEFAULT_LICENSE = "cc-by-4.0"
 DEFAULT_REPO_OWNER = "tmquan"
 DEFAULT_REPO_NAME = "vbpl-vn"
@@ -115,10 +126,18 @@ PARQUET_ROW_GROUP_SIZE = 512
 #: Splits into ``overview-*`` (six corpus-level aggregates: legal-area
 #: treemap, scope→doc-type sunburst, doc-type bilingual bars, year
 #: stacked area, doc-type×year heatmap, agency bars) and
-#: ``embedding-*-umap`` (six UMAP scatter facets, all plotly+kaleido
-#: PNGs). t-SNE/PCA are still in the reducer parquet but not
-#: rendered -- on this corpus they separate the same clusters as
-#: UMAP without adding insight.
+#: ``embedding-*-umap`` (five UMAP scatter facets, all plotly+kaleido
+#: PNGs). PCA coordinates are still in the reducer parquet but not
+#: rendered -- on this corpus PCA separates the same clusters as
+#: UMAP without adding insight. t-SNE was retired entirely in the
+#: May-2026 global-reducer rerun: a single t-SNE fit on the full
+#: 158 K × 2 048-D matrix took prohibitively long under
+#: ``random_state=0``, and the reduced parquet no longer carries
+#: ``tsne_x`` / ``tsne_y`` columns.
+#:
+#: The ``cluster-id`` UMAP facet was retired in May-2026: HDBSCAN on
+#: this corpus emits ~85 % of points as the ``-1`` noise bucket on
+#: the default reducer settings, so the figure was visually empty.
 OVERVIEW_FIGURES = (
     "overview-legalarea-treemap.png",
     "overview-scope-doctype-sunburst.png",
@@ -133,7 +152,6 @@ EMBEDDING_FIGURES = (
     "embedding-legal-type-umap.png",
     "embedding-legal-area-umap.png",
     "embedding-year-umap.png",
-    "embedding-cluster-id-umap.png",
 )
 ALL_FIGURES = OVERVIEW_FIGURES + EMBEDDING_FIGURES
 
@@ -196,22 +214,6 @@ _DOCUMENT_SCHEMA = pa.schema([
 # ----------------------------------------------------- record projection
 
 
-#: Title-prefix marker the vbpl editors paste onto records they've
-#: flagged as broken (typically because the underlying body was
-#: never migrated to the modern SPA). We treat any case-insensitive
-#: ``"Lỗi "`` head as a junk signal and ship the row with a
-#: ``markdown=null`` body so downstream consumers see the bibliographic
-#: metadata but don't ingest the error text.
-_LOI_TITLE_PREFIX_RE = re.compile(r"^\s*l[ỗo]i\b", re.IGNORECASE | re.UNICODE)
-
-
-def _has_loi_prefix(title: Any) -> bool:
-    """Return True if ``title`` starts with the vbpl error marker."""
-    if not isinstance(title, str):
-        return False
-    return bool(_LOI_TITLE_PREFIX_RE.match(title))
-
-
 def _project_record(rec: dict[str, Any]) -> dict[str, Any] | None:
     """Turn one Extractor JSONL record into the parquet row shape.
 
@@ -224,36 +226,51 @@ def _project_record(rec: dict[str, Any]) -> dict[str, Any] | None:
       ``text_hash=None``; the bibliographic columns (title, agency,
       so_hieu, ...) are still populated so consumers retain the citation
       handle.
-    * **``"Lỗi ..."`` title prefix** -- vbpl's own editorial marker for
-      corrupt records. Same treatment: ``markdown=None``.
-    * **Everything else** -- run :func:`strip_markdown_junk` over the
-      raw body, fall back to :func:`_synthesize_metadata_markdown`
-      only when the cleaner returns nothing AND the row still has
-      enough metadata to build a useful stub (one or two stragglers
-      in the corpus). Returns ``None`` only when even the stub is
-      empty (zero-metadata orphan row).
-    """
-    raw_markdown = str(rec.get("markdown") or "").strip()
-    body_source = rec.get("body_source")
-    title_for_check = rec.get("title")
+    * **Everything else** -- pass the already-chain-normalised
+      ``markdown`` straight through, falling back to
+      :func:`_synthesize_metadata_markdown` only when the body is
+      empty AND the row still has enough metadata to build a useful
+      stub (one or two stragglers in the corpus). Returns ``None``
+      only when even the stub is empty (zero-metadata orphan row).
 
-    # Hard NULL classes -- shell_html-after-retry + vbpl "Lỗi" marker.
-    # These never carry a useful body; the projection sets markdown to
-    # None instead of synthesising a metadata stub so the parquet
-    # accurately reflects "no body available on the source".
-    null_body = (
-        body_source == "shell_html"
-        or _has_loi_prefix(title_for_check)
-    )
+    .. note::
+
+       Earlier versions of this projection treated a leading
+       ``"Lỗi "`` token on the title as a vbpl editorial "broken
+       record" marker and forced ``markdown=None``. That heuristic
+       was retired in May 2026 -- corpus audit showed every such
+       title is a legitimate use of the Vietnamese noun
+       ``Lỗi``/``lỗi``/``loi`` ("fault / error"; e.g. "Lỗi Ban
+       hành Quy chế hoạt động của hội đồng tư vấn mua sắm tài
+       sản"), not a marker. We now respect the body the parse +
+       extract pipelines produced for those rows regardless of
+       title shape.
+
+    Field-level normalization (``strip_markdown_junk``,
+    ``clean_title``, ``normalise_so_hieu_list``,
+    ``normalise_co_quan_ban_hanh``, ...) is **not** done here -- the
+    extract Curator pipeline's ``NormalizerChainStage`` is the single
+    source of truth (wiki.md §3.5 + ``cfg.extractor.normalizers`` in
+    ``configs/default.yaml``). The HF export is a pure projection on
+    top of an already-canonical JSONL.
+    """
+    raw_markdown = _str_or_empty(rec.get("markdown"))
+    body_source = rec.get("body_source")
+    if isinstance(body_source, float) and math.isnan(body_source):
+        body_source = None
+
+    # Hard NULL class: shell_html-after-retry. The source genuinely
+    # has no body for these (the May-2026 live-API retry confirmed
+    # vbpl only ships metadata for this slice); the projection sets
+    # markdown to None instead of synthesising a metadata stub so
+    # the parquet accurately reflects "no body available on the
+    # source".
+    null_body = body_source == "shell_html"
 
     if null_body:
         markdown: str | None = None
     else:
-        # Drop the gateway's HTML/CSS scaffolding (``Document
-        # Content`` preamble, Word ``<!-- @font-face … -->`` dumps,
-        # malformed ``<span style="…">`` tags). ``body_html`` docs
-        # typically lose 1-30 KB of Word stylesheet boilerplate.
-        markdown = strip_markdown_junk(raw_markdown) or ""
+        markdown = raw_markdown
         if not markdown:
             markdown = _synthesize_metadata_markdown(rec)
             if not markdown:
@@ -292,28 +309,23 @@ def _project_record(rec: dict[str, Any]) -> dict[str, Any] | None:
                 if not legal_type_pretty:
                     legal_type_pretty = CANONICAL_CODE_TO_NAME.get(inferred)
 
-    # ``so_hieu`` is now a list; accept legacy string form too and
-    # always coerce via ``normalise_so_hieu_list`` so the projection
-    # is idempotent across vintages. An empty list maps to ``None``
-    # for the parquet column (parquet ``list<string>`` would accept
-    # ``[]`` but ``null`` is the conventional "no value" signal).
+    # ``so_hieu`` arrives as a ``list[str]`` from the chain
+    # (``vbpl_so_hieu_list`` normalizer + the ``so_hieu`` column on
+    # the per-doc JSONL); the projection simply maps an empty list
+    # to ``None`` so consumers see a clean null signal.
     raw_so_hieu = rec.get("so_hieu")
     if isinstance(raw_so_hieu, list):
-        # Already normalised in a previous sweep -- re-run through
-        # the list normaliser to drop any tokens that the upstream
-        # JSONL might still ship in legacy form (e.g. a stale
-        # ``"Nghị quyết số: 528/..."`` string from before the
-        # sweep). Joining + re-splitting is safe: comma-joined
-        # tokens round-trip through the splitter cleanly because
-        # each is doc-num-shaped.
-        so_hieu_list = normalise_so_hieu_list(", ".join(
-            x for x in raw_so_hieu if isinstance(x, str) and x
-        ))
+        so_hieu_list = [x for x in raw_so_hieu if isinstance(x, str) and x]
+    elif isinstance(raw_so_hieu, str) and raw_so_hieu.strip():
+        # Legacy single-string vintage -- accept and split on commas
+        # so old JSONLs still flow through. The chain runs on new
+        # data; this branch is a compat shim for partial reruns.
+        so_hieu_list = [s.strip() for s in raw_so_hieu.split(",") if s.strip()]
     else:
-        so_hieu_list = normalise_so_hieu_list(raw_so_hieu)
+        so_hieu_list = []
     so_hieu_value: list[str] | None = so_hieu_list if so_hieu_list else None
 
-    return {
+    return _scrub_nan({
         # Identification
         "doc_name":   rec.get("doc_name"),
         "item_id":    rec.get("item_id"),
@@ -323,36 +335,29 @@ def _project_record(rec: dict[str, Any]) -> dict[str, Any] | None:
         "api_url":    rec.get("api_url"),
 
         # Sidebar metadata.
-        # :func:`clean_title` runs the full title cleanup chain:
-        # NFC + smart-quote + whitespace baseline (normalise_title),
-        # peel of the doc's own ``"<legal_type> số <so_hieu>"`` head
-        # + leading ``Lỗi`` editorial marker
-        # (strip_redundant_title_prefix), and a final pass that
-        # nukes any ``<DocType> <DocNum>`` cross-references left in
-        # the title body (strip_doctype_docnum_crossrefs). May
-        # return ``None`` when the title degenerates to nothing
-        # (e.g. the whole title was just a doc-num token like
+        # ``title`` arrives already cleaned by ``vbpl_clean_title``
+        # (legal_type / so_hieu head peeling, cross-ref stripping,
+        # decorative quote stripping). The chain returns ``None``
+        # for degenerate titles (e.g. just a doc-num token like
         # ``"1938/QĐ-UBND"``); the parquet then ships
         # ``title=null`` with the bibliographic columns
         # (so_hieu, legal_type, ...) still carrying the citation
-        # handle.
-        "title": clean_title(
-            rec.get("title"), legal_type_pretty, so_hieu_value,
-        ),
+        # handle. The Vietnamese noun ``Lỗi`` ("fault / error")
+        # is preserved wherever it appears in source titles --
+        # it's a legitimate subject word, not a CMS marker.
+        "title":            rec.get("title"),
         "doc_type":         doc_type_value,
         "legal_type":       legal_type_pretty,
         "legal_area":       legal_area_pretty,
         "so_hieu":          so_hieu_value,
         "ngay_ban_hanh":    rec.get("ngay_ban_hanh"),
         "year":             _year_from(rec.get("ngay_ban_hanh")),
-        "co_quan_ban_hanh": normalise_co_quan_ban_hanh(
-            rec.get("co_quan_ban_hanh"),
-        ),
+        "co_quan_ban_hanh": rec.get("co_quan_ban_hanh"),
         "trich_yeu":        rec.get("trich_yeu"),
 
-        # Body. ``markdown`` is None for shell_html-after-retry and
-        # "Lỗi"-prefix rows so the parquet faithfully signals
-        # "no body on source" instead of synthesising a stub.
+        # Body. ``markdown`` is None for shell_html-after-retry rows
+        # so the parquet faithfully signals "no body on source"
+        # instead of synthesising a stub.
         "markdown":     markdown,
 
         # Stats. ``char_len`` and ``text_hash`` are recomputed from
@@ -388,7 +393,46 @@ def _project_record(rec: dict[str, Any]) -> dict[str, Any] | None:
             json.dumps(rec["file_paths"], ensure_ascii=False)
             if rec.get("file_paths") else None
         ),
-    }
+    })
+
+
+def _str_or_empty(value: Any) -> str:
+    """Return ``value`` as a stripped string, or ``""`` for null-ish input.
+
+    Treats ``None``, ``float('nan')``, and any non-string non-numeric
+    falsy value as empty. Pandas writes missing cells through
+    ``json.dumps`` as ``NaN`` and ``json.loads`` round-trips that
+    back to a Python ``float('nan')`` which is **truthy** -- the old
+    ``rec.get("x") or ""`` pattern in synthesis / projection
+    therefore short-circuited on NaN and crashed ``.strip()``.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, float) and math.isnan(value):
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    return str(value).strip()
+
+
+def _is_nan(value: Any) -> bool:
+    """True iff ``value`` is exactly a ``float('nan')`` (pandas null)."""
+    return isinstance(value, float) and math.isnan(value)
+
+
+def _scrub_nan(row: dict[str, Any]) -> dict[str, Any]:
+    """Replace ``float('nan')`` values with ``None`` in a projected row.
+
+    PyArrow ``from_pylist`` rejects NaN where a string / binary column
+    is declared in the schema. Pandas serialises missing cells via
+    ``json.dumps`` as ``NaN`` and ``json.loads`` round-trips that to
+    Python's truthy ``float('nan')``; the projection therefore sees
+    NaN in any nullable string column that was empty in the source
+    DataFrame. Mapping NaN -> ``None`` makes the row pyarrow-safe
+    without forcing every individual ``rec.get(...)`` access to
+    defensively coerce.
+    """
+    return {k: (None if _is_nan(v) else v) for k, v in row.items()}
 
 
 def _synthesize_metadata_markdown(rec: dict[str, Any]) -> str:
@@ -403,18 +447,24 @@ def _synthesize_metadata_markdown(rec: dict[str, Any]) -> str:
     document type, abstract. Empty fields are dropped silently so
     the output is whatever metadata the source actually exposed.
     """
-    title = (rec.get("title") or "").strip()
-    raw_so_hieu = rec.get("so_hieu") or ""
+    # ``_str_or_empty`` defends against the ``float('nan')`` values
+    # that surface when the per-doc JSONL was serialised from a
+    # pandas DataFrame (pandas writes NaN through ``json.dumps`` as
+    # ``NaN`` and ``json.loads`` round-trips it back to a Python
+    # ``float('nan')``); a truthy NaN slipped through the old
+    # ``rec.get(...) or ""`` pattern and crashed ``.strip()``.
+    title = _str_or_empty(rec.get("title"))
+    raw_so_hieu = rec.get("so_hieu")
     if isinstance(raw_so_hieu, list):
-        # post-sweep shape: list of canonical doc-nums; ", "-join
-        # for display in the synthesised body stub.
-        so_hieu = ", ".join(x for x in raw_so_hieu if x).strip()
+        so_hieu = ", ".join(
+            _str_or_empty(x) for x in raw_so_hieu if _str_or_empty(x)
+        ).strip()
     else:
-        so_hieu = str(raw_so_hieu).strip()
-    legal_type = (rec.get("legal_type") or "").strip()
-    agency = (rec.get("co_quan_ban_hanh") or "").strip()
-    date = (rec.get("ngay_ban_hanh") or "").strip()
-    trich = (rec.get("trich_yeu") or "").strip()
+        so_hieu = _str_or_empty(raw_so_hieu)
+    legal_type = _str_or_empty(rec.get("legal_type"))
+    agency = _str_or_empty(rec.get("co_quan_ban_hanh"))
+    date = _str_or_empty(rec.get("ngay_ban_hanh"))
+    trich = _str_or_empty(rec.get("trich_yeu"))
     if not (title or so_hieu or agency or trich):
         return ""
     lines: list[str] = []
@@ -504,9 +554,30 @@ def _year_from(date_str: Any) -> int | None:
     return None
 
 
-def _iter_projected(jsonl_path: Path) -> Iterator[tuple[dict[str, Any] | None, dict[str, Any]]]:
+def _iter_per_doc_jsonl(jsonl_dir: Path) -> Iterator[dict[str, Any]]:
+    """Yield one record per ``<doc_name>.jsonl`` under ``jsonl_dir``.
+
+    The vbpl extract Curator pipeline writes the raw per-doc tier
+    (wiki.md §3.5) -- one JSON object per file keyed by
+    ``doc_name``. We sort by filename so the projection is
+    deterministic across runs. Sidecars / stage manifests that
+    happen to share the ``*.jsonl`` extension (``sitemap.jsonl``,
+    ``docs.jsonl``, the retired single-file ``extract.jsonl``, …)
+    are skipped.
+    """
+    for path in sorted(jsonl_dir.glob("*.jsonl")):
+        if path.name in _NON_DOC_JSONL_NAMES:
+            continue
+        if path.name.startswith("extract.jsonl."):
+            continue
+        yield from iter_jsonl(path)
+
+
+def _iter_projected(
+    jsonl_dir: Path,
+) -> Iterator[tuple[dict[str, Any] | None, dict[str, Any]]]:
     """Yield ``(projected_or_None, raw_record)`` so the manifest can count empties."""
-    for rec in iter_jsonl(jsonl_path):
+    for rec in _iter_per_doc_jsonl(jsonl_dir):
         yield _project_record(rec), rec
 
 
@@ -667,9 +738,11 @@ def _build_manifest(
     sent_counts = [r["num_sentences"] for r in rows if r["num_sentences"]]
     pages = [r["num_pages"] for r in rows if r["num_pages"]]
     has_attachment = sum(1 for r in rows if r.get("file_paths_json"))
-    # Count rows that ship with markdown=null (shell_html-after-retry
-    # + "Lỗi"-prefix bucket; the manifest exposes this explicitly so
-    # the dataset card can document the gap with a precise number).
+    # Count rows that ship with markdown=null. This is now just the
+    # ``body_source == "shell_html"`` slice that the May-2026
+    # live-API recovery confirmed has no body on the source; the
+    # manifest exposes the count so the dataset card can document
+    # the gap with a precise number.
     null_markdown_rows = sum(1 for r in rows if r.get("markdown") is None)
 
     def _pct(c: Counter, top_n: int = 25) -> dict[str, dict[str, Any]]:
@@ -770,14 +843,6 @@ configs:
   data_files:
   - split: train
     path: documents-*.parquet
-- config_name: embed
-  data_files:
-  - split: train
-    path: embed-*.parquet
-- config_name: reduce
-  data_files:
-  - split: train
-    path: reduce-*.parquet
 ---
 """
 
@@ -890,12 +955,14 @@ def _embed_viz_section(
     embed_model_id: str | None = None,
     embed_dim: int | None = None,
 ) -> str:
-    """Markdown block embedding the six UMAP scatter PNGs.
+    """Markdown block embedding the five UMAP scatter PNGs.
 
     One section per colour facet, in a fixed order (scope first as
-    the binary baseline, cluster_id last as the unsupervised
-    discovery). The intro paragraph names the embedder + dim so the
-    card stays accurate when the operator overrides the model.
+    the binary baseline). The intro paragraph names the embedder +
+    dim so the card stays accurate when the operator overrides the
+    model. The HDBSCAN ``cluster_id`` facet was retired in the
+    May-2026 global-reducer rerun because ~85 % of points fall into
+    the ``-1`` noise bucket on the default settings.
     """
     facet_order = (
         ("scope",       "embedding-scope-umap.png"),
@@ -903,7 +970,6 @@ def _embed_viz_section(
         ("legal_type",  "embedding-legal-type-umap.png"),
         ("legal_area",  "embedding-legal-area-umap.png"),
         ("year",        "embedding-year-umap.png"),
-        ("cluster_id",  "embedding-cluster-id-umap.png"),
     )
     rendered = [
         (facet, fname)
@@ -918,21 +984,21 @@ def _embed_viz_section(
     blocks: list[str] = ["## Trực quan hoá embedding · Embedding visualization\n"]
     blocks.append(
         f"Mỗi điểm là một văn bản pháp luật; toạ độ là vector embedding "
-        f"{dim}-D từ `{model_id}` chiếu xuống 2D bằng UMAP, cụm bằng "
-        f"HDBSCAN. Sáu mặt phân hoạch: `scope`, `doc_type` (mã ngắn), "
-        f"`legal_type` (tên đầy đủ), `legal_area` (lĩnh vực pháp luật), "
-        f"`year`, `cluster_id`. Các nhãn tail-end (sau top-18) được dồn "
-        f"vào nhóm *Khác / Other* màu xám để chú giải đọc được. — "
-        f"Each dot is one legal document; coordinates are the 2D UMAP "
-        f"projection of a {dim}-D embedding from `{model_id}`, with "
-        f"HDBSCAN cluster ids. Six facets: `scope`, `doc_type` "
-        f"(canonical short code), `legal_type` (canonical full name), "
-        f"`legal_area` (subject domain), `year`, `cluster_id`. "
-        f"Tail-end labels beyond the top 18 are collapsed into a grey "
-        f"*Khác / Other* bucket to keep the legend legible. The "
-        f"published reducer parquet still carries `tsne_x` / `tsne_y` "
-        f"columns next to `umap_*` for consumers who want to render "
-        f"t-SNE themselves.\n",
+        f"{dim}-D từ `{model_id}` chiếu xuống 2D bằng **UMAP fit "
+        f"globally** trên toàn bộ kho văn bản (không chia batch) để "
+        f"toạ độ so sánh được giữa các tài liệu. Năm mặt phân hoạch: "
+        f"`scope`, `doc_type` (mã ngắn), `legal_type` (tên đầy đủ), "
+        f"`legal_area` (lĩnh vực pháp luật), `year`. Các nhãn tail-end "
+        f"(sau top-18) được dồn vào nhóm *Khác / Other* màu xám để chú "
+        f"giải đọc được. — Each dot is one legal document; coordinates "
+        f"are the 2D UMAP projection of a {dim}-D embedding from "
+        f"`{model_id}`, **fit globally across the whole corpus** so "
+        f"positions are directly comparable across documents. Five "
+        f"facets: `scope`, `doc_type` (canonical short code), "
+        f"`legal_type` (canonical full name), `legal_area` (subject "
+        f"domain), `year`. Tail-end labels beyond the top 18 are "
+        f"collapsed into a grey *Khác / Other* bucket to keep the "
+        f"legend legible.\n",
     )
     for facet, fname in rendered:
         title = f"UMAP colored by `{facet}`"
@@ -970,7 +1036,9 @@ def _render_card(
     embed_dim_pretty = embed_dim or 2048
     # Embeddable-row count for the recovery prose: total documents
     # minus rows that ship with markdown=null (shell_html-after-retry
-    # + "Lỗi"-prefix bucket).
+    # bucket only -- the legacy "Lỗi" prefix rule was retired in
+    # May 2026 because audit showed those titles are legitimate uses
+    # of the Vietnamese noun for "fault / error").
     shell_html_count = manifest.get(
         "by_body_source", {},
     ).get("shell_html", {}).get("count", 0)
@@ -1121,7 +1189,7 @@ The parquet has three families of columns:
 | `scope` | string | `trung_uong` (central) \| `dia_phuong` (provincial). |
 | `source` | string | Source host, always `vbpl.vn`. |
 | `source_url` / `api_url` | string | Deep link back to the portal page / the underlying gateway API. |
-| `title` | string (nullable) | Document subject after the full title scrub: (1) baseline cleanup (NFC, smart-quote flatten, HTML-entity decode), (2) leading `"<Legal-type> số <Number> "` boilerplate head peeled (e.g. `"Quyết định số 143/QĐ-KHTC Ban hành Quy chế"` → `"Ban hành Quy chế"`), (3) leading source-side `"Lỗi "` editorial marker peeled (preserving legitimate phrases like `"xin lỗi"` and `"Lỗi chính tả"`), and (4) every `"<DocType> [số] <DocNum> [ngày <date>]"` cross-reference of OTHER documents stripped from anywhere in the body (`"Bãi bỏ Nghị quyết số 84/2018/NQ-HĐND ngày 07/12/2018 của HĐND tỉnh..."` → `"Bãi bỏ của HĐND tỉnh..."`). `null` for the pathological tail where the entire source title was just a bare doc-num token (e.g. `"1938/QĐ-UBND"`); other bibliographic columns still carry the citation handle. |
+| `title` | string (nullable) | Document subject after the full title scrub: (1) baseline cleanup (NFC, HTML-entity decode, `"số số"` doubling fix, trailing sentence punctuation), (2) decorative quote stripping at the title boundary and around inline phrases — leading / trailing / paired runs of `"`, `'`, `"`, `'`, `'`, `'` are removed but **word-internal single quotes are preserved** so legitimate Vietnamese / loan-word names survive intact (`Đắk R'lấp`, `M'nông`, `D'Ran`, `Côte d'Ivoire`, `Ea T'ling`, `Đạ M'ri`, …), (3) leading `"<Legal-type> số <Number> "` boilerplate head peeled (e.g. `"Quyết định số 143/QĐ-KHTC Ban hành Quy chế"` → `"Ban hành Quy chế"`), and (4) every `"<DocType> [số] <DocNum> [ngày <date>]"` cross-reference of OTHER documents stripped from anywhere in the body (`"Bãi bỏ Nghị quyết số 84/2018/NQ-HĐND ngày 07/12/2018 của HĐND tỉnh..."` → `"Bãi bỏ của HĐND tỉnh..."`). The Vietnamese noun `Lỗi` / `lỗi` / `loi` ("fault / error") is preserved wherever it appears — it's a legitimate subject word (e.g. `"Lỗi Ban hành Quy chế hoạt động của hội đồng tư vấn mua sắm tài sản"`), not a CMS marker. `null` for the pathological tail where the entire source title was just a bare doc-num token (e.g. `"1938/QĐ-UBND"`); other bibliographic columns still carry the citation handle. |
 | `doc_type` | string | Self-describing **ASCII snake_case slug** of the Vietnamese doc-type name (`quyet_dinh`, `nghi_dinh`, `thong_tu_lien_tich`, `chi_thi`, `van_ban_hop_nhat`, ...). Auto-derived from `legal_type` via `slugify_vi`; the compact short code (`QĐ`, `NĐ`, `TTLT`, ...) still appears in `so_hieu` itself (`43/2026/NĐ-CP`) and is recoverable via `SLUG_TO_CANONICAL_CODE`. |
 | `legal_type` | string | Canonical Vietnamese **full name** for the document type (`Luật`, `Nghị định`, `Thông tư`, `Quyết định`, `Nghị quyết`, `Chỉ thị`, …). Round-trips with `doc_type` via `slugify_vi`. |
 | `legal_area` | string | Legal area / subject domain (`Đất đai`, `Đường bộ`, `Lĩnh vực giá`, …). Defaults to `Chưa phân loại` when the source portal hasn't tagged the doc. |
@@ -1135,7 +1203,7 @@ The parquet has three families of columns:
 
 | Field | Type | Description |
 |---|---|---|
-| `markdown` | string (nullable) | NFC-normalised, modern-orthography Vietnamese markdown (page-segmented with `## Page N` headings when parsed from a PDF). Gateway / Word / Next.js scaffolding is stripped: the `Document Content\\n\\nbody {{ font-family: ... }}\\np {{ margin: ... }}` API preamble (~50 % of bodies), Word `<!-- /* Font Definitions */ @font-face {{ ... }} p.MsoNormal {{ ... }} -->` stylesheet dumps, standalone CSS rule blocks gated by property / selector / structural CSS tells, Ant Design `:where(.css-...){{ ... }}@keyframes ...{{ ... }}` chains, orphan selector fragments, and malformed inline `<span lang="..." style="...">` tags. ~90 % of rows lose 1-200 KB of boilerplate; total corpus markdown shrunk by ~1.77 GB / 42 %. **Null** when (a) `body_source == "shell_html"` after the May-2026 live-API recovery (the source genuinely has no body for those legacy IDs) or (b) the title starts with the vbpl `"Lỗi "` editorial marker; bibliographic metadata (title, agency, so_hieu, ...) is still populated on NULL-markdown rows so consumers retain the citation handle. |
+| `markdown` | string (nullable) | NFC-normalised, modern-orthography Vietnamese markdown (page-segmented with `## Page N` headings when parsed from a PDF). Gateway / Word / Next.js scaffolding is stripped: the `Document Content\\n\\nbody {{ font-family: ... }}\\np {{ margin: ... }}` API preamble (~50 % of bodies), Word `<!-- /* Font Definitions */ @font-face {{ ... }} p.MsoNormal {{ ... }} -->` stylesheet dumps, standalone CSS rule blocks gated by property / selector / structural CSS tells, Ant Design `:where(.css-...){{ ... }}@keyframes ...{{ ... }}` chains, orphan selector fragments, and malformed inline `<span lang="..." style="...">` tags. ~90 % of rows lose 1-200 KB of boilerplate; total corpus markdown shrunk by ~1.77 GB / 42 %. **Null** when `body_source == "shell_html"` after the May-2026 live-API recovery (the source genuinely has no body for those legacy IDs); bibliographic metadata (title, agency, so_hieu, ...) is still populated on NULL-markdown rows so consumers retain the citation handle. |
 | `num_pages` | int32 | Page count from the parser (PDF/DOCX only). |
 | `num_sections` / `num_paragraphs` / `num_sentences` | int32 | Counts from the structure layer. |
 | `char_len` | int32 | Character length of `markdown` **after** the junk-strip pass (recomputed at export time so consumers can dedupe on the actual shipped body). |
@@ -1173,88 +1241,30 @@ for sec in structure.get("sections", []):
     print(sec["kind"], sec["label"])
 ```
 
-## Companion stages · `embed` + `reduce`
+## Embedding + reduction artefacts
 
-Alongside the default `documents-*.parquet` shards (one row per
-document, with text + structure), the repo also carries the
-**embed** and **reduce** pipeline outputs as separate parquet
-bundles. Both join back to the `documents` table on the
-`doc_name` primary key. Only the **embeddable** rows
-({_format_int(embeddable_corpus_size)} after dropping NULL-markdown
-docs) appear in these stages.
+The Hub ships the **`documents` config only**
+(`documents-*.parquet`, one row per document, with text +
+structure). The {embed_dim_pretty}-D
+`{embed_model_pretty}` embeddings, the global UMAP / PCA
+coordinates, and the HDBSCAN cluster ids are computed during the
+build (over {_format_int(embeddable_corpus_size)} embeddable rows,
+i.e. all documents with non-null `markdown`) and used to render
+the scatter PNGs below, but they are **not bundled as separate
+parquet configs on the Hub** -- 1.3 GB of dense vectors per
+re-build is too costly to ship for a corpus this size when the
+embeddings are deterministic from `markdown` + a model id.
+Re-derive the same matrices locally via:
 
-### `embed-*.parquet` — dense vectors
-
-15 shards (~93 MB each, ~1.33 GB total, 10 000 rows per shard,
-deterministic `doc_name` ordering). Schema mirrors the
-`anle.toaan.gov.vn` corpus's embed stage exactly so
-cross-corpus joins are straightforward:
-
-| Field | Type | Description |
-|---|---|---|
-| `doc_name` | string | Join key back to `documents-*.parquet`. |
-| `text_hash` | string | SHA-256 of the post-normalisation `markdown` (stable across re-runs). |
-| `embedding` | list&lt;float64&gt; | **{embed_dim_pretty}-D** dense vector from `{embed_model_pretty}` (default; other models give other dims). |
-| `embedding_dim` | int64 | Length of `embedding` (denormalised for fast filtering, always `{embed_dim_pretty}` in this release). |
-| `embedding_model_id` | string | Model slug as the embedder backend reports it. |
-| `embedding_text_hash` | string | SHA-256 of the exact text fed to the embedder (differs from `text_hash` when sliding-window chunking applies). |
-| `embedding_chunks_used` | int64 | Number of windows mean-pooled into the final vector (1 when the doc fits in one window). |
-| `embedding_chunking` | string | Chunking strategy: `off` / `sliding` / `sentence`. |
-
-### `reduce-*.parquet` — 2-D projections + cluster ids
-
-15 shards (~0.5 MB each, ~7 MB total). PCA + t-SNE + UMAP run
-with `cfg.reducer.n_components=2` so the `*_z` columns that
-existed in the on-disk per-doc shards are dropped here.
-HDBSCAN cluster ids land in `[-1, N]` (`-1` is the noise
-bucket).
-
-| Field | Type | Description |
-|---|---|---|
-| `doc_name` / `text_hash` | string | Join keys back to `documents-*.parquet` and `embed-*.parquet`. |
-| `pca_x` / `pca_y` | float64 | 2-D PCA projection of the {embed_dim_pretty}-D embedding. |
-| `tsne_x` / `tsne_y` | float64 | 2-D t-SNE projection. |
-| `umap_x` / `umap_y` | float64 | 2-D UMAP projection (the one used in the scatter PNGs above). |
-| `cluster_id` | int64 | HDBSCAN cluster label; `-1` is the noise / unclustered bucket. |
-
-Quick load (each stage is a `data_files` glob; the default
-`load_dataset("{repo_owner}/{repo_name}")` still resolves to the
-`documents` config):
-
-```python
-from datasets import load_dataset
-
-embed = load_dataset(
-    "{repo_owner}/{repo_name}",
-    data_files="embed-*.parquet",
-    split="train",
-)
-print(embed[0]["doc_name"], len(embed[0]["embedding"]))
-# e.g. "100000 {embed_dim_pretty}"
-
-reduce = load_dataset(
-    "{repo_owner}/{repo_name}",
-    data_files="reduce-*.parquet",
-    split="train",
-)
-print(reduce[0]["doc_name"], reduce[0]["umap_x"], reduce[0]["cluster_id"])
-# e.g. "100000 1.7142 -1"
+```bash
+git clone https://github.com/<owner>/ViLA   # the build repo
+python -m packages.datasites.vbpl --pipeline embed
+python -m packages.datasites.vbpl.\_reduce\_inproc   # global UMAP
 ```
 
-To join embed-stage vectors back to the document metadata, do
-the join client-side on `doc_name`:
-
-```python
-import pandas as pd
-
-docs   = load_dataset("{repo_owner}/{repo_name}", split="train").to_pandas()
-embed  = load_dataset("{repo_owner}/{repo_name}",
-                      data_files="embed-*.parquet",
-                      split="train").to_pandas()
-joined = docs.merge(embed, on="doc_name", how="inner")
-# joined now has the title / so_hieu / markdown / ... columns
-# next to the {embed_dim_pretty}-D embedding vector for every embeddable doc.
-```
+which yields `parquet/embeddings/<doc_name>.parquet` and
+`parquet/reduced/<doc_name>.parquet` per-doc shards keyed back to
+`documents.doc_name`.
 
 {viz_block}## Cách thu thập + chuẩn hoá · How the corpus was built
 
@@ -1282,9 +1292,17 @@ intercepts the resulting authenticated XHRs, downloads any
 4. **Embed** -- `{embed_model_pretty}` ({embed_dim_pretty}-D) over the
    normalised markdown; sliding-window mean pool when a doc exceeds
    the model's native context window.
-5. **Reduce** -- PCA + t-SNE + UMAP on the embedding matrix +
-   HDBSCAN cluster ids. cuML on a GPU worker; sklearn / umap-learn
-   / hdbscan otherwise.
+5. **Reduce** -- PCA + UMAP on the embedding matrix + HDBSCAN
+   cluster ids. The May-2026 rerun switched from per-batch
+   reduction (each Curator `DocumentBatch` independently) to a
+   **global in-process fit** over the full {_format_int(embeddable_corpus_size)}
+   × {embed_dim_pretty}-D matrix so the projection is comparable
+   across documents (`packages/datasites/vbpl/_reduce_inproc.py`).
+   t-SNE was dropped from the rerun because a single global fit
+   under `random_state=0` (single-threaded by construction) took
+   prohibitively long on this corpus; PCA + UMAP cover the same
+   visual story without it. cuML on a GPU worker; sklearn /
+   umap-learn / hdbscan otherwise.
 
 All five layers are deterministic and re-runnable; re-running any
 stage with the same `--limit` is a no-op (each stage skips
@@ -1300,11 +1318,10 @@ slice even though our cached SPA fetch came back empty in
 2026-04). The remaining ~11.5K are genuinely bodyless on the
 official vbpl source (legacy / cancelled documents the publisher
 no longer carries a full text for) and ship in this dataset with
-`markdown=null`; the same `null` treatment applies to a handful of
-records whose title begins with vbpl's `"Lỗi "` editorial marker.
-Bibliographic metadata (title, agency, document number, issue
-date, ...) is still populated on those rows so consumers retain
-the citation handle even when no body is available. Per-doc
+`markdown=null`. Bibliographic metadata (title, agency, document
+number, issue date, ...) is still populated on those rows so
+consumers retain the citation handle even when no body is
+available. Per-doc
 embedding parquets for the NULL-markdown rows are dropped from
 the embedding corpus entirely so the reducer fits on the
 embeddable rows only ({_format_int(embeddable_corpus_size)}-row corpus).
@@ -1361,7 +1378,7 @@ về pháp luật, Bộ Tư pháp Việt Nam):
 
 
 def export(
-    jsonl_path: Path,
+    jsonl_dir: Path,
     out_dir: Path,
     *,
     reduced_dir: Path = DEFAULT_REDUCED_DIR,
@@ -1369,17 +1386,25 @@ def export(
     repo_owner: str = DEFAULT_REPO_OWNER,
     repo_name: str = DEFAULT_REPO_NAME,
 ) -> dict[str, Path]:
-    """Materialise the HF folder. Returns the paths it produced."""
+    """Materialise the HF folder. Returns the paths it produced.
+
+    Reads the raw per-doc tier (``<jsonl_dir>/<doc_name>.jsonl``,
+    one record per file -- the canonical extract output per
+    wiki.md §3.5), projects each record through
+    :func:`_project_record`, and writes the
+    ``documents-NNNNN-of-KKKKK.parquet`` consumption tier under
+    ``out_dir`` alongside the dataset card / manifest / figures.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if not jsonl_path.exists():
+    if not jsonl_dir.is_dir():
         raise FileNotFoundError(
-            f"extract jsonl missing: {jsonl_path}. Run --pipeline extract first.",
+            f"jsonl dir missing: {jsonl_dir}. Run --pipeline extract first.",
         )
 
     rows: list[dict[str, Any]] = []
     raw_total = 0
-    for projected, _raw in _iter_projected(jsonl_path):
+    for projected, _raw in _iter_projected(jsonl_dir):
         raw_total += 1
         if projected is not None:
             rows.append(projected)
@@ -1390,9 +1415,10 @@ def export(
     )
     if not rows:
         raise FileNotFoundError(
-            f"no usable JSONL records in {jsonl_path} (every row had "
-            f"empty markdown). Run the parse + extract pipelines on "
-            f"a host where the detail stage actually fetched bodies.",
+            f"no usable JSONL records under {jsonl_dir}/*.jsonl "
+            f"(every row had empty markdown). Run the parse + "
+            f"extract pipelines on a host where the detail stage "
+            f"actually fetched bodies.",
         )
 
     shard_paths = _write_sharded_parquet(
@@ -1464,10 +1490,13 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     parser = argparse.ArgumentParser(
-        description="Materialise the vbpl extract.jsonl into an HF-ready folder.",
+        description=(
+            "Materialise the vbpl raw per-doc jsonl tier into an "
+            "HF-ready folder."
+        ),
     )
-    parser.add_argument("--jsonl",       type=Path, default=DEFAULT_JSONL_PATH,
-                        help="path to jsonl/extract.jsonl")
+    parser.add_argument("--jsonl-dir",   type=Path, default=DEFAULT_JSONL_DIR,
+                        help="directory holding the per-doc <doc>.jsonl files")
     parser.add_argument("--reduced-dir", type=Path, default=DEFAULT_REDUCED_DIR)
     parser.add_argument("--out-dir",     type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--license",     default=DEFAULT_LICENSE)
@@ -1476,7 +1505,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     paths = export(
-        jsonl_path=args.jsonl,
+        jsonl_dir=args.jsonl_dir,
         reduced_dir=args.reduced_dir,
         out_dir=args.out_dir,
         license_id=args.license,

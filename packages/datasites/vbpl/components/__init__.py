@@ -1,13 +1,18 @@
 """vbpl crawler primitives.
 
-Five focused components, run as four ``--pipeline`` stages
+Four focused components, run as four ``--pipeline`` stages
 (``harvest`` -> ``detail`` -> ``parse`` -> ``extract``):
 
     parser.py     -- pure-function sitemap XML + API-JSON -> dataclass
     harvester.py  -- /sitemap.xml walker (PoliteSession) -> sitemap.jsonl
     detail.py     -- per-ItemID Playwright fetcher       -> docs.jsonl
     parse.py      -- docs.jsonl + on-disk artefacts      -> md/<scope>/*.md
-    extract.py    -- markdown + meta sidecars            -> jsonl/extract.jsonl
+
+The ``extract`` stage is now a Curator pipeline
+(``packages.datasites.vbpl.extract``) so the in-process
+``VbplDocumentExtractor`` driver was retired in favour of the
+shared :class:`packages.extractor.stage.LegalExtractStage`. See
+wiki.md §3.5 + §13.4 for the hybrid contract.
 
 The driver lives in :mod:`packages.datasites.vbpl.scraper` and is
 exposed via ``python -m packages.datasites.vbpl``.
@@ -18,12 +23,12 @@ from packages.datasites.vbpl.components.detail import (
     DEFAULT_WARMUP_URL,
     VbplDetailDownloader,
 )
-from packages.datasites.vbpl.components.extract import VbplDocumentExtractor
 from packages.datasites.vbpl.components.harvester import (
     DEFAULT_SITEMAP_URL,
     VbplSitemapHarvester,
 )
 from packages.datasites.vbpl.components.parse import VbplDocumentParser
+from packages.datasites.vbpl.components.rebuild import VbplDetailRebuilder
 from packages.datasites.vbpl.components.parser import (
     DetailRecord,
     FilePath,
@@ -43,7 +48,7 @@ __all__ = [
     "FilePath",
     "SitemapEntry",
     "VbplDetailDownloader",
-    "VbplDocumentExtractor",
+    "VbplDetailRebuilder",
     "VbplDocumentParser",
     "VbplSitemapHarvester",
     "detail_record_from_api_json",

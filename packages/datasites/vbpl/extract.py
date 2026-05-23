@@ -1,33 +1,55 @@
-"""Top-level dispatcher for the vbpl ``extract`` pipeline.
+"""Extractor pipeline factory for vbpl: markdown -> JSONL.
 
-Thin wrapper around
-:class:`packages.datasites.vbpl.components.extract.VbplDocumentExtractor`
-so :func:`packages.datasites.vbpl.scraper.run_pipeline` can dispatch
-``--pipeline extract`` like every other stage.
+Stage chain (built by
+:func:`packages.pipeline.factories.build_extract_pipeline`)::
 
-Reads ``data/<host>/md/<scope>/*.md`` + sibling ``<id>.meta.json``;
-writes one ``data/<host>/jsonl/extract.jsonl`` row per document
-(schema: :data:`packages.datasites.vbpl._shared.EXTRACTOR_JSONL_FIELDS`).
+    MarkdownReader(md_dir, recursive)
+    -> NormalizerChainStage(cfg.extractor.normalizers)   # vbpl chain
+    -> LegalExtractStage(cfg)                            # generic + structure
+    -> JsonlPerDocWriter(jsonl_dir, fields=EXTRACTOR_JSONL_FIELDS)
 
-The three layers (Vietnamese normalization + generic NER + structure)
-are gated by ``cfg.extractor.run_text_normalization`` /
-``run_generic_layer`` / ``run_structure_layer`` -- see the dataset
-README for trade-offs.
+Reads: ``data/<host>/md/<scope>/<id>.md`` (+ sibling ``.meta.json``;
+``FilePartitioningStage`` recurses into ``trung_uong/`` /
+``dia_phuong/``).
+Writes:
+
+* raw per-doc tier — ``data/<host>/jsonl/<doc>.jsonl`` (one per doc;
+  see :data:`packages.datasites.vbpl._shared.EXTRACTOR_JSONL_FIELDS`).
+* parquet consumption tier — ``data/<host>/parquet/extract/extract-NNNNN-of-KKKKK.parquet``
+  (5 K rows / shard for vbpl; see ``configs/default.yaml`` for the
+  ``shards.doc_chunk_size`` override justification). The coalesce step
+  runs after the Curator pipeline finishes, inside
+  :func:`packages.datasites.vbpl.scraper.run_extract`.
+
+This replaces the previous in-process :class:`VbplDocumentExtractor`
+driver (under ``components/extract.py``, kept in the tree as legacy
+reference but no longer wired into the CLI). The Curator chain is
+the single source of truth for normalization + extraction; the
+declarative ``cfg.extractor.normalizers`` list is the only knob
+operators flip.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-from packages.datasites.vbpl._shared import build_layout
-from packages.datasites.vbpl.components import VbplDocumentExtractor
+from nemo_curator.pipeline import Pipeline
+
+from packages.datasites.vbpl._shared import (
+    EXTRACTOR_JSONL_FIELDS,
+    build_layout,
+)
+from packages.pipeline.factories import build_extract_pipeline as _build
 
 
-def run_extract(cfg: Any) -> Path:
-    """Run normalize + generic + structure layers. Returns ``extract.jsonl`` path."""
-    layout = build_layout(cfg)
-    return VbplDocumentExtractor(cfg, layout).run()
+def build_extract_pipeline(cfg: Any) -> Pipeline:
+    """Return the vbpl Extractor :class:`Pipeline`."""
+    return _build(
+        cfg,
+        site="vbpl",
+        layout=build_layout(cfg),
+        jsonl_fields=EXTRACTOR_JSONL_FIELDS,
+    )
 
 
-__all__ = ["run_extract"]
+__all__ = ["build_extract_pipeline"]

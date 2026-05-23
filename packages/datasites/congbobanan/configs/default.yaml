@@ -64,12 +64,29 @@ parser:
   timeout_s: 120.0
 
 extractor:
-  run_text_normalization: true   # NFC + Vietnamese tone canonicalization + PDF ws cleanup
+  # Declarative normalizer chain (wiki.md §3.5). congbobanan ships
+  # only the universal Vietnamese-text baseline -- the corpus is
+  # high-quality court-published judgments without the
+  # CMS-export artefacts vbpl has, so no site-specific
+  # normalizers are needed.
+  #
+  # ``run_text_normalization: false`` because the chain already owns
+  # normalization; leaving the inline ``normalize_text`` on would
+  # double-normalize ``markdown`` (idempotent but wasteful).
+  normalizers:
+    - vietnamese_text
+  run_text_normalization: false
   run_generic_layer: true
   run_site_layer: false          # precedent normalization is anle-only
   run_structure_layer: true      # hierarchical doc model (sections / paragraphs / sentences)
   llm_tier_for_ambiguous: fast
   max_seq_length: "${..full_text_context}"
+
+# Parquet consumption tier shard sizing -- congbobanan uses the
+# wiki.md §3.5 default (10K rows / shard); judgment rows are thin
+# (markdown + structure stats, no inline structure_json), so the
+# default packs to ~80-120 MB per shard well under the HF dataset-
+# viewer cap.
 
 embedder:
   model_id: nvidia/llama-nemotron-embed-1b-v2

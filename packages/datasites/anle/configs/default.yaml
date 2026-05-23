@@ -65,12 +65,29 @@ parser:
   timeout_s: 120.0
 
 extractor:
-  run_text_normalization: true   # NFC + Vietnamese tone canonicalization + PDF ws cleanup
+  # Declarative normalizer chain (wiki.md §3.5). anle ships only the
+  # universal baseline -- the in-process precedent extractor
+  # (run_site_layer) handles án lệ-specific cleanup downstream
+  # because those normalizers depend on the structured fields
+  # (parties, court, ...) the site layer emits.
+  #
+  # ``run_text_normalization: false`` because the chain already owns
+  # normalization; leaving the inline ``normalize_text`` on would
+  # double-normalize ``markdown`` (idempotent but wasteful).
+  normalizers:
+    - vietnamese_text
+  run_text_normalization: false
   run_generic_layer: true
   run_site_layer: true
   run_structure_layer: true
   llm_tier_for_ambiguous: fast
   max_seq_length: "${..full_text_context}"
+
+# Parquet consumption tier shard sizing -- anle uses the wiki.md
+# §3.5 default (10K rows / shard) because precedent rows are thin
+# (no structure_json blob; the body is the markdown).
+# Override here only if shard sizes ever balloon past the HF dataset-
+# viewer cap; today the default is fine.
 
 embedder:
   # Default: llama-nemotron-embed-1b-v2 served via NIM.

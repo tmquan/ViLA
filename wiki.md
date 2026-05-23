@@ -45,11 +45,23 @@ A ViLA datasite is a Python subpackage under
    `packages.common.runner.run_curator_site` so `python -m
    packages.datasites.<site> --pipeline {download,parse,extract,embed,reduce,all}`
    works without site-specific argument plumbing;
-4. terminates each pipeline at a **content-hash-keyed writer**
-   (`mode="ignore"`) so re-runs are idempotent on disk;
+4. emits two output tiers per stage so re-runs are idempotent on
+   disk (see §3.5 for the per-stage layout table):
+   a **raw per-doc tier** — `pdf/<doc>.{pdf,docx,doc}`,
+   `md/<doc>.md` + sibling `<doc>.meta.json`,
+   `jsonl/<doc>.jsonl` — **exactly one file per document**, keyed
+   by `doc_name`, written via `mode="ignore"` so re-runs short-
+   circuit on the filename and the operator can `grep` / `diff` /
+   resume a single document; plus a **parquet consumption tier** —
+   `parquet/<stage>/<stage>-NNNNN-of-KKKKK.parquet` — written by
+   `parse` / `extract` / `embed` / `reduce` at **exactly
+   `DOC_CHUNK_SIZE = 10_000` rows per shard**, the canonical
+   downstream-consumer surface that `hf_export.py` copies through
+   to the Hub without re-sharding;
 5. ships an **HF publish surface** (`hf_export.py` + `push_to_hf.py`)
-   that turns the on-disk outputs into a `documents` / `sentences` /
-   `embed` / `reduce` parquet bundle with a **bilingual VN+EN
+   that promotes the parquet consumption tier into a `documents` /
+   `sentences` / `embed` / `reduce` parquet bundle (same 10 K-row
+   shard size — copy, not re-shard) with a **bilingual VN+EN
    dataset card** and a `manifest.json` analytics roll-up;
 6. carries a **`README.md` + `requirements.txt`** that mirror the
    anle file-for-file.
@@ -71,7 +83,7 @@ key abstractions we adopt verbatim:
 | [`DocumentBatch`](https://docs.nvidia.com/nemo/curator/api/reference/api-reference/document-batch) | The single in-memory task type (pandas-DataFrame-backed) that every ViLA stage emits + consumes — no bespoke transport. |
 | [`Pipeline`](https://docs.nvidia.com/nemo/curator/api/reference/api-reference/pipeline) | The composable graph; `Pipeline.describe()` is the human-readable schema check; `Pipeline.run(executor=...)` is the dispatch point. |
 | [`DocumentDownloadExtractStage`](https://docs.nvidia.com/nemo/curator/api/reference/api-reference/document-download-extract-stage) | A *composite* that decomposes into `URLGenerationStage → DocumentDownloadStage → DocumentIterateExtractStage` at build time, so a site only writes the four primitive subclasses, not the staging glue. |
-| `JsonlReader` / `ParquetReader` / `JsonlWriter` / `ParquetWriter` | Off-the-shelf IO with `mode="ignore"` idempotency and content-hash-named output shards. |
+| `JsonlReader` / `ParquetReader` / `JsonlWriter` / `ParquetWriter` | Off-the-shelf IO with `mode="ignore"` idempotency. The ViLA writers (`JsonlPerDocWriter`, `MarkdownPerDocWriter`, `ParquetShardWriter`) key the raw per-doc tier by `doc_name` and the parquet consumption tier by deterministic `<stage>-NNNNN-of-KKKKK.parquet` shards (rule §3.5). |
 | `XennaExecutor` / `RayActorPoolExecutor` / `RayDataExecutor` | Three Ray-backed dispatchers; the same `Pipeline` object runs on any of them via `--executor`. |
 
 The pay-off: a new datasite is **only the site-specific code**
@@ -85,25 +97,38 @@ so a new site inherits all of them at zero cost.
 ## 2. The five-pipeline chain (anle reference walk-through)
 
 ```
-  Downloader              Parser                       Extractor          Embedder                  Reducer
-  ==========              ======                       =========          ========                  =======
-  URLGenerationStage      FilePartitioningStage        MarkdownReader     JsonlReader               ParquetReader
-        |                      |                            |                  |                         |
-        v                      v                            v                  v                         v
-  DocumentDownloadStage   DocumentIterateExtractStage  LegalExtractStage  NimEmbedderStage          ReducerStage
-        |                  (AnleIterator +                  |              or EmbeddingCreatorStage  (+HDBSCAN)
-        v                   AnleExtractor)                  v                  |                         |
-  pdf/<doc_name>.pdf            |                      JsonlPerDocWriter       v                         v
-  pdf/<doc_name>.html           v                            |            ParquetPerDocWriter       ParquetPerDocWriter
-  pdf/<doc_name>.url      PdfParseStage                      v                  |                         |
-                                |                       jsonl/*.jsonl           v                         v
-                                v                                          parquet/embeddings/*     parquet/reduced/*
-                          MarkdownPerDocWriter
+  Downloader              Parser                          Extractor                 Embedder                  Reducer
+  ==========              ======                          =========                 ========                  =======
+  URLGenerationStage      FilePartitioningStage           MarkdownReader            ParquetReader             ParquetReader
+        |                      |                               |                         |                         |
+        v                      v                               v                         v                         v
+  DocumentDownloadStage   DocumentIterateExtractStage     LegalExtractStage         NimEmbedderStage          ReducerStage
+        |                  (AnleIterator +                     |                     or EmbeddingCreatorStage  (+HDBSCAN)
+        v                   AnleExtractor)                     v                         |                         |
+  pdf/<doc>.pdf                 |                         JsonlPerDocWriter             v                         v
+  pdf/<doc>.html                v                         (raw per-doc tier)      ParquetShardWriter        ParquetShardWriter
+  pdf/<doc>.url           PdfParseStage                         |                 (10 K rows / shard)        (10 K rows / shard)
+  (raw per-doc tier)            |                               +-> jsonl/<doc>.jsonl                            |
+                                v                               |                       v                         v
+                          MarkdownPerDocWriter                  ParquetShardWriter      parquet/embed/            parquet/reduce/
+                          (raw per-doc tier)                    (10 K rows / shard)      embed-NNNNN-of-KKKKK     reduce-NNNNN-of-KKKKK
+                                |                               |
+                                +-> md/<doc>.md                 v
+                                +-> md/<doc>.meta.json          parquet/extract/
+                                |                                extract-NNNNN-of-KKKKK
+                                v
+                          ParquetShardWriter
+                          (10 K rows / shard)
                                 |
                                 v
-                          md/<doc_name>.md
-                          md/<doc_name>.meta.json
+                          parquet/parse/
+                           parse-NNNNN-of-KKKKK
 ```
+
+The split is the §3.5 rule: every stage downstream of `download`
+ships **both** a raw per-doc artefact (for resume + grep) and a
+10 K-row parquet shard (for downstream consumption). `download`
+ships raw only; `embed` + `reduce` ship parquet only.
 
 ### 2a. Why **five** independent pipelines (not one monolith)?
 
@@ -127,13 +152,24 @@ the ViLA curation tier. Replicate it for every new datasite.
 
 ### 2b. Per-pipeline IO contract (anle)
 
-| Pipeline   | Reads                                  | Writes                                  | Stages                                                                                                                                                              |
-|---         |---                                     |---                                      |---                                                                                                                                                                   |
-| `download` | `cfg.scraper.listing_url`              | `<host>/pdf/<doc_name>.{pdf,docx,doc}` + `.html`/`.url` sidecars | `URLGenerationStage(AnleURLGenerator)` → `DocumentDownloadStage(AnleDocumentDownloader)`                                                                             |
-| `parse`    | `<host>/pdf/*.{pdf,docx,doc}`          | `<host>/md/<doc_name>.md` + `<doc_name>.meta.json` | `FilePartitioningStage` → `DocumentIterateExtractStage(AnleDocumentIterator + AnleDocumentExtractor)` → `PdfParseStage` → `MarkdownPerDocWriter`                       |
-| `extract`  | `<host>/md/*.md`                       | `<host>/jsonl/*.jsonl`                  | `MarkdownReader` → `LegalExtractStage` → `JsonlPerDocWriter`                                                                                                          |
-| `embed`    | `<host>/jsonl/*.jsonl`                 | `<host>/parquet/embeddings/*.parquet`   | `JsonlReader` → `NimEmbedderStage` or `EmbeddingCreatorStage` (selected by `cfg.embedder.runtime`) → `ParquetPerDocWriter`                                            |
-| `reduce`   | `<host>/parquet/embeddings/*.parquet`  | `<host>/parquet/reduced/*.parquet`      | `ParquetReader` → `ReducerStage` (PCA / t-SNE / UMAP + HDBSCAN) → `ParquetPerDocWriter`                                                                              |
+Each row shows both output tiers per the §3.5 rule:
+**raw per-doc tier** = one file per document, keyed by `doc_name`;
+**parquet consumption tier** = exactly 10 K rows per shard.
+
+| Pipeline   | Reads                                  | Raw per-doc tier                                                 | Parquet consumption tier                                                  | Stages                                                                                                                                                              |
+|---         |---                                     |---                                                               |---                                                                        |---                                                                                                                                                                   |
+| `download` | `cfg.scraper.listing_url`              | `pdf/<doc>.{pdf,docx,doc}` + `.html`/`.url` sidecars             | *(none)*                                                                  | `URLGenerationStage(AnleURLGenerator)` → `DocumentDownloadStage(AnleDocumentDownloader)`                                                                             |
+| `parse`    | `pdf/<doc>.{pdf,docx,doc}`             | `md/<doc>.md` + `md/<doc>.meta.json`                             | `parquet/parse/parse-NNNNN-of-KKKKK.parquet`                              | `FilePartitioningStage` → `DocumentIterateExtractStage(AnleDocumentIterator + AnleDocumentExtractor)` → `PdfParseStage` → `MarkdownPerDocWriter` + `ParquetShardWriter` |
+| `extract`  | `md/*.md` (+ `<doc>.meta.json` sidecar)| `jsonl/<doc>.jsonl`                                              | `parquet/extract/extract-NNNNN-of-KKKKK.parquet`                          | `MarkdownReader` → `NormalizerChainStage` → `LegalExtractStage` → `JsonlPerDocWriter` + `ParquetShardWriter`                                                          |
+| `embed`    | `parquet/extract/extract-*.parquet`    | *(none — vectors ship parquet-only)*                              | `parquet/embed/embed-NNNNN-of-KKKKK.parquet`                              | `ParquetReader` → `NimEmbedderStage` or `EmbeddingCreatorStage` (selected by `cfg.embedder.runtime`) → `ParquetShardWriter`                                          |
+| `reduce`   | `parquet/embed/embed-*.parquet`        | *(none)*                                                          | `parquet/reduce/reduce-NNNNN-of-KKKKK.parquet`                            | `ParquetReader` → `ReducerStage` (PCA / t-SNE / UMAP + HDBSCAN) → `ParquetShardWriter`                                                                              |
+
+`embed` reads directly from `parquet/extract/` (not `jsonl/`)
+because both tiers are equivalent for the embedder's input
+columns and the parquet path is one less serialisation hop.
+Sites that still ship a consolidated `jsonl/extract.jsonl`
+(legacy vbpl) point the embed reader at the JSONL via the
+`jsonl_path` override on `build_embed_pipeline`.
 
 ### 2c. The four anle primitive subclasses
 
@@ -371,9 +407,9 @@ are skipped silently — the card adapts to whatever shipped.
 #   embed-NNNNN-of-KKKKK.parquet             dense vectors
 #   reduce-NNNNN-of-KKKKK.parquet            2D projections + cluster_id
 #   sentences.jsonl                          streamable mirror
-#   embedding-{case-type,doc-subtype,        4 facets × 2 projections
-#              court-level,cluster-id}-      = 8 mandatory PNGs
-#              {tsne,umap}.png
+#   embedding-{case-type,doc-subtype,        4 mandatory UMAP PNGs
+#              court-level,cluster-id}-      (one per colour facet,
+#              umap.png                       one figure per row)
 python -m packages.datasites.anle.hf_export
 ```
 
@@ -518,6 +554,120 @@ REDUCER_PARQUET_FIELDS: list[str] = [
 **SoP rule.** Any new datasite *must* preserve these column names
 verbatim. Add site-specific fields on top; never rename a shared
 field. The visualizer and HF export both key off them.
+
+---
+
+## 3.5 The two-tier output rule (file layout spine)
+
+§3 fixed the **column shape** every datasite must ship. This
+section fixes the **file shape**. Every pipeline stage emits
+output into one of two tiers — **never both for the same row**,
+**never neither**:
+
+### 3.5.1 Raw per-doc tier — one file per row, keyed by `doc_name`
+
+The human-greppable, resume-friendly operational store. Each
+file represents one document. Operators read / diff / `rg` /
+re-fetch a single doc without touching the rest of the corpus.
+Idempotency is **filename-level** (`mode="ignore"` on the writer;
+the same `doc_name` always maps to the same path).
+
+| Stage      | Per-doc artefact                                      | Writer                                                        |
+|---         |---                                                    |---                                                            |
+| `download` | `pdf/<doc>.{pdf,docx,doc}` (+ `<doc>.html` + `<doc>.url`) | `DocumentDownloadStage(<Site>DocumentDownloader)`            |
+| `parse`    | `md/<doc>.md` + sibling `md/<doc>.meta.json`          | `MarkdownPerDocWriter(layout.md_dir)`                         |
+| `extract`  | `jsonl/<doc>.jsonl`                                   | `JsonlPerDocWriter(layout.jsonl_dir)`                         |
+
+`embed` and `reduce` deliberately have **no** per-doc tier — a
+single-row parquet per document is wasteful (the file overhead
+dwarfs the payload) and operators never grep a vector directory.
+
+### 3.5.2 Parquet consumption tier — 10 K rows per shard (default)
+
+The downstream-consumer surface. Every stage that emits **derived
+data** (`parse` / `extract` / `embed` / `reduce`) writes a stream
+of parquet shards named `<stage>-NNNNN-of-KKKKK.parquet` with
+**`cfg.shards.doc_chunk_size` rows per shard** (final shard trims
+to remainder). The cross-corpus default is **`DOC_CHUNK_SIZE = 10_000`**;
+sites with empirically heavier rows may override this in their
+`configs/default.yaml` (see §3.5.4 for the rule). Idempotency is
+**shard-level**: a re-run either rewrites a whole shard or skips
+it via `mode="ignore"`.
+
+| Stage      | Parquet shard path                                | Columns                                          |
+|---         |---                                                |---                                               |
+| `parse`    | `parquet/parse/parse-NNNNN-of-KKKKK.parquet`      | `doc_name` + `PARSER_PARQUET_FIELDS` (markdown + parser metadata) |
+| `extract`  | `parquet/extract/extract-NNNNN-of-KKKKK.parquet`  | `doc_name` + `EXTRACTOR_JSONL_FIELDS` (§3.1)     |
+| `embed`    | `parquet/embed/embed-NNNNN-of-KKKKK.parquet`      | `EMBEDDER_PARQUET_FIELDS` (§3.2)                 |
+| `reduce`   | `parquet/reduce/reduce-NNNNN-of-KKKKK.parquet`    | `REDUCER_PARQUET_FIELDS` (§3.3)                  |
+
+Additional invariants every parquet writer must honour:
+
+* **Stable shard ordering.** Rows are sorted by `doc_name` before
+  shard assignment so a corpus of N rows always produces the same
+  K shards with the same row content. Re-runs over the same input
+  produce byte-identical shards.
+* **`PARQUET_ROW_GROUP_SIZE = 1_024`.** Sweet spot for both
+  random access and sequential reads; lets `load_dataset(streaming=True)`
+  skim rows without materialising a multi-MB row group into RAM.
+* **One stream per stage.** A stage emits **one** parquet stream
+  (one directory of shards), not per-scope / per-doctype splits.
+  Downstream consumers filter by column instead.
+
+### 3.5.3 HF publish becomes a parquet copy, not a re-shard
+
+Because the pipeline-tier parquet already ships in the 10 K-row
+shard shape `hf_export.py` previously synthesised, the HF publish
+step is a **rename-and-copy**: every `parquet/<stage>/<stage>-*.parquet`
+becomes `hf/<stage>-*.parquet` (with `extract` published under
+the `documents` config name for the dataset card). No re-aggregation
++ re-shard pass. The `manifest.json` + bilingual dataset card + the
+eight embedding PNGs are the only artefacts `hf_export.py` actually
+synthesises — see §8.
+
+### 3.5.4 Why these numbers (10 K rows + 1 K row groups)
+
+| Tunable                  | Default   | Why                                                                                            |
+|---                       |---:       |---                                                                                             |
+| `DOC_CHUNK_SIZE`         | `10_000`  | Cross-corpus convention. Anle (~2 K docs) collapses into a single shard; a 6.4 M-doc sibling fans into ~640 shards under the same publisher. Largest observed shard ~110 MB — safely under the HF dataset-viewer per-job memory cliff. |
+| `SENTENCE_CHUNK_SIZE`    | `50_000`  | Sentences fan out ~80-100× per doc (median ~85 for anle); keeps each shard ~10-30 MB while staying under the viewer cliff. Sentence-level rows only — `parse` / `extract` / `embed` / `reduce` stay at the doc-chunk-size default. |
+| `PARQUET_ROW_GROUP_SIZE` | `1_024`   | Row-group granularity inside each shard. Small enough for streaming consumers, large enough that compression amortises.                                  |
+
+These constants live in **one place** —
+[`packages/common/io.py`](packages/common/io.py) — and every
+parquet writer imports them.
+
+**Per-site override (documented exception, not site-by-site
+freelancing).** A site whose rows carry heavy auxiliary columns
+(e.g. vbpl ships full `structure_json` + `extracted_json` inline
+with the `markdown` body and a 10 K-row shard empirically hits
+214 MB, well over the HF dataset-viewer cliff) MAY override
+`cfg.shards.doc_chunk_size` in `configs/default.yaml`. The
+override **must**:
+
+* Carry a comment giving the empirical justification (shard
+  size in MB at the default, link to the viewer outage / load-
+  test that drove the choice).
+* Land on a round 1 K-multiple (5 000, 8 000, …) so the
+  cross-corpus shard arithmetic stays simple.
+* Be visible in `manifest.json` (the resolved shard size is
+  recorded next to the corpus row counts).
+
+**Currently overriding the default**:
+
+| Site  | `doc_chunk_size` | Justification                                                                                                                                                                                                  |
+|---    |---:              |---                                                                                                                                                                                                              |
+| anle  | `10_000` (default) | Anle docs are short (median ~5 KB markdown, no `structure_json` on the parquet); a 10 K-row shard lands ~50 MB.                                                                                                  |
+| cgbb  | `10_000` (default) | Same shape as anle.                                                                                                                                                                                              |
+| vbpl  | `5_000`          | vbpl docs carry the full `structure_json` (sections + paragraphs + sentences with char spans) and `extracted_json` (entities + statute_refs) next to the markdown body; max body ~2.4 MB. At 10 K rows the largest shard hit 214 MB and triggered the HF viewer's `JobManagerCrashedError`. 5 K rows fans into ~32 shards of ~50-110 MB each. |
+
+### 3.5.5 The rule, restated
+
+> **Per-doc files are for resume + grep + per-doc debugging.
+> Parquet shards (10 K rows each) are for downstream consumption
+> and HF publication. Every stage that emits derived data ships
+> both tiers (raw + parquet) or only parquet (embed / reduce).
+> `download` ships raw only.**
 
 ---
 
@@ -929,15 +1079,20 @@ so when stacked side-by-side on slide decks or the HF card the
 data rectangles are pixel-aligned across facets and across
 corpora.
 
-Mandatory PNG set (8 plots = 4 colour facets × 2 projections):
+Mandatory PNG set (4 plots = 4 colour facets × **UMAP only**, one
+figure per row):
 
-* `embedding-case-type-{tsne,umap}.png`
-* `embedding-doc-subtype-{tsne,umap}.png`
-* `embedding-court-level-{tsne,umap}.png`
-* `embedding-cluster-id-{tsne,umap}.png`
+* `embedding-case-type-umap.png`
+* `embedding-doc-subtype-umap.png`
+* `embedding-court-level-umap.png`
+* `embedding-cluster-id-umap.png`
 
 `packages/datasites/anle/push_to_hf.py` rejects any push missing
-those eight PNGs — a half-rendered HF bundle never reaches the Hub.
+those four PNGs — a half-rendered HF bundle never reaches the Hub.
+PCA + t-SNE projections are still computed by `ReducerStage` and
+shipped as data columns in `reduce-*.parquet` (`pca_{x,y,z}` +
+`tsne_{x,y,z}`); only the PNG snapshots are dropped to keep the
+dataset card compact.
 
 ---
 
@@ -981,11 +1136,19 @@ without a join.
 
 ### 8.3 Sharding contract
 
-| Stream | Shard size | Rationale |
+The shard sizes are fixed by the **pipeline-tier rule** in §3.5,
+not re-decided at publish time. `hf_export.py` copies each
+`parquet/<stage>/<stage>-NNNNN-of-KKKKK.parquet` shard through
+to `hf/<stage>-NNNNN-of-KKKKK.parquet` unchanged; the only stream
+HF-export actually fans out is `sentences-*`, because sentence
+rows are derived from `extract`'s `structure` column (one row per
+parquet doc-row explodes into ~80-100 sentence rows).
+
+| Stream | Shard size | Source |
 |---|---:|---|
-| `documents-*` / `embed-*` / `reduce-*` | `DOC_CHUNK_SIZE = 10_000` rows | Cross-corpus convention shared with `vbpl` / `congbobanan`. Anle (~2K docs) collapses into a single shard; a 6.4M-doc sibling fans into ~640 shards under the same publisher. |
-| `sentences-*` | `SENTENCE_CHUNK_SIZE = 50_000` rows | Sentences fan out ~80-100× per doc (median ~85 for anle); keeps each shard ~10-30 MB while staying under the HF dataset-viewer per-job memory cliff. |
-| every shard | `PARQUET_ROW_GROUP_SIZE = 1_024` | Sweet spot for both random access and sequential reads; lets `load_dataset(streaming=True)` skim rows without materialising a multi-MB row group into RAM. |
+| `documents-*` / `embed-*` / `reduce-*` | `DOC_CHUNK_SIZE = 10_000` rows | Copied verbatim from `parquet/extract/`, `parquet/embed/`, `parquet/reduce/` (rule §3.5.2). |
+| `sentences-*` | `SENTENCE_CHUNK_SIZE = 50_000` rows | Synthesised by `hf_export.py` from the `structure` column. The 50 K vs 10 K split absorbs the ~80-100× sentence fan-out so each shard stays ~10-30 MB. |
+| every shard | `PARQUET_ROW_GROUP_SIZE = 1_024` | Same as §3.5.4. |
 
 ### 8.4 The manifest (analytics roll-up)
 
@@ -1026,9 +1189,11 @@ the SoP for every datasite:
 * **Companion-stages section** — auto-rendered for whichever
   of `sentences` / `embed` / `reduce` shipped, with a
   `load_dataset(...)` snippet per config.
-* **Embedding visualization section** — 8 PNGs (`case_type`,
-  `doc_subtype`, `court_level`, `cluster_id` × t-SNE + UMAP)
-  laid out side-by-side per facet.
+* **Embedding visualization section** — 4 UMAP PNGs (`case_type`,
+  `doc_subtype`, `court_level`, `cluster_id`), one figure per row.
+  PCA + t-SNE coordinates remain available as columns inside
+  `reduce-*.parquet` (`pca_{x,y,z}` + `tsne_{x,y,z}`) so consumers
+  can render their own scatters without re-running the reducer.
 * **"Cách thu thập + chuẩn hoá · How the corpus was built"** —
   numbered VN+EN walkthrough of the 5-stage pipeline.
 * **"Nguồn · Source"** — portal URL + publisher.
@@ -1048,8 +1213,8 @@ runs a pre-flight `_validate_shards` that rejects the push if:
   bundle would publish silently otherwise.
 
 The generic `run_push_cli` validator then checks the
-`REQUIRED_FILES` tuple (README + manifest + the eight mandatory
-embedding PNGs).
+`REQUIRED_FILES` tuple (README + manifest + the four mandatory
+UMAP embedding PNGs).
 
 ---
 
@@ -1134,15 +1299,23 @@ projection.
 
 ## 10. Resume / re-run semantics
 
-Every pipeline is idempotent on disk; the SoP for each stage:
+Every pipeline is idempotent on disk **at both tiers** (§3.5):
+the **raw per-doc tier** resumes at file granularity (cheap
+single-doc replay), the **parquet consumption tier** resumes at
+shard granularity (10 K-row writes are all-or-nothing).
 
-| Pipeline   | Idempotent? | Mechanism                                                                                                                    |
-|---         |---          |---                                                                                                                          |
-| `download` | yes         | File-level: existing `<doc_name>.{pdf,docx,doc}` of any known extension short-circuits the fetch. Re-run after an interrupt continues. |
-| `parse`    | yes         | Writer `mode="ignore"`. Filenames derive from `doc_name`, so the same input PDF maps to the same `<doc_name>.md` + `.meta.json`. |
-| `extract`  | yes         | Writer `mode="ignore"`. Filename derives from content-hash of the source markdown, so the same input produces the same JSONL filename. |
-| `embed`    | yes         | Same as `extract`: content-hash-deterministic filename, `mode="ignore"`. To force re-embedding, change `cfg.embedder.model_id` (the content-hash changes → new files land alongside the old). |
-| `reduce`   | yes         | Same as `embed`. Use `--override executor.mode=batch` + a tightened cluster to force a full re-fit while keeping the input parquets. |
+| Pipeline   | Raw-tier idempotency                                                                                                   | Parquet-tier idempotency                                                                                                                                                                  |
+|---         |---                                                                                                                     |---                                                                                                                                                                                        |
+| `download` | File-level: existing `<doc_name>.{pdf,docx,doc}` of any known extension short-circuits the fetch.                       | n/a (no parquet output — raw binaries only).                                                                                                                                              |
+| `parse`    | Writer `mode="ignore"`. The same input PDF maps to the same `<doc_name>.md` + `.meta.json`.                             | Writer `mode="ignore"` on `parquet/parse/parse-NNNNN-of-KKKKK.parquet`. Re-runs over the same `md/*.md` set produce byte-identical shards (rows pre-sorted by `doc_name`, §3.5.2).        |
+| `extract`  | Writer `mode="ignore"`. Filename derives from `doc_name`, so the same input produces the same JSONL filename.           | Writer `mode="ignore"` on `parquet/extract/extract-NNNNN-of-KKKKK.parquet`. Byte-identical re-runs by the same construction.                                                              |
+| `embed`    | n/a (no raw per-doc tier — embeddings ship only as parquet).                                                            | Writer `mode="ignore"` on `parquet/embed/embed-NNNNN-of-KKKKK.parquet`. To force re-embedding, bump `cfg.embedder.model_id` so the `embedding_text_hash` changes and new shards are written. |
+| `reduce`   | n/a.                                                                                                                    | Writer `mode="ignore"` on `parquet/reduce/reduce-NNNNN-of-KKKKK.parquet`. Use `--override executor.mode=batch` + a tightened cluster to force a full re-fit.                              |
+
+To force a clean re-emission of one stage's parquet tier without
+re-acquiring the raw tier: delete the matching `parquet/<stage>/`
+directory and re-run that stage only. The per-doc raw artefacts
+stay on disk; the parquet shards regenerate from them.
 
 ### 10.1 Update cadence (anle reference)
 
@@ -1151,7 +1324,7 @@ Every pipeline is idempotent on disk; the SoP for each stage:
 | daily refresh      | every 24 h | cron that launches `python -m packages.datasites.anle` on the Ray head.                                |
 | weekly full sweep  | every 7 d  | cron with `--override scraper.paginated=true` to re-crawl `nguonanle`.                                 |
 | on-demand re-reduce | ad hoc    | `--override executor.mode=batch` + tightened cluster (same pipeline).                                  |
-| full re-embed      | on model bump | bump `cfg.embedder.model_id`; new content-hash → new parquet files land alongside the old.            |
+| full re-embed      | on model bump | bump `cfg.embedder.model_id`; delete `parquet/embed/` + `parquet/reduce/` to force shard regeneration, then re-run `--pipeline embed reduce`. The raw per-doc tier (`md/`, `jsonl/`) is untouched. |
 
 ---
 
@@ -1366,7 +1539,7 @@ apply identically to all three.
   production output and `mode="ignore"` re-runs of the
   production CLI on top of `_inproc` output are no-ops.
 
-### 12e. Schemas (all families)
+### 12e. Schemas + file layout (all families)
 
 - [ ] `_shared.py` declares the relevant subset of
   `EXTRACTOR_JSONL_FIELDS`, `EMBEDDER_PARQUET_FIELDS`,
@@ -1376,6 +1549,22 @@ apply identically to all three.
   for Family A / hybrid, `"html"` for Family B.
 - [ ] No shared schema column is renamed; only site-specific
   fields are added on top.
+- [ ] **Two-tier output rule (§3.5) is honoured**: the raw per-doc
+  tier (`pdf/<doc>.pdf`, `md/<doc>.md`, `jsonl/<doc>.jsonl`)
+  ships one file per document, keyed by `doc_name`; the parquet
+  consumption tier (`parquet/parse/`, `parquet/extract/`,
+  `parquet/embed/`, `parquet/reduce/`) ships exactly
+  `DOC_CHUNK_SIZE = 10_000` rows per shard, with rows pre-sorted
+  by `doc_name` for byte-identical re-runs.
+- [ ] **Shard sizes come from the shared module.** The
+  `DOC_CHUNK_SIZE = 10_000` / `SENTENCE_CHUNK_SIZE = 50_000` /
+  `PARQUET_ROW_GROUP_SIZE = 1_024` constants are imported from
+  [`packages/common/io.py`](packages/common/io.py), never
+  re-declared per site. A site whose rows are heavy enough to
+  exceed the HF viewer's per-shard cliff may override
+  `cfg.shards.doc_chunk_size` in its `configs/default.yaml` with
+  a documented justification (rule §3.5.4); the override lands on
+  a 1 K-multiple and shows up in `manifest.json`.
 
 ### 12f. Config (all families)
 
@@ -1393,8 +1582,9 @@ apply identically to all three.
 
 - [ ] `hf_export.py` ships the parquet streams the site actually
   produces (Family A: four streams `documents` / `sentences` /
-  `embed` / `reduce` + `manifest.json` + the eight mandatory
-  embedding PNGs; Family B: at minimum the primary JSONL
+  `embed` / `reduce` + `manifest.json` + the four mandatory UMAP
+  embedding PNGs — PCA + t-SNE remain shipped as columns inside
+  `reduce-*.parquet`; Family B: at minimum the primary JSONL
   consolidated to parquet + `manifest.json`, plus whatever
   `_embed_reduce_inproc` produced).
 - [ ] The dataset card is **bilingual VN+EN** with the section
@@ -1595,18 +1785,19 @@ PIPELINE_NAMES = ("harvest", "detail", "parse", "extract", "embed", "reduce")
 | `parse`   | in-process (ThreadPoolExecutor)    | Per-doc `pypdf` / `docx2txt` / `markdownify` work; thread pool saturates disk reads.                            |
 | `extract` | in-process (ThreadPoolExecutor)    | Same Vietnamese normalization + GenericExtractor + LegalStructureExtractor as Family A, just driven directly.   |
 | `embed`   | **Curator on Ray**   | Identical `build_embed_pipeline` factory as Family A. Bootstraps Ray itself via the shared `init_ray` / `build_executor`. |
-| `reduce`  | **Curator on Ray**   | Identical `build_reduce_pipeline` factory as Family A.                                                           |
+| `reduce`  | **in-process** (`_reduce_inproc.py`) | The Curator `build_reduce_pipeline` factory exists and works for small / single-batch corpora, but it fits the reducer **per `DocumentBatch`** (~64 docs each) which gives per-batch UMAP fits that are not comparable across documents. For the 158 K-doc vbpl corpus we fit PCA + UMAP + HDBSCAN **globally** in a single in-process `ReducerStage.process` call over the full matrix instead. t-SNE was dropped from the rerun because `random_state=0` forces it single-threaded. |
 
 The wiring lives in `vbpl/scraper.py`:
 
 ```python
 PIPELINES = {
-    "harvest": run_harvest,   # in-process
-    "detail":  run_detail,    # in-process (Playwright)
-    "parse":   run_parse,     # in-process (ThreadPoolExecutor)
-    "extract": run_extract,   # in-process (ThreadPoolExecutor)
-    "embed":   run_embed,     # Curator + Ray
-    "reduce":  run_reduce,    # Curator + Ray
+    "harvest":      run_harvest,        # in-process
+    "detail":       run_detail,         # in-process (Playwright)
+    "rebuild_docs": run_rebuild_docs,   # in-process (regenerate docs.jsonl from cached .api.json)
+    "parse":        run_parse,          # in-process (ThreadPoolExecutor)
+    "extract":      run_extract,        # in-process (ThreadPoolExecutor)
+    "embed":        run_embed,          # Curator + Ray
+    "reduce":       run_reduce,         # Curator + Ray (per-batch; use _reduce_inproc.py for the published global fit)
 }
 
 def run_embed(cfg):
@@ -1664,7 +1855,11 @@ python -m packages.datasites.vbpl --pipeline detail
 python -m packages.datasites.vbpl --pipeline parse
 python -m packages.datasites.vbpl --pipeline extract
 python -m packages.datasites.vbpl --pipeline embed   # Curator + Ray
-python -m packages.datasites.vbpl --pipeline reduce  # Curator + Ray
+# For the published vbpl corpus the reducer runs in-process so
+# the UMAP coordinates are fit globally across all 158 K docs.
+# (The Curator `--pipeline reduce` step is intentionally per-
+# batch and only useful for smoke tests on small slices.)
+python -m packages.datasites.vbpl._reduce_inproc
 
 # Targeted: only embed against a remote Ray head, attach to an
 # already-running cluster (so we don't fight a second Ray init).

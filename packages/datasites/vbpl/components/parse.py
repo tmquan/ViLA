@@ -68,6 +68,17 @@ class VbplDocumentParser:
         self._min_local_chars: int = int(
             cfg.parser.get("min_local_chars", 50),
         )
+        # ``cfg.parser.force`` (or ``cfg.parser.refresh_meta``) overrides
+        # the ``md/<scope>/<id>.md`` skip-existing check so the parse
+        # stage re-emits every row from a refreshed ``docs.jsonl``.
+        # Use this after ``--pipeline rebuild_docs`` to propagate new
+        # sidebar metadata (``so_hieu`` / ``ngay_ban_hanh`` / ...) into
+        # ``md/<scope>/<id>.meta.json`` without manually clearing the
+        # 5 GB markdown cache.
+        self._force: bool = bool(
+            cfg.parser.get("force", False)
+            or cfg.parser.get("refresh_meta", False)
+        )
         self._limit = cfg.get("limit", None)
         self._run_id = _make_run_id()
         # Built lazily inside :meth:`run` so a missing ``NVIDIA_API_KEY``
@@ -96,13 +107,19 @@ class VbplDocumentParser:
         rows = list(_iter_jsonl(docs_path))
         if self._limit is not None:
             rows = rows[: int(self._limit)]
-        rows_to_parse = [r for r in rows if _needs_parse(r, self.layout)]
-        skipped = len(rows) - len(rows_to_parse)
+        if self._force:
+            rows_to_parse = list(rows)
+            skipped = 0
+        else:
+            rows_to_parse = [
+                r for r in rows if _needs_parse(r, self.layout)
+            ]
+            skipped = len(rows) - len(rows_to_parse)
         logger.info(
             "parse run: %d/%d docs in scope; skip-existing=%d; "
-            "to parse=%d; runtime=%s; workers=%d; run_id=%s",
+            "to parse=%d; runtime=%s; workers=%d; force=%s; run_id=%s",
             len(rows), len(rows), skipped, len(rows_to_parse),
-            self._runtime, self._num_workers, self._run_id,
+            self._runtime, self._num_workers, self._force, self._run_id,
         )
         if not rows_to_parse:
             logger.info("nothing to parse; --limit slice fully covered on disk")
@@ -398,16 +415,16 @@ def _html_to_markdown(html: str) -> str:
         except ImportError:
             return ""
 
-    # Strip vbpl-specific gateway scaffolding (``Document Content``
-    # preamble, Word ``<!-- @font-face … -->`` dumps, Ant Design
-    # CSS chains, ``@keyframes`` blocks, malformed inline
-    # ``<span style="…">`` tags). Done here so the cached ``.md``
-    # files on disk -- and every downstream consumer that reads
-    # them -- never sees the junk.
-    from packages.datasites.vbpl.components.parser import (
-        strip_markdown_junk,
-    )
-    md = strip_markdown_junk(md) or ""
+    # Junk stripping (``Document Content`` preamble, Word
+    # ``<!-- @font-face … -->`` dumps, Ant Design CSS chains,
+    # ``@keyframes`` blocks, malformed inline ``<span style="…">``
+    # tags) is **not** done here -- it moved to the declarative
+    # normalizer chain (``vbpl_strip_markdown_junk``) that runs
+    # inside the Curator extract stage (wiki.md §3.5). The cached
+    # ``.md`` files on disk hold the raw markdownify output;
+    # operators who want clean markdown read the per-doc JSONL
+    # tier (``jsonl/<doc>.jsonl``) which already went through the
+    # chain.
 
     # markdownify can leave runs of blank lines; collapse > 2 to 2.
     out_lines: list[str] = []

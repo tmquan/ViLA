@@ -69,13 +69,41 @@ class SiteLayout:
         return self.site_root / "parquet"
 
     @property
+    def parse_parquet_dir(self) -> Path:
+        """Parser parquet consumption tier: ``parquet/parse/parse-NNNNN-of-KKKKK.parquet`` (wiki §3.5.2)."""
+        return self.parquet_dir / "parse"
+
+    @property
+    def extract_parquet_dir(self) -> Path:
+        """Extractor parquet consumption tier: ``parquet/extract/extract-NNNNN-of-KKKKK.parquet`` (wiki §3.5.2)."""
+        return self.parquet_dir / "extract"
+
+    @property
+    def embed_parquet_dir(self) -> Path:
+        """Embedder parquet consumption tier: ``parquet/embed/embed-NNNNN-of-KKKKK.parquet`` (wiki §3.5.2)."""
+        return self.parquet_dir / "embed"
+
+    @property
+    def reduce_parquet_dir(self) -> Path:
+        """Reducer parquet consumption tier: ``parquet/reduce/reduce-NNNNN-of-KKKKK.parquet`` (wiki §3.5.2)."""
+        return self.parquet_dir / "reduce"
+
+    @property
     def embeddings_dir(self) -> Path:
-        """Embedder output: ``parquet/embeddings/*.parquet``."""
+        """Legacy per-doc embedder output: ``parquet/embeddings/*.parquet``.
+
+        Kept as the input to the rechunk path; new pipelines emit
+        to :attr:`embed_parquet_dir` instead.
+        """
         return self.parquet_dir / "embeddings"
 
     @property
     def reduced_dir(self) -> Path:
-        """Reducer output: ``parquet/reduced/*.parquet``."""
+        """Legacy per-doc reducer output: ``parquet/reduced/*.parquet``.
+
+        Kept as the input to the rechunk path; new pipelines emit
+        to :attr:`reduce_parquet_dir` instead.
+        """
         return self.parquet_dir / "reduced"
 
     @property
@@ -100,13 +128,25 @@ class SiteLayout:
 # directories a site of that shape wants created up-front.
 
 def _curator_dirs(layout: SiteLayout) -> tuple[Path, ...]:
-    """Full Curator pipeline (download → parse → extract → embed → reduce)."""
+    """Full Curator pipeline (download → parse → extract → embed → reduce).
+
+    Two output tiers per wiki.md §3.5: the raw per-doc tier
+    (``pdf/`` / ``md/`` / ``jsonl/``) for resume + grep, and the
+    parquet consumption tier (``parquet/<stage>/<stage>-*.parquet``)
+    for downstream consumers.
+    """
     return (
         layout.site_root,
         layout.pdf_dir,
         layout.md_dir,
         layout.jsonl_dir,
         layout.parquet_dir,
+        # Parquet consumption tier (the §3.5 rule).
+        layout.parse_parquet_dir,
+        layout.extract_parquet_dir,
+        layout.embed_parquet_dir,
+        layout.reduce_parquet_dir,
+        # Legacy per-doc parquet tier; kept as the rechunk input dir.
         layout.embeddings_dir,
         layout.reduced_dir,
         layout.logs_dir,

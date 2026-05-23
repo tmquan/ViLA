@@ -420,11 +420,19 @@ def _build_meta(
             if tail.endswith("AL"):
                 meta.doc_subtype = "an_le"
 
-    # Doc type from the header text
+    # Doc type from the header text. The ``scraper_metadata`` dict
+    # arrives from an arbitrary upstream (pandas DataFrame row,
+    # JSONL row, in-process meta dict, ...); pandas surfaces missing
+    # values as ``float('nan')`` which is truthy in ``or "" `` and
+    # then trips ``.lower()`` on a float. Defensively coerce to str.
     head_norm = head.lower()
-    if "án lệ số" in head_norm or "án lệ" == (
-        scraper_metadata.get("doc_type") or ""
-    ).lower():
+    scraper_doc_type = scraper_metadata.get("doc_type")
+    scraper_doc_type_norm = (
+        scraper_doc_type.lower()
+        if isinstance(scraper_doc_type, str)
+        else ""
+    )
+    if "án lệ số" in head_norm or scraper_doc_type_norm == "án lệ":
         meta.doc_type = "an_le"
     elif "bản án" in head_norm:
         meta.doc_type = "ban_an"

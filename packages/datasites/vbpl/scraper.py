@@ -12,32 +12,36 @@ Six stages, run by name:
                (pypdf + antiword/catdoc fallbacks for .doc) and convert
                body_html to markdown via markdownify; write
                md/<scope>/<id>.md + sibling <id>.meta.json.
-    extract -- read md + meta, run NFC + Vietnamese tone-mark
-               normalization + GenericExtractor + LegalStructureExtractor;
-               write jsonl/extract.jsonl with the canonical
-               EXTRACTOR_JSONL_FIELDS schema.
-    embed   -- read jsonl/extract.jsonl, embed `markdown` via the
-               configured cfg.embedder.runtime (NIM by default; HF
-               on GPU as alternative); write
-               parquet/embeddings/<doc_name>.parquet.
-    reduce  -- read parquet/embeddings, fit PCA + t-SNE + UMAP +
+    extract -- read md + meta through a Curator pipeline, run the
+               declarative cfg.extractor.normalizers chain
+               (wiki.md §3.5) + GenericExtractor +
+               LegalStructureExtractor; write the raw per-doc tier
+               (jsonl/<doc>.jsonl, one file per doc) and then
+               coalesce into the parquet consumption tier
+               (parquet/extract/extract-NNNNN-of-KKKKK.parquet).
+    embed   -- read parquet/extract shards, embed ``markdown`` via
+               cfg.embedder.runtime (NIM by default; HF on GPU as
+               alternative); write the parquet consumption tier
+               (parquet/embed/embed-NNNNN-of-KKKKK.parquet).
+    reduce  -- read parquet/embed shards, fit PCA + t-SNE + UMAP +
                HDBSCAN over the full embedding matrix; write
-               parquet/reduced/<doc_name>.parquet with the projection
-               coordinates and cluster_id columns.
+               parquet/reduce/reduce-NNNNN-of-KKKKK.parquet.
     all     -- run all six in order (default).
 
 Stages are decoupled so a partial run resumes cheaply: each stage
 short-circuits on the on-disk output of the previous one. Re-running
 an earlier stage with the same ``--limit`` is idempotent because
-each stage skips already-produced outputs.
+each stage skips already-produced outputs (raw per-doc tier:
+filename-level via ``mode="ignore"``; parquet consumption tier:
+shard-level, see wiki.md §10).
 
-The first four stages run in-process (no Ray); ``embed`` and
-``reduce`` build a :class:`nemo_curator.pipeline.Pipeline` and
-dispatch through the shared executor / Ray bootstrap. Each Curator
-pipeline opens and tears down its own Ray context (idempotent --
-``init_ray`` is a no-op when Ray is already up via
-``ignore_reinit_error=True``) so a single ``--pipeline all`` run
-shares one Ray cluster.
+``harvest`` / ``detail`` / ``parse`` run in-process (no Ray);
+``extract`` / ``embed`` / ``reduce`` build a
+:class:`nemo_curator.pipeline.Pipeline` and dispatch through the
+shared executor / Ray bootstrap. Each Curator pipeline opens and
+tears down its own Ray context (idempotent -- ``init_ray`` is a
+no-op when Ray is already up via ``ignore_reinit_error=True``) so a
+single ``--pipeline all`` run shares one Ray cluster.
 """
 
 from __future__ import annotations
@@ -46,14 +50,24 @@ import logging
 from pathlib import Path
 from typing import Any, Callable
 
-from packages.datasites.vbpl._shared import build_layout
+from packages.common.io import (
+    coalesce_jsonl_to_parquet_shards,
+    coalesce_per_doc_parquet_to_shards,
+    resolve_doc_chunk_size,
+    resolve_row_group_size,
+)
+from packages.datasites.vbpl._shared import (
+    EXTRACTOR_JSONL_FIELDS,
+    build_layout,
+)
 from packages.datasites.vbpl.components import (
     VbplDetailDownloader,
-    VbplDocumentExtractor,
+    VbplDetailRebuilder,
     VbplDocumentParser,
     VbplSitemapHarvester,
 )
 from packages.datasites.vbpl.embed import build_embed_pipeline
+from packages.datasites.vbpl.extract import build_extract_pipeline
 from packages.datasites.vbpl.reduce import build_reduce_pipeline
 
 logger = logging.getLogger(__name__)
@@ -82,6 +96,24 @@ def run_detail(cfg: Any) -> Path:
     return VbplDetailDownloader(cfg, layout).run()
 
 
+def run_rebuild_docs(cfg: Any) -> Path:
+    """Rebuild docs.jsonl from cached html/<scope>/<id>.api.json.
+
+    Offline equivalent of :func:`run_detail`: no Playwright, no network.
+    Replays :func:`detail_record_from_api_json` over every cached API JSON
+    capture so docs.jsonl reflects the *current* mapping (e.g. when new
+    metadata fields like ``ngay_ban_hanh`` / ``co_quan_ban_hanh`` are
+    added to the parser without re-running the slow browser fetch).
+
+    The existing docs.jsonl is moved to ``docs.jsonl.bak-<timestamp>``
+    before the new file is renamed into place atomically. Downstream
+    ``parse`` / ``extract`` / ``embed`` / ``reduce`` then pick up the
+    refreshed metadata on their next run.
+    """
+    layout = build_layout(cfg)
+    return VbplDetailRebuilder(cfg, layout).run()
+
+
 def run_parse(cfg: Any) -> Path:
     """Walk docs.jsonl + files, write per-item markdown + meta. Returns md_dir."""
     layout = build_layout(cfg)
@@ -89,9 +121,68 @@ def run_parse(cfg: Any) -> Path:
 
 
 def run_extract(cfg: Any) -> Path:
-    """Run normalize + generic + structure layers; write extract.jsonl."""
+    """Curator extract pipeline + post-coalesce into parquet shards.
+
+    Two output tiers per wiki.md §3.5:
+
+    1. **Raw per-doc tier** — ``jsonl/<doc>.jsonl`` (one file per
+       document, keyed by ``doc_name``). Written by
+       :class:`packages.pipeline.io.JsonlPerDocWriter` inside the
+       Curator pipeline.
+    2. **Parquet consumption tier** —
+       ``parquet/extract/extract-NNNNN-of-KKKKK.parquet``
+       (``cfg.shards.doc_chunk_size`` rows per shard; vbpl ships
+       at 5 K because rows are fat with ``structure_json`` +
+       ``extracted_json``). Coalesced from the per-doc JSONL after
+       the Curator pipeline returns.
+
+    Returns the parquet directory so ``--pipeline all`` can feed it
+    to ``run_embed``.
+    """
     layout = build_layout(cfg)
-    return VbplDocumentExtractor(cfg, layout).run()
+    pipeline = build_extract_pipeline(cfg)
+    _run_curator_pipeline(cfg, pipeline)
+    out_dir = _coalesce_extract_shards(cfg, layout)
+    return out_dir
+
+
+def _coalesce_extract_shards(cfg: Any, layout: Any) -> Path:
+    """Read jsonl/<doc>.jsonl shards and write parquet/extract/*.parquet."""
+    doc_chunk_size = resolve_doc_chunk_size(cfg)
+    row_group_size = resolve_row_group_size(cfg)
+    jsonl_paths = sorted(layout.jsonl_dir.glob("*.jsonl"))
+    # Drop the legacy single-file extract.jsonl + the staging
+    # ``extract_shards/`` directory the prior pipeline shipped; the
+    # canonical raw tier is now per-doc ``<doc>.jsonl`` files.
+    jsonl_paths = [
+        p for p in jsonl_paths
+        if p.name not in {
+            "sitemap.jsonl", "docs.jsonl",
+            "extract.jsonl",
+            "extract_manifest.json", "parse_manifest.json",
+            "manifest.json",
+        } and not p.name.startswith("extract.jsonl.")
+    ]
+    out_dir = layout.extract_parquet_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(
+        "coalesce extract: %d per-doc JSONL shards -> %s "
+        "(doc_chunk_size=%d, row_group_size=%d)",
+        len(jsonl_paths), out_dir, doc_chunk_size, row_group_size,
+    )
+    written = coalesce_jsonl_to_parquet_shards(
+        jsonl_paths=jsonl_paths,
+        out_dir=out_dir,
+        stage="extract",
+        fields=EXTRACTOR_JSONL_FIELDS,
+        doc_chunk_size=doc_chunk_size,
+        row_group_size=row_group_size,
+    )
+    logger.info(
+        "coalesce extract: wrote %d parquet shards under %s",
+        len(written), out_dir,
+    )
+    return out_dir
 
 
 def run_embed(cfg: Any) -> Path:
@@ -136,13 +227,70 @@ def _run_curator_pipeline(cfg: Any, pipeline: Any) -> Path | None:
     return None
 
 
+def run_rechunk(cfg: Any) -> Path:
+    """Coalesce legacy per-doc parquet -> consumption-tier shards.
+
+    One-shot migration step (wiki.md §3.5 + §10) that reads the
+    historical ``parquet/embeddings/<doc>.parquet`` +
+    ``parquet/reduced/<doc>.parquet`` per-document files (one parquet
+    per row, the legacy "raw + consumption tiers fused" shape) and
+    re-writes them as ``parquet/embed/embed-NNNNN-of-KKKKK.parquet``
+    + ``parquet/reduce/reduce-NNNNN-of-KKKKK.parquet`` shards of
+    ``cfg.shards.doc_chunk_size`` rows each (5 K for vbpl --
+    configs/default.yaml).
+
+    Runs serially (no Ray): each per-doc parquet is a single row, so
+    reading 147 K of them is I/O-bound and a single process saturates
+    the disk faster than scheduling Ray actors over them. Skips a
+    side cleanly if the source directory is empty (already migrated).
+
+    Returns the embed shard directory (``parquet/embed/``); the
+    reduce shards land next to it under ``parquet/reduce/``.
+    """
+    layout = build_layout(cfg)
+    doc_chunk_size = resolve_doc_chunk_size(cfg)
+    row_group_size = resolve_row_group_size(cfg)
+
+    for tier in ("embed", "reduce"):
+        src = layout.embeddings_dir if tier == "embed" else layout.reduced_dir
+        dst = (
+            layout.embed_parquet_dir if tier == "embed"
+            else layout.reduce_parquet_dir
+        )
+        src_count = len(list(src.glob("*.parquet"))) if src.exists() else 0
+        if src_count == 0:
+            logger.info(
+                "rechunk %s: no per-doc parquet under %s; skipping",
+                tier, src,
+            )
+            continue
+        logger.info(
+            "rechunk %s: %d per-doc parquet files in %s "
+            "-> %s shards under %s (doc_chunk_size=%d)",
+            tier, src_count, src, tier, dst, doc_chunk_size,
+        )
+        written = coalesce_per_doc_parquet_to_shards(
+            per_doc_dir=src,
+            out_dir=dst,
+            stage=tier,
+            doc_chunk_size=doc_chunk_size,
+            row_group_size=row_group_size,
+        )
+        logger.info(
+            "rechunk %s: wrote %d shards under %s", tier, len(written), dst,
+        )
+    return layout.embed_parquet_dir
+
+
 PIPELINES: dict[str, Callable[[Any], Path]] = {
     "harvest": run_harvest,
     "detail": run_detail,
+    "rebuild_docs": run_rebuild_docs,
     "parse": run_parse,
     "extract": run_extract,
     "embed": run_embed,
     "reduce": run_reduce,
+    "rechunk": run_rechunk,
 }
 
 
@@ -164,6 +312,8 @@ __all__ = [
     "run_extract",
     "run_harvest",
     "run_parse",
+    "run_rebuild_docs",
     "run_pipeline",
+    "run_rechunk",
     "run_reduce",
 ]

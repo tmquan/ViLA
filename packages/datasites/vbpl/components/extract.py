@@ -1,4 +1,20 @@
-"""Stage-3 extractor for vbpl: parsed markdown -> normalized JSONL.
+"""LEGACY in-process extractor for vbpl (retired May 2026).
+
+.. deprecated:: replaced by the Curator pipeline in
+   :mod:`packages.datasites.vbpl.extract` (wiki.md §3.5 +
+   ``cfg.extractor.normalizers``). This module is no longer wired
+   into ``--pipeline extract`` / ``--pipeline all`` -- the CLI now
+   builds a :class:`nemo_curator.pipeline.Pipeline` that runs the
+   declarative ``NormalizerChainStage`` -> ``LegalExtractStage`` ->
+   ``JsonlPerDocWriter`` chain and post-coalesces the per-doc JSONL
+   into ``parquet/extract/extract-NNNNN-of-KKKKK.parquet`` shards.
+
+   Kept in-tree as a reference implementation of the per-record
+   pipeline (helpful for debugging a single document outside Ray):
+   the public class :class:`VbplDocumentExtractor` can still be
+   instantiated by ad-hoc scripts. New code SHOULD use the Curator
+   factory; this module will be deleted in a follow-up sweep once
+   no internal tooling depends on it.
 
 Reads the per-document outputs of
 :class:`packages.datasites.vbpl.components.parse.VbplDocumentParser`

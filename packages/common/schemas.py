@@ -249,6 +249,12 @@ class ParserCfg:
     # OCR accuracy against payload size.
     nim_tool: str = "markdown_bbox"
     nim_dpi: int = 150
+    # Override the default ``md/<scope>/<id>.md`` resume guard so the
+    # parse stage re-emits every row from a refreshed ``docs.jsonl``.
+    # Used after ``--pipeline rebuild_docs`` to propagate new sidebar
+    # metadata into ``md/<scope>/<id>.meta.json`` without nuking the
+    # markdown cache.
+    force: bool = False
 
 
 @dataclass
@@ -278,6 +284,20 @@ class ExtractorCfg:
     án lệ fits in a single call.
     """
 
+    #: Declarative normalizer list (wiki.md §3.5 + the normalizer
+    #: registry under :mod:`packages.extractor.normalizers`). Each
+    #: entry is the registered name of a Curator-stage normalizer
+    #: that mutates one or more columns of the ``DocumentBatch``
+    #: in place. The list runs in order before
+    #: :class:`packages.extractor.stage.LegalExtractStage` inspects
+    #: the markdown. Empty list (the default) preserves the legacy
+    #: behaviour: ``LegalExtractStage`` runs its inline
+    #: ``normalize_text`` when ``run_text_normalization`` is true.
+    normalizers: list[str] = field(default_factory=list)
+    #: Deprecated, kept for backward compat. New configs declare the
+    #: ``vietnamese_text`` normalizer in the ``normalizers`` list
+    #: instead. When ``normalizers`` is non-empty this flag is
+    #: ignored.
     run_text_normalization: bool = True
     run_generic_layer: bool = True
     run_site_layer: bool = True
@@ -285,9 +305,8 @@ class ExtractorCfg:
     llm_tier_for_ambiguous: str = "fast"
     max_seq_length: int = "${..full_text_context}"  # type: ignore[assignment]
     # Per-process thread-pool width for in-process extractor runs.
-    # Curator-driven extractor sites (anle / congbobanan) ignore this
-    # because Ray + the executor handle parallelism. Used by vbpl's
-    # in-process VbplDocumentExtractor.
+    # Curator-driven extractor sites (anle / congbobanan / vbpl) ignore
+    # this because Ray + the executor handle parallelism.
     num_workers: int = 4
 
 
@@ -480,6 +499,26 @@ class RayCfg:
 
 
 @dataclass
+class ShardsCfg:
+    """Parquet shard sizing for the consumption tier (wiki.md §3.5).
+
+    Cross-corpus defaults are 10 K rows per ``parse`` / ``extract`` /
+    ``embed`` / ``reduce`` shard and 50 K rows per sentence shard.
+    A site whose rows are empirically too heavy for the 10 K default
+    (e.g. ``vbpl`` ships full ``structure_json`` + ``extracted_json``
+    next to a 2.4 MB markdown body and a 10 K-row shard hit 214 MB,
+    triggering the HF dataset-viewer's ``JobManagerCrashedError``)
+    MAY override ``doc_chunk_size`` in its ``configs/default.yaml``.
+    The override must land on a 1 K-multiple and carry a justification
+    comment — see wiki.md §3.5.4.
+    """
+
+    doc_chunk_size: int = 10_000
+    sentence_chunk_size: int = 50_000
+    row_group_size: int = 1_024
+
+
+@dataclass
 class PipelineCfg:
     """Top-level pipeline config consumed by stage factories and the CLI.
 
@@ -503,6 +542,7 @@ class PipelineCfg:
     translator: TranslatorCfg = field(default_factory=TranslatorCfg)
     executor: ExecutorCfg = field(default_factory=ExecutorCfg)
     ray: RayCfg = field(default_factory=RayCfg)
+    shards: ShardsCfg = field(default_factory=ShardsCfg)
     # Optional cap on URLs handed to the download stage. Useful for
     # smoke tests; `None` runs the full corpus.
     limit: int | None = None

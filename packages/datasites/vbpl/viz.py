@@ -725,14 +725,20 @@ def render_agency_bars(
 #: Facets driven into ``render_embedding_scatter``: ``(field, dim)``.
 #: ``dim`` is always ``umap`` in this iteration; the reducer parquet
 #: still carries ``pca_x`` / ``tsne_x`` for consumers who want to
-#: re-render those axes themselves.
+#: re-render those axes themselves, plus the HDBSCAN ``cluster_id``
+#: column. ``cluster_id`` is **deliberately not** in this tuple: the
+#: vbpl embeddings cluster very poorly (85.8 % of docs land in the
+#: ``-1`` noise bucket as of the May-2026 release), so a UMAP-by-
+#: cluster scatter degenerates into a single dark mass and adds no
+#: signal to the dataset card. The rendering branch in
+#: ``render_embedding_scatter`` is kept alive for ad-hoc analyses
+#: and for future corpora where HDBSCAN does find structure.
 EMBED_FACETS: tuple[tuple[str, str], ...] = (
     ("scope",      "umap"),
     ("doc_type",   "umap"),
     ("legal_type", "umap"),
     ("legal_area", "umap"),
     ("year",       "umap"),
-    ("cluster_id", "umap"),
 )
 
 #: High-cardinality facets get bucketed to top-N + Other so the
@@ -781,7 +787,7 @@ def load_reduced_dataframe(reduced_dir: Path) -> pd.DataFrame | None:
     except ImportError:
         logger.warning("pyarrow.dataset unavailable; skipping embedding viz")
         return None
-    cols = [
+    wanted = [
         "doc_name",
         "pca_x", "pca_y",
         "tsne_x", "tsne_y",
@@ -790,6 +796,18 @@ def load_reduced_dataframe(reduced_dir: Path) -> pd.DataFrame | None:
     ]
     try:
         dset = ds.dataset(str(reduced_dir), format="parquet")
+        # Tolerate sites that fit only a subset of {PCA, t-SNE, UMAP}.
+        # The reducer schema may legitimately omit e.g. ``tsne_x`` when
+        # ``cfg.reducer.methods`` excluded it (the inproc driver does
+        # this on huge corpora where sklearn t-SNE is intractable).
+        schema_names = set(dset.schema.names)
+        cols = [c for c in wanted if c in schema_names]
+        missing = [c for c in wanted if c not in schema_names]
+        if missing:
+            logger.info(
+                "reduced parquet missing %d optional cols (%s); proceeding without them",
+                len(missing), ", ".join(missing),
+            )
         df = dset.to_table(columns=cols).to_pandas()
     except Exception as exc:
         logger.warning("reading reduced parquet failed: %s; skipping viz", exc)
@@ -963,35 +981,63 @@ def render_embedding_scatter(
         order = sub[color_by].value_counts().index.tolist()
         if "Khác / Other" in order:
             order = [x for x in order if x != "Khác / Other"] + ["Khác / Other"]
-        fig = go.Figure()
+
+        # Pre-compute per-category colours.
+        label_to_color: dict[str, str] = {}
         for i, label in enumerate(order):
-            grp = sub[sub[color_by] == label]
-            is_other = (label == "Khác / Other")
-            # The binary ``scope`` facet has a hand-picked two-tone
-            # palette (blue central / green provincial) for visual
-            # contrast; other categoricals use the general 16-hue
-            # palette indexed by rank.
-            if is_other:
-                marker_color = "#cfcfcf"
+            if label == "Khác / Other":
+                label_to_color[label] = "#cfcfcf"
             elif color_by == "scope" and label in SCOPE_COLORS:
-                marker_color = SCOPE_COLORS[label]
+                label_to_color[label] = SCOPE_COLORS[label]
             else:
-                marker_color = _color_for(i)
-            fig.add_trace(go.Scattergl(
-                x=grp[x_col], y=grp[y_col],
+                label_to_color[label] = _color_for(i)
+
+        fig = go.Figure()
+
+        # Render points as a *single* Scattergl trace with a per-row
+        # colour array. Multi-trace Scattergl over headless Chromium
+        # (kaleido) silently drops WebGL data after the first heavy
+        # render in a tab, so the 2nd-3rd categorical scatter would
+        # come out as an empty canvas with only the legend drawn.
+        # Folding the points into one trace dodges that bug entirely.
+        sub_sorted = sub.sort_values(by=color_by, key=lambda s: s.map(
+            {lab: 1 if lab == "Khác / Other" else 0 for lab in order}
+        ))
+        point_colors = sub_sorted[color_by].map(label_to_color).tolist()
+        fig.add_trace(go.Scattergl(
+            x=sub_sorted[x_col], y=sub_sorted[y_col],
+            mode="markers",
+            name="",
+            marker={
+                "size": 2.5,
+                "opacity": 0.6,
+                "color": point_colors,
+                "line": {"width": 0},
+            },
+            hovertext=sub_sorted[color_by],
+            hovertemplate=(
+                f"<b>%{{hovertext}}</b>"
+                f"<br>{x_col}: %{{x:.2f}}"
+                f"<br>{y_col}: %{{y:.2f}}<extra></extra>"
+            ),
+            showlegend=False,
+        ))
+
+        # Legend swatches: one zero-marker Scatter (SVG) trace per
+        # category. These carry no data so the WebGL context isn't
+        # touched; plotly still draws one legend row per trace.
+        for label in order:
+            fig.add_trace(go.Scatter(
+                x=[None], y=[None],
                 mode="markers",
                 name=_wrap_label(str(label), width=28),
                 marker={
-                    "size": 2.5,
-                    "opacity": 0.45 if is_other else 0.65,
-                    "color": marker_color,
+                    "size": 9,
+                    "color": label_to_color[label],
                     "line": {"width": 0},
                 },
-                hovertemplate=(
-                    f"<b>{label}</b>"
-                    f"<br>{x_col}: %{{x:.2f}}"
-                    f"<br>{y_col}: %{{y:.2f}}<extra></extra>"
-                ),
+                hoverinfo="skip",
+                showlegend=True,
             ))
         legend_layout = {"legend": {
             "x":             EMBED_SIDEBAR_X,
@@ -1049,6 +1095,31 @@ def render_embedding_scatter(
 
 
 # ----------------------------------------------------- driver
+
+
+def _warmup_scattergl_tab() -> None:
+    """Render a throwaway WebGL plot to warm Chromium's GL context.
+
+    Kaleido reuses one Chromium tab across all ``write_image`` calls.
+    The first ``Scattergl`` render in a new tab consistently produces
+    an empty canvas (legend renders, points don't) -- the WebGL
+    context isn't ready in time for the screenshot. Issuing a tiny
+    throwaway ``Scattergl`` plot first forces GL initialisation so
+    the first real embedding scatter renders correctly.
+
+    Writes to a temp file we immediately discard.
+    """
+    import plotly.graph_objects as go
+    import tempfile
+
+    fig = go.Figure(go.Scattergl(
+        x=[0.0, 1.0, 2.0], y=[0.0, 1.0, 0.5],
+        mode="markers",
+        marker={"size": 6, "color": "rgba(0,0,0,0)"},
+    ))
+    fig.update_layout(width=200, height=200, showlegend=False)
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as f:
+        _write_png(fig, Path(f.name), width=200, height=200)
 
 
 def render_all(
@@ -1135,26 +1206,58 @@ def render_all(
         meta = pd.DataFrame(rows)
         meta = meta[[c for c in meta_cols if c in meta.columns]]
 
+        # Kaleido + headless Chromium silently produces an empty canvas
+        # for the *first* ``Scattergl`` render after the tab is created
+        # (the legend draws but the WebGL points don't). Render a tiny
+        # throwaway WebGL plot first so the first real facet inherits a
+        # warmed-up GL context. Subsequent facets reuse the same tab.
+        try:
+            _warmup_scattergl_tab()
+        except Exception as exc:
+            logger.warning("scattergl warmup failed: %s; continuing", exc)
+
+        # Empirically, kaleido + Chromium WebGL silently renders an
+        # empty canvas (legend only, no Scattergl points) for ~1 in 5
+        # embedding facets at random. The signature: PNG size drops
+        # from the typical 1.5-2.5 MB to ~350-450 KB because only the
+        # legend + axes were drawn. Retry the render once when we see
+        # that footprint so a single flaky frame doesn't poison the
+        # whole publish.
+        _RENDER_FOOTPRINT_FLOOR_BYTES = 800_000
+
         range_cache: dict[str, tuple[list[float], list[float]] | None] = {}
         for field, dim in EMBED_FACETS:
             if dim not in range_cache:
                 range_cache[dim] = _coord_range(reduced, dim)
-            try:
-                out_path = out_dir / f"embedding-{field.replace('_','-')}-{dim}.png"
-                p = render_embedding_scatter(
-                    reduced=reduced,
-                    meta=meta,
-                    color_by=field,
-                    dim=dim,
-                    out_path=out_path,
-                    embed_model_id=embed_model_id,
-                    embed_dim=embed_dim,
-                    coord_range=range_cache[dim],
-                )
-                if p is not None:
+            out_path = out_dir / f"embedding-{field.replace('_','-')}-{dim}.png"
+            for attempt in (1, 2):
+                try:
+                    p = render_embedding_scatter(
+                        reduced=reduced,
+                        meta=meta,
+                        color_by=field,
+                        dim=dim,
+                        out_path=out_path,
+                        embed_model_id=embed_model_id,
+                        embed_dim=embed_dim,
+                        coord_range=range_cache[dim],
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "embedding %s/%s attempt %d crashed: %s",
+                        field, dim, attempt, exc,
+                    )
+                    p = None
+                if p is None:
+                    break
+                size = p.stat().st_size if p.exists() else 0
+                if size >= _RENDER_FOOTPRINT_FLOOR_BYTES or attempt == 2:
                     paths[f"embedding_{field}_{dim}"] = p
-            except Exception as exc:
-                logger.exception("embedding %s/%s failed: %s", field, dim, exc)
+                    break
+                logger.warning(
+                    "embedding %s/%s rendered tiny (%d bytes); retrying once",
+                    field, dim, size,
+                )
 
     stop_kaleido()
     return paths

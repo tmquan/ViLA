@@ -40,7 +40,7 @@ from packages.common.config import (
 )
 from packages.common.http import PoliteSession
 from packages.common.logging import SiteLogger
-from packages.common.schemas import ExecutorCfg, PipelineCfg, RayCfg
+from packages.common.schemas import ExecutorCfg, PipelineCfg, RayCfg, ShardsCfg
 
 __all__ = [
     "EXECUTOR_CHOICES",
@@ -48,6 +48,7 @@ __all__ = [
     "PipelineCfg",
     "PoliteSession",
     "RayCfg",
+    "ShardsCfg",
     "SiteLayout",
     "SiteLogger",
     "apply_log_level",

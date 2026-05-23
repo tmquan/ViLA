@@ -38,7 +38,6 @@ from packages.datasites.vbpl.components import (
     DetailRecord,
     SitemapEntry,
     VbplDetailDownloader,
-    VbplDocumentExtractor,
     VbplDocumentParser,
     VbplSitemapHarvester,
     detail_record_from_api_json,
@@ -47,6 +46,11 @@ from packages.datasites.vbpl.components import (
     parse_sitemap_urlset,
 )
 from packages.datasites.vbpl.embed import build_embed_pipeline
+from packages.datasites.vbpl.extract import build_extract_pipeline
+# Eager import so the vbpl-specific normalizer registry entries are
+# populated for any consumer of the package (the Curator extract
+# pipeline resolves them via packages.extractor.normalizers).
+from packages.datasites.vbpl import normalizers as _vbpl_normalizers  # noqa: F401
 from packages.datasites.vbpl.reduce import build_reduce_pipeline
 from packages.datasites.vbpl.scraper import (
     ALL_PIPELINES_ORDER,
@@ -69,10 +73,10 @@ __all__ = [
     "PIPELINES",
     "SitemapEntry",
     "VbplDetailDownloader",
-    "VbplDocumentExtractor",
     "VbplDocumentParser",
     "VbplSitemapHarvester",
     "build_embed_pipeline",
+    "build_extract_pipeline",
     "build_reduce_pipeline",
     "detail_record_from_api_json",
     "item_id_from_detail_url",

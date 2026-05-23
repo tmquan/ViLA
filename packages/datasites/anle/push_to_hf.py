@@ -36,22 +36,21 @@ DEFAULT_HF_DIR  = Path("data/anle.toaan.gov.vn/hf")
 DEFAULT_REPO_ID = "tmquan/anle-toaan-gov-vn"
 
 #: Files we expect ``hf_export`` to have produced unconditionally.
-#: The four embedding-scatter pairs (8 PNGs total) are mandatory:
-#: they are the human-readable surface of the reducer output that
-#: the dataset card embeds (4 colour facets × 2 projections). Push
-#: is rejected if any are missing -- prevents accidentally pushing
-#: a partial repo. The parquet shards are validated separately by
-#: :func:`_validate_shards` against their respective globs.
+#: The four UMAP embedding scatters are mandatory: they are the
+#: human-readable surface of the reducer output that the dataset
+#: card embeds (one figure per colour facet, one figure per row).
+#: Push is rejected if any are missing -- prevents accidentally
+#: pushing a partial repo. PCA + t-SNE projections are still shipped
+#: as data columns in ``reduce-*.parquet`` (``pca_{x,y,z}`` and
+#: ``tsne_{x,y,z}``); only the PNG snapshots are dropped. The parquet
+#: shards are validated separately by :func:`_validate_shards`
+#: against their respective globs.
 REQUIRED_FILES = (
     "README.md",
     "manifest.json",
-    "embedding-case-type-tsne.png",
     "embedding-case-type-umap.png",
-    "embedding-doc-subtype-tsne.png",
     "embedding-doc-subtype-umap.png",
-    "embedding-court-level-tsne.png",
     "embedding-court-level-umap.png",
-    "embedding-cluster-id-tsne.png",
     "embedding-cluster-id-umap.png",
 )
 

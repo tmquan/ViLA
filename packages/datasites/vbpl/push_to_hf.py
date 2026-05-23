@@ -41,8 +41,12 @@ DEFAULT_REPO_ID = "tmquan/vbpl-vn"
 #: * **Overview figures** -- six corpus-level plotly+kaleido PNGs
 #:   shown at the top of the card (treemap, sunburst, doc-type
 #:   bars, year stack, doc-type×year heatmap, agency bars).
-#: * **Embedding figures** -- six UMAP scatter facets (`scope`,
-#:   `doc_type`, `legal_type`, `legal_area`, `year`, `cluster_id`).
+#: * **Embedding figures** -- five UMAP scatter facets (`scope`,
+#:   `doc_type`, `legal_type`, `legal_area`, `year`). The
+#:   `cluster_id` UMAP was retired in May 2026 because HDBSCAN on
+#:   this corpus emits ~85 % of points as the ``-1`` noise cluster
+#:   on the default reducer settings; the figure was visually
+#:   empty so the dataset card no longer claims it.
 #:
 #: t-SNE / PCA scatters are no longer rendered because on this
 #: corpus they separate the same clusters as UMAP without adding
@@ -71,7 +75,6 @@ _EMBEDDING_FIGS = (
     "embedding-legal-type-umap.png",
     "embedding-legal-area-umap.png",
     "embedding-year-umap.png",
-    "embedding-cluster-id-umap.png",
 )
 REQUIRED_FILES = (
     "README.md",

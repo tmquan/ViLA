@@ -123,20 +123,66 @@ parser:
   nim_dpi: 150
   timeout_s: 120.0
 
-# Stage 3: extract. Vietnamese-aware NFC + tone canonicalization
-# upstream of the regex / structure layers so every layer sees a
-# single canonical orthography. ``run_site_layer`` is OFF for vbpl
-# because the precedent normalizer targets án lệ (Court precedents),
-# not statutes / regulations / circulars.
+# Stage 3: extract. Declarative normalizer chain runs as a Curator
+# ``NormalizerChainStage`` (wiki.md §3.5) between the markdown reader
+# and the regex / structure layers, so every layer sees a single
+# canonical orthography AND every vbpl-specific cleanup (Word/Ant
+# Design CSS scaffolding, title prefix peeling, so_hieu CSV split,
+# agency code stripping) is applied exactly once, declaratively, and
+# is recorded in the per-stage manifest for reproducibility.
+#
+# Order matters: ``vietnamese_text`` (ftfy + NFC + tone marks +
+# whitespace) is the universal baseline; the markdown-touching
+# ``vbpl_strip_markdown_junk`` runs after the baseline so smart
+# quotes and stray combining marks are already canonical when the
+# CSS / Word stylesheet stripper scans regex anchors; the title
+# chain (``vbpl_normalise_title`` -> ``vbpl_clean_title``) reads
+# the already-normalised ``legal_type`` + ``so_hieu`` columns to
+# peel the doc's own prefix, so the column-typed normalizers must
+# precede ``vbpl_clean_title``.
+#
+# ``run_text_normalization: false`` because the chain already owns
+# normalization; leaving the inline ``normalize_text`` path on would
+# double-normalize ``markdown`` (idempotent but wasteful).
+# ``run_site_layer`` is OFF for vbpl because the precedent
+# normalizer targets án lệ (Court precedents), not statutes.
 
 extractor:
-  run_text_normalization: true
+  normalizers:
+    - vietnamese_text
+    - vbpl_strip_markdown_junk
+    - vbpl_normalise_title
+    - vbpl_so_hieu_list
+    - vbpl_clean_title
+    - vbpl_co_quan_ban_hanh
+    - vbpl_legal_area
+    - vbpl_trich_yeu_text
+  run_text_normalization: false
   run_generic_layer: true
   run_site_layer: false
   run_structure_layer: true
   llm_tier_for_ambiguous: fast
   num_workers: 4
   max_seq_length: "${..full_text_context}"
+
+# Parquet consumption tier shard sizing (wiki.md §3.5.4).
+#
+# vbpl rows are dense -- the JSONL ships ``structure_json`` (full
+# tree of articles / clauses / sentences) + ``extracted_json`` (the
+# generic extractor's regex payload) + ``markdown`` (clean body text)
+# in the same row, so a 10K-row shard pickles to ~210 MB and the HF
+# dataset-viewer's 200 MB-per-page rule kicks in (May 2026: the
+# viewer returned 503s on shards above ~205 MB). Empirically a 5K
+# shard packs to 100-110 MB, sits comfortably under the viewer cap,
+# and keeps Parquet row-group reads cheap.
+#
+# This override is the canonical example of the per-site exception
+# rule in wiki.md §3.5.4: keep the default 10K for thin-row sites
+# (anle, congbobanan), drop to 5K only when row density forces it.
+# The two non-default sites that ever need to override (here +
+# congbobanan-if-it-ever-bulks-up) explain why.
+shards:
+  doc_chunk_size: 5000
 
 # Stage 4: embed. NIM embedder by default (HTTP, no GPU on this host
 # needed); set runtime=hf to run nvidia/llama-nemotron-embed-1b-v2

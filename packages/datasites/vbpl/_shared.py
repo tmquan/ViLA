@@ -72,15 +72,43 @@ DETAIL_JSONL_FIELDS: list[str] = [
 ]
 
 
-#: Minimal JSONL columns the Embedder pipeline reads from the extract
-#: output. Keeping the projection narrow keeps the per-batch payload
-#: small in the JsonlReader. The rest of the row is left on disk and
-#: re-joined later by ``doc_name`` + ``text_hash`` if needed.
-EMBEDDER_JSONL_READ_FIELDS: list[str] = ["doc_name", "text_hash", "markdown"]
+#: Columns the Embedder pipeline reads from ``parquet/extract/``. We
+#: pass the sidebar metadata (``so_hieu``, ``ngay_ban_hanh``,
+#: ``co_quan_ban_hanh``, ``trich_yeu``, ``legal_type``, ``legal_area``,
+#: ``doc_type``, ``scope``, ``source_url``, ``title``) through so the
+#: ``parquet/embed/`` consumption tier carries the full citation row
+#: alongside the vector. Consumers doing pure vector queries can ignore
+#: them; consumers doing "find documents like X" without re-joining the
+#: documents table get them for free.
+EMBEDDER_PARQUET_READ_FIELDS: list[str] = [
+    "doc_name",
+    "text_hash",
+    "markdown",
+    # sidebar metadata propagated to embed/reduce parquet for in-place
+    # filtering ("only embed rows from 2020+", "find vectors near X in
+    # the Đất đai legal_area", ...) without re-joining documents.parquet
+    "title",
+    "doc_type",
+    "legal_type",
+    "legal_area",
+    "so_hieu",
+    "ngay_ban_hanh",
+    "co_quan_ban_hanh",
+    "trich_yeu",
+    "scope",
+    "source_url",
+]
+
+#: Backwards-compat alias for the legacy JSONL-input embed factory.
+#: Identical column set to the canonical parquet input; the wiki.md
+#: §3.5 migration only swapped the file format, not the projection.
+EMBEDDER_JSONL_READ_FIELDS: list[str] = list(EMBEDDER_PARQUET_READ_FIELDS)
 
 
 #: Parquet columns written by the Embedder pipeline. ``doc_name`` +
-#: ``text_hash`` is the join key back to the extract JSONL.
+#: ``text_hash`` is the join key back to the extract JSONL. The vbpl
+#: schema carries the sidebar citation columns through so the
+#: ``parquet/embed/`` shards are self-describing.
 EMBEDDER_PARQUET_FIELDS: list[str] = [
     "doc_name",
     "text_hash",
@@ -90,6 +118,17 @@ EMBEDDER_PARQUET_FIELDS: list[str] = [
     "embedding_text_hash",
     "embedding_chunks_used",
     "embedding_chunking",
+    # sidebar metadata propagated for self-describing embed shards
+    "title",
+    "doc_type",
+    "legal_type",
+    "legal_area",
+    "so_hieu",
+    "ngay_ban_hanh",
+    "co_quan_ban_hanh",
+    "trich_yeu",
+    "scope",
+    "source_url",
 ]
 
 
@@ -220,6 +259,7 @@ __all__ = [
     "DETAIL_JSONL_FIELDS",
     "EMBEDDER_JSONL_READ_FIELDS",
     "EMBEDDER_PARQUET_FIELDS",
+    "EMBEDDER_PARQUET_READ_FIELDS",
     "EXTRACTOR_JSONL_FIELDS",
     "REDUCER_PARQUET_FIELDS",
     "SCOPES",

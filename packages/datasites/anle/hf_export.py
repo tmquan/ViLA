@@ -13,7 +13,7 @@ self-contained ``hf/`` tree that can be uploaded with
         embed-NNNNN-of-KKKKK.parquet                # one row per document  (embed stage vectors)
         reduce-NNNNN-of-KKKKK.parquet               # one row per document  (reduce stage projections + cluster)
         sentences.jsonl                             # streamable mirror of sentences-*.parquet
-        embedding-<facet>-<dim>.png                 # static PNG scatters embedded in the card
+        embedding-<facet>-umap.png                  # static UMAP PNG scatters embedded in the card (one per facet, one figure per row)
 
 This is the canonical HF view of the four pipeline stages. Each stage
 ships as a separate ``configs`` entry in the dataset-card frontmatter
@@ -148,18 +148,17 @@ PREDEFINED_CLUSTERER: str = "hdbscan"
 #: Embedding scatter plots rendered as PNG into ``hf/`` and embedded
 #: in the dataset card. Each entry is ``(color_by_field, dim, slug)``
 #: where ``slug`` is the filename stem (``embedding-<slug>.png``).
-#: Renders every colour facet in both projections (t-SNE + UMAP) so
-#: readers can compare how each facet separates under each method;
-#: the card lays the two projections for the same facet side-by-side
-#: in the order declared here.
+#: Only the UMAP projection is rendered (one figure per colour facet,
+#: laid out one per row in the dataset card) — UMAP gives the most
+#: informative low-D view for this corpus and the card stays compact.
+#: The PCA + t-SNE projections are still computed by the reducer and
+#: shipped in ``reduce-*.parquet`` (columns ``pca_{x,y,z}`` and
+#: ``tsne_{x,y,z}``); consumers can render their own scatters from
+#: that data without re-running the reducer.
 _EMBED_VIZ_PLOTS: tuple[tuple[str, str, str], ...] = (
-    ("case_type",    "tsne", "case-type-tsne"),
     ("case_type",    "umap", "case-type-umap"),
-    ("doc_subtype",  "tsne", "doc-subtype-tsne"),
     ("doc_subtype",  "umap", "doc-subtype-umap"),
-    ("court_level",  "tsne", "court-level-tsne"),
     ("court_level",  "umap", "court-level-umap"),
-    ("cluster_id",   "tsne", "cluster-id-tsne"),
     ("cluster_id",   "umap", "cluster-id-umap"),
 )
 
@@ -888,17 +887,27 @@ def _embed_viz_section(viz_paths: dict[tuple[str, str], Path],
     """Markdown block embedding the rendered embedding-scatter PNGs.
 
     Empty string when no PNGs were produced (e.g. the reducer hasn't
-    run yet) so the rest of the card still renders cleanly.
+    run yet) so the rest of the card still renders cleanly. One
+    figure per row (each PNG sits under its own ``###`` heading) so
+    the layout stays readable on narrow viewports.
     """
     if not viz_paths:
         return ""
     blocks: list[str] = ["## Trực quan hoá embedding · Embedding visualization\n"]
     blocks.append(
         f"Mỗi điểm là một văn bản; toạ độ là vector embedding {embed_dim}-D từ "
-        f"`{embed_model_id}` chiếu xuống 2D bằng PCA / t-SNE / UMAP, cụm bằng "
-        f"HDBSCAN. — Each dot is one document; coordinates are the 2D projection "
-        f"of a {embed_dim}-D embedding from `{embed_model_id}` (PCA / t-SNE / "
-        f"UMAP), with HDBSCAN cluster ids.\n",
+        f"`{embed_model_id}` chiếu xuống 2D bằng UMAP, cụm bằng HDBSCAN. "
+        f"Mỗi hình một hàng. — Each dot is one document; coordinates are the "
+        f"2D UMAP projection of a {embed_dim}-D embedding from "
+        f"`{embed_model_id}`, with HDBSCAN cluster ids. One figure per row.\n",
+    )
+    blocks.append(
+        "PCA và t-SNE vẫn được tính sẵn và lưu trong "
+        "`reduce-*.parquet` (`pca_{x,y,z}`, `tsne_{x,y,z}`) — chỉ "
+        "không vẽ trong card này. — PCA and t-SNE coordinates are "
+        "still pre-computed and shipped in `reduce-*.parquet` "
+        "(`pca_{x,y,z}`, `tsne_{x,y,z}`); they are simply not rendered "
+        "inline here.\n",
     )
     for (color_by, dim), path in viz_paths.items():
         title = f"{dim.upper()} colored by `{color_by}`"

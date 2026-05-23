@@ -40,9 +40,11 @@ extract     -> jsonl/extract.jsonl   (NFC + Vietnamese tone canonicalization +
 embed       -> parquet/embeddings/<id>.parquet   (NIM nvidia/llama-nemotron-embed-1b-v2
    |                                              by default; HF runtime as alternative)
    v
-reduce      -> parquet/reduced/<id>.parquet      (PCA + t-SNE + UMAP + HDBSCAN
-                                                  cluster_id; cuML when available,
-                                                  sklearn / umap-learn / hdbscan otherwise)
+reduce      -> parquet/reduced/<id>.parquet      (PCA + UMAP + HDBSCAN
+                                                  cluster_id; global fit across the
+                                                  full corpus via _reduce_inproc.py;
+                                                  cuML when available, sklearn /
+                                                  umap-learn / hdbscan otherwise)
 ```
 
 The first four stages run in-process (no Ray). The embed + reduce
@@ -168,10 +170,15 @@ python -m packages.datasites.vbpl --pipeline extract
 python -m packages.datasites.vbpl --pipeline embed \
     --override ray.address=auto
 
-# PCA + t-SNE + UMAP + HDBSCAN over the full embedding matrix
+# PCA + UMAP + HDBSCAN over the embedding matrix
 # -> parquet/reduced/<id>.parquet.
-python -m packages.datasites.vbpl --pipeline reduce \
-    --override ray.address=auto
+#
+# NOTE: the Curator `reduce` pipeline runs the reducer per
+# DocumentBatch (~64 docs each) which gives per-batch UMAP fits
+# that are not comparable across documents. For the published
+# corpus we drive the reducer in-process over the full matrix
+# instead so the coordinates are globally consistent:
+python -m packages.datasites.vbpl._reduce_inproc
 
 # Smoke tests: only process 10 docs end-to-end.
 python -m packages.datasites.vbpl --pipeline detail  --limit 10
@@ -229,7 +236,9 @@ data/vbpl.vn/
 ├── parquet/
 │   ├── embeddings/<id>.parquet         # 1 row x EMBEDDER_PARQUET_FIELDS
 │   └── reduced/<id>.parquet            # 1 row x REDUCER_PARQUET_FIELDS
-│                                       # (PCA + t-SNE + UMAP + HDBSCAN)
+│                                       # (PCA + UMAP + HDBSCAN);
+│                                       # global fit across the corpus
+│                                       # via _reduce_inproc.py
 └── logs/                               # reserved for run logs
 ```
 
@@ -282,7 +291,7 @@ One row per parsed document, schema fields and order pinned in
 | `scope` | str | meta | `trung_uong` / `dia_phuong` |
 | `source` / `source_url` / `api_url` | str | meta | provenance |
 | `html_path` / `md_path` / `file_paths` | str / obj[] | meta | filesystem audit trail |
-| `markdown` | str? | runtime | NFC-normalised, Vietnamese tone-canonicalised body (the column the embedder will hash + chunk). Gateway/Word/Next.js scaffolding (`Document Content` preamble, `<!-- @font-face … -->` Word stylesheet dumps, Ant Design `:where(.css-…)` chains, `@keyframes` blocks, malformed inline `<span style="…">` tags) is stripped via `strip_markdown_junk`. **Null** in the published parquet when (a) `body_source == "shell_html"` after the May-2026 live-API recovery (the source has no body for those legacy IDs) or (b) the upstream title starts with the vbpl `"Lỗi "` editorial marker. Bibliographic metadata (title, agency, so_hieu, ...) stays populated on NULL-markdown rows. |
+| `markdown` | str? | runtime | NFC-normalised, Vietnamese tone-canonicalised body (the column the embedder will hash + chunk). Gateway/Word/Next.js scaffolding is stripped via `strip_markdown_junk`: the `Document Content` gateway label (both at `\A` when the gateway includes the CSS shim, **and** mid-stream when the parser splices a bibliographic header in front of it — common on PDF/DOCX-sourced docs), `<!-- @font-face … -->` Word stylesheet dumps, Ant Design `:where(.css-…)` chains, `@keyframes` blocks, and malformed inline `<span style="…">` tags. **Null** in the published parquet when `body_source == "shell_html"` after the May-2026 live-API recovery (the source genuinely has no body for those legacy IDs). The legacy `"Lỗi "` editorial-marker null-out rule was retired in May 2026 — corpus audit showed every such title is a legitimate use of the Vietnamese noun `Lỗi`/`lỗi`/`loi` ("fault / error"), not a CMS sentinel, so those rows now ship with their bodies intact. Bibliographic metadata (title, agency, so_hieu, ...) stays populated on NULL-markdown rows. |
 | `num_pages` / `confidence` / `parser_model` / `parser_runtime` / `body_source` / `parsed_at` | mixed | meta | parse-stage provenance forwarded |
 | `text_hash` | str | runtime | SHA-256 of `markdown` (stable dedup key, deterministic across re-runs) |
 | `char_len` | int | runtime | post-normalisation length |
@@ -316,10 +325,15 @@ HDBSCAN cluster id. Order pinned in
 | Field | Type | Notes |
 |---|---|---|
 | (all `EMBEDDER_PARQUET_FIELDS` columns) | -- | carried through unchanged |
-| `pca_x`, `pca_y`, `pca_z` | float | PCA coordinates (z is null when `cfg.reducer.n_components=2`) |
-| `tsne_x`, `tsne_y`, `tsne_z` | float | t-SNE coordinates |
-| `umap_x`, `umap_y`, `umap_z` | float | UMAP coordinates |
+| `pca_x`, `pca_y` | float | 2-D PCA coordinates (`cfg.reducer.n_components=2`; the `*_z` columns were dropped in the May-2026 rerun because we never plotted them and they doubled the per-doc shard footprint) |
+| `umap_x`, `umap_y` | float | 2-D UMAP coordinates, **fit globally** across the full corpus via `_reduce_inproc.py` so the projection is comparable across documents |
 | `cluster_id` | int | HDBSCAN cluster label; `-1` is the noise / unclustered bucket |
+
+t-SNE was retired in the May-2026 global-reducer rerun: a single
+global t-SNE fit under `random_state=0` (single-threaded by
+construction) took prohibitively long on this 158 K × 2 048-D
+matrix, and on this corpus PCA + UMAP separate the same clusters.
+The reducer parquet no longer carries `tsne_x` / `tsne_y` columns.
 
 ### `docs.jsonl` (detail output)
 
@@ -367,27 +381,46 @@ HDBSCAN cluster id. Order pinned in
      consumers can see the gap.
   4. **Empty** -- recorded with `body_source="empty"` so audits land
      a row instead of silently dropping.
-* **Markdown junk stripping** (`strip_markdown_junk`, applied at
-  the tail of `_html_to_markdown` in `parse.py` and again
-  defensively in `hf_export._project_record`). The vbpl gateway
-  ships every body wrapped in a small CSS shim
-  (`Document Content\n\nbody { font-family: … }\np { … }`); Word-
-  authored docs add 1-30 KB of `<!-- @font-face … p.MsoNormal { … }
-  -->` Word stylesheet on top; `body_source="shell_html"` docs
-  pick up 100-200 KB of Ant Design / Next.js framework CSS
-  (`:where(.css-…){…}@keyframes …{…}…`) plus boot scripts. All of
-  it is pure scaffolding -- it pads the embedding text without
-  carrying any Vietnamese legal signal. The cleaner removes it in
-  layered passes (`Document Content` preamble; HTML comments;
-  iterative `selector { props }` blocks gated by property /
-  selector / structural CSS tells; orphan selector fragments;
-  malformed inline `<span style="…">` tags), then collapses the
-  blank-line runs. About **90 % of bodies are touched** and
-  **~1.77 GB / 42 %** of the markdown corpus is removed (audit
-  numbers as of 2026-05-20). `shell_html` rows that survived the
-  May-2026 live-API recovery (Phase A) are NULL-marked in the
-  published parquet (`markdown=null`); the bibliographic columns
-  stay populated so consumers retain the citation handle.
+* **Markdown junk stripping** (`strip_markdown_junk`, applied as a
+  normalizer in the extract pipeline -- `vbpl_strip_markdown_junk`
+  in `configs/default.yaml` -- and again defensively in
+  `hf_export._project_record`). The vbpl gateway ships ~47 % of
+  bodies wrapped in a small CSS shim
+  (`Document Content\n\nbody { font-family: … }\np { … }`); the
+  remaining bodies (notably PDF/DOCX-sourced ones) carry the
+  literal `Document Content` label mid-stream, with the parser's
+  bibliographic header (`BỘ TÀI CHÍNH … Số: 65/2020/TT-BTC Ngày 9
+  tháng 7 năm 2020 Document Content THÔNG TƯ …`) spliced in front
+  of it. Word-authored docs add 1-30 KB of `<!-- @font-face …
+  p.MsoNormal { … } -->` stylesheet on top; pre-recovery
+  `body_source="shell_html"` docs picked up 100-200 KB of Ant
+  Design / Next.js framework CSS (`:where(.css-…){…}@keyframes
+  …{…}…`) plus boot scripts. All of it is pure scaffolding -- it
+  pads the embedding text without carrying any Vietnamese legal
+  signal. The cleaner removes it in layered passes:
+    1. `\A`-anchored leading wrapper (`Document Content` + optional
+       `body { … }` + optional `p { … }`).
+    2. **Non-anchored `Document Content` sweep** (May 2026): for
+       docs where the parser spliced the bibliographic header in
+       front of the gateway label, strip the literal anywhere in
+       the body. Uses `\bDocument\s+Content\b` (single+ space
+       between the two English words; never matches the camelCase
+       JS i18n key `documentContent` that leaks into shell_html
+       bodies).
+    3. HTML comments (the Word stylesheet dump always lives inside
+       one).
+    4. Iterative `selector { props }` blocks gated by property /
+       selector / structural CSS tells.
+    5. Orphan selector fragments.
+    6. Malformed inline `<span style="…">` tags.
+    7. Collapse blank-line runs to at most two.
+
+  After today's `Document Content` fix the published parquet has
+  **0 residuals across all 158,822 rows** (was 74,664 leading-anchor
+  hits + 13 mid-stream hits before). `shell_html` rows that survived
+  the May-2026 live-API recovery are NULL-marked in the published
+  parquet (`markdown=null`); the bibliographic columns stay
+  populated so consumers retain the citation handle.
 
 ### May-2026 live-API recovery (`scripts/recovery-rerun`)
 
@@ -396,13 +429,16 @@ A targeted retry against the public
 endpoint (no auth required) recovered **3,849 / 15,351** previously
 `shell_html`-classified documents that the gateway now publishes a
 real body for. The remaining 11,505 are genuinely bodyless on the
-official source -- those, plus 3 `body_html` rows whose title
-begins with the vbpl `"Lỗi "` (Error) editorial marker, ship with
-`markdown=null` in the parquet. The recovered IDs are tagged with
-`extract_run_id="recovery-<utc-stamp>"` in `extract.jsonl` for
-audit; embedding parquets for the NULL'd rows are deleted entirely
-so the embedding corpus only carries embeddable docs (reduces
-embedding parquet from 158,822 to 147,317 per-doc shards).
+official source and ship with `markdown=null` in the parquet. The
+recovered IDs are tagged with `extract_run_id="recovery-<utc-stamp>"`
+in `extract.jsonl` for audit; embedding parquets for the NULL'd
+rows are deleted entirely so the embedding corpus only carries
+embeddable docs (reduces embedding parquet from 158,822 to 147,317
+per-doc shards). The legacy `"Lỗi "` editorial-marker null-out rule
+was retired here too -- corpus audit showed every such title is a
+legitimate use of the Vietnamese noun `Lỗi`/`lỗi`/`loi` ("fault /
+error"), not a CMS sentinel, so those rows now ship with their
+bodies intact.
 * **Vietnamese normalization** (`extract.py`, gated by
   `cfg.extractor.run_text_normalization`): NFC + ftfy mojibake fix +
   modern tone-mark canonicalization (Toà -> Tòa, hoà -> hòa,
@@ -458,58 +494,42 @@ python -m packages.datasites.vbpl.push_to_hf \
     --repo-id myorg/vbpl --private
 ```
 
-In addition to `documents-*.parquet` (the default config the
-HF dataset viewer renders), the published repo also ships the
-**embed** and **reduce** pipeline outputs as separate sharded
-parquet bundles co-located in the same folder, mirroring the
-anle / congbobanan layout:
+The published Hub repo carries the **`documents` config only**
+(`documents-*.parquet`, 32 shards, one row per document with text +
+structure). The {2 048}-D `nvidia/llama-nemotron-embed-1b-v2`
+embeddings and the global UMAP / PCA / HDBSCAN outputs are
+computed during the build (over the 147 317 embeddable rows =
+158 822 docs − 11 505 NULL-markdown rows) and used to render the
+five UMAP scatter PNGs in the dataset card, but they are **not
+bundled as separate `embed-*.parquet` / `reduce-*.parquet`
+configs on the Hub** -- 1.3 GB of dense vectors per re-build is
+too costly to host for a corpus this size when the embeddings are
+deterministic from `markdown` + a model id.
 
-* `embed-*.parquet` -- 15 shards (~93 MB each, ~1.33 GB total),
-  10 000 rows per shard, one row per **embeddable** doc
-  (147 317 = 158 822 docs − 11 505 NULL-markdown rows for
-  which there is no body to embed). Columns: `doc_name`,
-  `text_hash`, `embedding` (float64 list, 2 048-D from
-  `nvidia/llama-nemotron-embed-1b-v2`), `embedding_dim`,
-  `embedding_model_id`, `embedding_text_hash`,
-  `embedding_chunks_used`, `embedding_chunking`. Schema is
-  byte-identical to the anle corpus's `embed-*.parquet`
-  bundle so cross-corpus joins are straightforward.
-* `reduce-*.parquet` -- 15 shards (~0.5 MB each, ~7 MB total),
-  same 147 317 rows. Columns: `doc_name`, `text_hash`,
-  `pca_x` / `pca_y` (PCA 2-D), `tsne_x` / `tsne_y` (t-SNE 2-D),
-  `umap_x` / `umap_y` (UMAP 2-D — the projection used in the
-  card's six scatter PNGs), `cluster_id` (int64, HDBSCAN
-  cluster label; `-1` is the noise bucket). The on-disk
-  per-doc shards carry `*_z` columns too, but they're all-null
-  because `cfg.reducer.n_components=2` and we drop them at
-  consolidation time.
+Re-derive the same matrices locally via:
 
-Both consolidated bundles are produced from the per-doc shards
-under `data/vbpl.vn/parquet/{embeddings,reduced}/<id>.parquet`
-via the same DuckDB `LIMIT/OFFSET` stream that
-`data/anle.toaan.gov.vn/_to_hf.py` uses for anle (10 K rows /
-shard, deterministic `doc_name` ordering, ZSTD compression).
+```bash
+git clone https://github.com/<owner>/ViLA   # this build repo
+python -m packages.datasites.vbpl --pipeline embed
+python -m packages.datasites.vbpl._reduce_inproc   # global UMAP
+```
 
-Consumers can pull each stage with `load_dataset` by pointing
-at the right glob:
+which yields `data/vbpl.vn/parquet/embeddings/<doc_name>.parquet`
+and `data/vbpl.vn/parquet/reduced/<doc_name>.parquet` per-doc
+shards keyed back to `documents.doc_name`. The reducer driver is
+**in-process** (no Ray) and fits PCA + UMAP + HDBSCAN over the
+**full corpus matrix in a single call** -- the distributed
+Curator `reduce` pipeline would otherwise fit each
+`DocumentBatch` (~64 rows) independently and produce coordinates
+that are not comparable across batches.
+
+Consumers can pull the `documents` config with `load_dataset`:
 
 ```python
 from datasets import load_dataset
 
-# Default config -- documents + markdown + structure (one row / doc).
-docs   = load_dataset("tmquan/vbpl-vn", split="train")
-
-# 2 048-D dense vectors (one row per embeddable doc).
-embed  = load_dataset("tmquan/vbpl-vn",
-                     data_files="embed-*.parquet", split="train")
-
-# PCA / t-SNE / UMAP 2-D + HDBSCAN cluster id (one row per embeddable doc).
-reduce = load_dataset("tmquan/vbpl-vn",
-                     data_files="reduce-*.parquet", split="train")
+docs = load_dataset("tmquan/vbpl-vn", split="train")
 ```
-
-Each bundle joins back to the others on the `doc_name` primary
-key.
 
 The dataset card ([rendered example](https://huggingface.co/datasets/tmquan/vbpl-vn))
 is **dual-lingual Vietnamese / English** -- every section ships
@@ -553,17 +573,22 @@ of stats. Both audiences see:
     over time.
   * `overview-agency-bars.png` — top-15 `co_quan_ban_hanh`.
     Likewise only meaningful after the backfill.
-* **Six embedding scatter PNGs** (one per colour facet, UMAP
+* **Five embedding scatter PNGs** (one per colour facet, UMAP
   only):
-  * `embedding-{scope, doc-type, legal-type, legal-area, year,
-    cluster-id}-umap.png`. High-cardinality facets bucket the
-    long tail into a grey *Khác / Other* group beyond the top 18.
-  * We dropped the parallel t-SNE plots because the two
-    projections separate the same clusters on this corpus and
-    shipping both doubled the card's visual footprint without
-    adding insight; the published `parquet/reduced/<doc>.parquet`
-    still carries `tsne_x` / `tsne_y` columns so downstream
-    consumers can re-render t-SNE themselves.
+  * `embedding-{scope, doc-type, legal-type, legal-area, year}-umap.png`.
+    High-cardinality facets bucket the long tail into a grey
+    *Khác / Other* group beyond the top 18. UMAP is fit **globally**
+    across the full corpus (`_reduce_inproc.py`) so positions are
+    directly comparable across documents.
+  * The HDBSCAN `cluster_id` facet was retired in May 2026 -- ~85 %
+    of points fell into the `-1` noise bucket on the default
+    reducer settings, so the figure was visually empty.
+  * t-SNE was retired entirely in the May-2026 global-reducer
+    rerun: a single global t-SNE fit under `random_state=0`
+    (single-threaded by construction) took prohibitively long on
+    this 158 K × 2 048-D matrix, and on this corpus PCA + UMAP
+    separate the same clusters. The reducer parquet no longer
+    carries `tsne_x` / `tsne_y` columns.
 * Build provenance and source citation in BibTeX.
 
 The export drops rows with empty `markdown` (typically detail
@@ -587,10 +612,21 @@ preserved in `manifest.json -> corpus.dropped_empty` for audit.
     re-embedding a corpus with the same model is fully cacheable
     by hash if a future stage layers on top.
 * **Reducer backends** (`cfg.reducer.prefer_gpu`):
-  * cuML on a GPU worker when present -- vectorised PCA / t-SNE /
-    UMAP / HDBSCAN. Required for >100 K docs in reasonable time.
+  * cuML on a GPU worker when present -- vectorised PCA / UMAP /
+    HDBSCAN. Required for >100 K docs in reasonable time.
   * sklearn / umap-learn / hdbscan on CPU otherwise. Works on
     smaller corpora; slow (and memory-hungry) past ~50 K docs.
+    For the published vbpl corpus the in-process global UMAP fit
+    via `_reduce_inproc.py` runs in ~14 h single-threaded on the
+    158 K × 2 048-D matrix under `random_state=0`.
+  * **Use `_reduce_inproc.py`, not `--pipeline reduce`, when you
+    need globally comparable coordinates**: Curator's distributed
+    `reduce` pipeline applies the reducer per `DocumentBatch`
+    (~64 docs), which means UMAP gets thousands of independent
+    fits on tiny subsets and the resulting coordinates can't be
+    concatenated into one meaningful projection. The in-process
+    driver bypasses Ray and fits PCA + UMAP + HDBSCAN over the
+    full corpus matrix in a single `ReducerStage.process` call.
   * UMAP needs at least ~5 docs in the input matrix to find a
     useful spectral initialisation; on tiny synthetic batches it
     falls back to NaN coordinates with a warning -- not a bug, just

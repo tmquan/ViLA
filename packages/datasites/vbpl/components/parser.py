@@ -297,12 +297,25 @@ def detail_record_from_api_json(
 
         # Recursively scan dicts for our candidate keys; lists of
         # files get flattened in a separate pass.
+        #
+        # Field-level **presentation normalization** is deliberately
+        # NOT done here -- it moved to the declarative normalizer
+        # chain that runs inside the Curator extract stage (wiki.md
+        # §3.5 + ``cfg.extractor.normalizers``). The detail stage's
+        # only job is to extract raw values from the API JSON and
+        # coerce types where the dataclass needs them (date parsing,
+        # slug → canonical-code lookup, so_hieu split-on-CSV). The
+        # normalizer chain then NFC-canonicalises, strips smart
+        # quotes, peels redundant title prefixes, etc. -- once,
+        # idempotently, recorded in the manifest.
         for d in _walk_dicts(payload):
             if not rec.title:
-                rec.title = (
-                    normalise_title(_first_nonempty(d, _TITLE_KEYS)) or ""
-                )
+                rec.title = _none_or_str(_first_nonempty(d, _TITLE_KEYS)) or ""
             if not rec.so_hieu:
+                # Split-on-CSV is a typing concern (the dataclass
+                # field is ``list[str]``), not presentation
+                # normalization. The per-token cleanup is handled
+                # by the ``vbpl_so_hieu_list`` chain entry.
                 rec.so_hieu = normalise_so_hieu_list(
                     _none_or_str(_first_nonempty(d, _SO_HIEU_KEYS))
                 )
@@ -321,15 +334,21 @@ def detail_record_from_api_json(
             if rec.legal_area is None:
                 raw_area = _first_nonempty(d, _LEGAL_AREA_KEYS)
                 if raw_area is not None:
-                    rec.legal_area = normalise_label(legal_area_label(raw_area))
+                    # ``legal_area_label`` is a typing / lookup
+                    # concern (it maps raw API codes to the canonical
+                    # area name); ``normalise_label`` (presentation
+                    # cleanup) now lives in the chain.
+                    rec.legal_area = legal_area_label(raw_area)
             if rec.ngay_ban_hanh is None:
                 rec.ngay_ban_hanh = _iso_date(_first_nonempty(d, _NGAY_KEYS))
             if rec.co_quan_ban_hanh is None:
-                rec.co_quan_ban_hanh = normalise_co_quan_ban_hanh(
+                rec.co_quan_ban_hanh = _none_or_str(
                     _first_nonempty(d, _AGENCY_KEYS),
                 )
             if rec.trich_yeu is None:
-                rec.trich_yeu = normalise_text(_first_nonempty(d, _TRICH_KEYS))
+                rec.trich_yeu = _none_or_str(
+                    _first_nonempty(d, _TRICH_KEYS),
+                )
             if not rec.body_html:
                 rec.body_html = _str_or_empty(
                     _first_nonempty(d, _BODY_HTML_KEYS),
@@ -836,13 +855,48 @@ _DOUBLED_SO_RE = re.compile(
 #: presentational; the canonical entry doesn't include it.
 _TRAILING_SENTENCE_PUNCT_RE = re.compile(r"[.,;]+\s*$")
 
-#: ASCII / smart double quotes anywhere in the string. Used by
-#: :func:`normalise_title` to strip per the corpus convention --
-#: although a handful of titles use quotes for legitimately quoted
-#: phrases ("Bà mẹ Việt Nam anh hùng"), the corpus is friendlier to
-#: downstream CSV / TSV / SQL consumers without any ``"`` in the
-#: title field.
-_DOUBLE_QUOTES_RE = re.compile(r"[\"\u201C\u201D\u201F\u2033]")
+#: Title quote-character policy. Two separate classes because
+#: doubles and singles need different handling:
+#:
+#: * **Doubles** (``"``, ``"``, ``"``, ``‟``, ``″``, ``❝``, ``❞``)
+#:   — stripped unconditionally anywhere in the title. They never
+#:   appear word-internally in Vietnamese; every occurrence is a
+#:   decorative quotation mark the CMS injected.
+#: * **Singles** (``'``, ``'``, ``'``, ``❛``, ``❜``) — stripped
+#:   **only** at the title boundary OR when they show up in a run
+#:   of two or more (the corpus uses ``''``, ``''``, ``''`` etc.
+#:   as a poor-man's double quote). Word-internal single quotes
+#:   are deliberately preserved so legitimate Vietnamese / loan-
+#:   word names survive intact: ``Đắk R'lấp``, ``M'nông``,
+#:   ``M'Drắk``, ``H'Mông``, ``D'Ran``, ``Ea T'ling``,
+#:   ``Đạ M'ri``, ``Côte d'Ivoire``, … (~770 occurrences in the
+#:   title column).
+_DOUBLE_QUOTE_CHARS = "\"\u201C\u201D\u201F\u2033\u275D\u275E"
+_SINGLE_QUOTE_CHARS = "'\u2018\u2019\u275B\u275C"
+_ALL_QUOTE_CHARS = _DOUBLE_QUOTE_CHARS + _SINGLE_QUOTE_CHARS
+
+_DOUBLE_QUOTES_RE = re.compile(rf"[{_DOUBLE_QUOTE_CHARS}]")
+_LEADING_SINGLE_QUOTE_RE = re.compile(rf"^\s*[{_SINGLE_QUOTE_CHARS}]+\s*")
+_TRAILING_SINGLE_QUOTE_RE = re.compile(rf"\s*[{_SINGLE_QUOTE_CHARS}]+\s*$")
+_QUOTE_RUN_RE = re.compile(rf"[{re.escape(_ALL_QUOTE_CHARS)}]{{2,}}")
+
+
+def _strip_decorative_quotes(s: str) -> str:
+    """Strip every decorative quote position in one canonical pass.
+
+    Applied twice in the title chain: once by :func:`normalise_title`
+    on the raw title (handles quotes in the source string) and once
+    as the final step of :func:`clean_title` (handles quotes that
+    were *exposed* by the intermediate legal-type-prefix /
+    cross-reference strippers — e.g. ``Quyết định '145/2002/QĐ-UB
+    Về việc...`` -> the prefix strip leaves a stray leading ``'``
+    that the first quote pass couldn't see).
+    """
+    s = _QUOTE_RUN_RE.sub(" ", s)
+    s = _LEADING_SINGLE_QUOTE_RE.sub("", s)
+    s = _TRAILING_SINGLE_QUOTE_RE.sub("", s)
+    s = _DOUBLE_QUOTES_RE.sub("", s)
+    return _UNICODE_WS_RE.sub(" ", s).strip()
 
 
 def normalise_text(raw: str | None) -> str | None:
@@ -888,7 +942,7 @@ def normalise_text(raw: str | None) -> str | None:
 def normalise_title(raw: str | None) -> str | None:
     """Strip the title-specific defects on top of :func:`normalise_text`.
 
-    Two extra passes beyond the baseline:
+    Three extra passes beyond the baseline:
 
     * **Doubled "số số" prefix** -- 200+ rows have the bigram from
       the CMS pasting the ``Số: NN`` header on top of a template
@@ -897,15 +951,28 @@ def normalise_title(raw: str | None) -> str | None:
       stray ``.`` or ``,`` from the source's sentence-style
       formatting. The legal title itself is a noun phrase; the
       terminal punctuation is purely presentational.
-    * **All double quotes removed** -- the source uses ``"..."``
-      to wrap quoted phrases inside titles, but they confuse
-      CSV / SQL / TSV consumers and the corpus convention is no
-      double quotes in titles.
+    * **Decorative quote stripping** -- the source uses
+      ``"..."`` / ``'...'`` / ``''...''`` (sometimes mixing
+      straight, smart, and ASCII-apostrophe variants) to wrap
+      inline phrases. We strip leading + trailing quote characters
+      AND any run of 2 or more quote characters anywhere in the
+      title, but we deliberately preserve **word-internal single
+      quotes** so legitimate Vietnamese / loan-word names
+      (``Đắk R'lấp``, ``M'nông``, ``D'Ran``, ``Côte d'Ivoire``,
+      …) survive intact.
 
     >>> normalise_title('Nghị quyết số số 33/2020/NQ-HĐND .')
     'Nghị quyết số 33/2020/NQ-HĐND'
     >>> normalise_title('Quyết định "Bà mẹ Việt Nam"')
     'Quyết định Bà mẹ Việt Nam'
+    >>> normalise_title("'Về việc tổ chức thực hiện của Chính phủ")
+    'Về việc tổ chức thực hiện của Chính phủ'
+    >>> normalise_title("Cơ chế một cửa'' đối với UBND huyện Tiên Du")
+    'Cơ chế một cửa đối với UBND huyện Tiên Du'
+    >>> normalise_title("Về đề án \u2018\u2018Tăng cường công tác\u2019\u2019 trên địa bàn")
+    'Về đề án Tăng cường công tác trên địa bàn'
+    >>> normalise_title("Đặt tên đường thị trấn Ea T'ling, huyện Cư Jut")
+    "Đặt tên đường thị trấn Ea T'ling, huyện Cư Jut"
     >>> normalise_title('  ') is None
     True
     """
@@ -913,9 +980,9 @@ def normalise_title(raw: str | None) -> str | None:
     if s is None:
         return None
     s = _DOUBLED_SO_RE.sub("số ", s)
-    s = _DOUBLE_QUOTES_RE.sub("", s)
+    s = _strip_decorative_quotes(s)
     s = _TRAILING_SENTENCE_PUNCT_RE.sub("", s)
-    # Final pass: collapsing the quote removal can leave doubled
+    # Final pass: collapsing the quote stripping can leave doubled
     # spaces (e.g. ``a "x" b`` -> ``a  b``). One more squeeze.
     s = _UNICODE_WS_RE.sub(" ", s).strip()
     return s or None
@@ -970,52 +1037,6 @@ _TITLE_PREFIX_ALIASES: tuple[str, ...] = (
 _MIN_STRIPPED_TITLE_LEN = 3
 
 
-#: Vietnamese words that, when they follow the leading ``Lỗi``, make
-#: the title a real phrase ("Lỗi chính tả" = "typo", "Lỗi văn bản"
-#: = "document error" — used in correction documents). Leave the
-#: title alone if the word right after ``Lỗi`` starts with any of
-#: these; otherwise the ``Lỗi`` is the source's editorial marker.
-_LOI_SAFE_NEXT_WORD_PREFIXES: tuple[str, ...] = (
-    "chính",
-    "chữ",
-    "kỹ",
-    "tả",
-    "văn",
-    "đánh",
-    "lầm",
-)
-
-#: ``Lỗi`` leading-marker regex. The vbpl source CMS inserts a
-#: literal ``"Lỗi"`` token between the legal-type prefix and the
-#: real title for documents the editor flagged as broken. The
-#: classifier in :mod:`packages.datasites.vbpl.hf_export` uses the
-#: same marker to NULL-out markdown bodies, but it leaves the
-#: ``"Lỗi"`` token in the title. This regex peels it once.
-_LOI_LEADING_RE = re.compile(
-    r"^L[ỗo]i\s+(\S+)", re.UNICODE,
-)
-
-
-def _strip_leading_loi(s: str) -> str:
-    """Peel a leading source-side ``Lỗi`` editorial marker.
-
-    Strips ``"Lỗi "`` from the head of the title only when (a) it's
-    the literal first token AND (b) the word that follows isn't part
-    of a legitimate ``Lỗi <X>`` phrase like ``"Lỗi chính tả"`` or
-    ``"Lỗi văn bản"``. Returns the input unchanged when either
-    condition fails so legitimate uses of ``Lỗi`` (apologies in
-    titles, error-correction documents) survive intact.
-    """
-    m = _LOI_LEADING_RE.match(s)
-    if m is None:
-        return s
-    next_word_lower = m.group(1).lower()
-    for safe in _LOI_SAFE_NEXT_WORD_PREFIXES:
-        if next_word_lower.startswith(safe):
-            return s
-    return re.sub(r"^L[ỗo]i\s+", "", s, count=1, flags=re.UNICODE).lstrip()
-
-
 def _coerce_sohieu_list(
     so_hieu: str | list[str] | tuple[str, ...] | None,
 ) -> list[str]:
@@ -1068,14 +1089,21 @@ def strip_redundant_title_prefix(
     3. **Alias fallback** for ``"Bản dịch văn bản"`` and friends
        whose title starts with a *different* legal-type name (the
        original decree's name, not the translation's).
-    4. **Leading ``Lỗi`` peel** -- after the legal-type-prefix
-       block is gone, peel a leading source-side ``"Lỗi "`` token
-       too (the vbpl CMS inserts that as an editorial marker for
-       broken records; the recovery sweep restored the markdown
-       on most of them but left the marker in the title).
-       Preserves legitimate uses of ``Lỗi`` / ``lỗi`` such as
-       ``"Lỗi chính tả"`` (typo), ``"Lỗi văn bản"`` (document
-       error), or apology titles containing ``"xin lỗi"``.
+
+    .. note::
+
+       Earlier versions of this function also peeled a leading
+       ``"Lỗi "`` token, on the assumption that the vbpl CMS used
+       it as an editorial marker for broken records. That heuristic
+       was retired in May 2026 -- corpus audit showed every
+       ``Lỗi`` / ``lỗi`` / ``loi`` prefix in the source titles is
+       the Vietnamese **noun meaning "fault / error"** used as a
+       legitimate subject ("Lỗi Ban hành Quy chế hoạt động của hội
+       đồng tư vấn mua sắm tài sản" — "Faults in issuing the
+       operational regulations of the asset procurement advisory
+       council"), not a CMS marker. Stripping it silently
+       corrupted those titles. ``clean_title`` and the HF projection
+       therefore preserve ``Lỗi`` wherever it appears.
 
     Returns ``None`` for empty input; returns the original title
     unchanged when no prefix matches *or* when stripping would
@@ -1112,10 +1140,10 @@ def strip_redundant_title_prefix(
     'Thông tư quy định sửa đổi, bổ sung chế độ thu'
     >>> strip_redundant_title_prefix(
     ...     'Lỗi Ban hành Quy chế hoạt động', 'Quyết định', ['1333/TP-KHTC'])
-    'Ban hành Quy chế hoạt động'
+    'Lỗi Ban hành Quy chế hoạt động'
     >>> strip_redundant_title_prefix(
     ...     'Lỗi Tam thoi', 'Thông tư', ['09/TT-LB'])
-    'Tam thoi'
+    'Lỗi Tam thoi'
     >>> strip_redundant_title_prefix(
     ...     'Về việc đính chính lỗi văn bản tại Quyết định ...',
     ...     'Quyết định', ['671/QĐ-BTTTT'])
@@ -1124,9 +1152,6 @@ def strip_redundant_title_prefix(
     ...     'Quy định công khai xin lỗi trong giải quyết thủ tục hành chính',
     ...     'Quyết định', ['14/2016/QĐ-UBND'])
     'Quy định công khai xin lỗi trong giải quyết thủ tục hành chính'
-    >>> strip_redundant_title_prefix(
-    ...     'Lỗi chính tả Quyết định 12/QĐ-X', 'Quyết định', ['12/QĐ-X'])
-    'Lỗi chính tả Quyết định 12/QĐ-X'
     """
     if title is None:
         return None
@@ -1152,9 +1177,6 @@ def strip_redundant_title_prefix(
             s = stripped
             break
 
-    # Final pass: peel the source-side ``Lỗi`` editorial marker.
-    # Safe to call unconditionally -- a no-op when no leading Lỗi.
-    s = _strip_leading_loi(s)
     return s or None
 
 
@@ -1325,14 +1347,20 @@ def clean_title(
     Order:
 
     1. :func:`normalise_title` -- baseline CMS-defect cleanup
-       (HTML entities, NFC, smart quotes, ``"số số"`` doubling,
-       trailing sentence punctuation).
+       (HTML entities, NFC, ``"số số"`` doubling, decorative
+       quote stripping at boundary + paired runs, trailing
+       sentence punctuation).
     2. :func:`strip_redundant_title_prefix` -- peel the doc's own
-       ``"<legal_type> số <so_hieu>"`` head + leading ``Lỗi``
-       editorial marker.
+       ``"<legal_type> số <so_hieu>"`` head.
     3. :func:`strip_doctype_docnum_crossrefs` -- nuke every
        ``<DocType> <DocNum>`` cross-reference left behind from
        step 2 (these cite *other* documents, not this one).
+    4. **Final boundary quote sweep** -- steps 2 + 3 can expose a
+       previously *embedded* quote at the new title boundary
+       (``Quyết định '145/2002/QĐ-UB Về việc...`` after the
+       prefix peel becomes ``'Về việc...``); the final
+       :func:`_strip_decorative_quotes` re-runs the canonical
+       quote policy on the now-stable boundaries.
 
     Returns ``None`` when any step produces an empty / too-short
     result; the parquet then ships ``title=null`` for the row, with
@@ -1341,8 +1369,14 @@ def clean_title(
     >>> clean_title('Quyết định số 143/QĐ-KHTC Ban hành Quy chế',
     ...             'Quyết định', ['143/QĐ-KHTC'])
     'Ban hành Quy chế'
-    >>> clean_title('Lỗi Ban hành', 'Quyết định', ['1/X'])
-    'Ban hành'
+    >>> clean_title('Lỗi Ban hành Quy chế hoạt động', 'Quyết định', ['1/X'])
+    'Lỗi Ban hành Quy chế hoạt động'
+    >>> clean_title("'Về việc tổ chức thực hiện của Chính phủ", 'Quyết định', ['1/X'])
+    'Về việc tổ chức thực hiện của Chính phủ'
+    >>> clean_title(
+    ...     "Quyết định số 03/2017/QĐ-UBND' Ban hành Quy định quản lý",
+    ...     'Quyết định', ['03/2017/QĐ-UBND'])
+    'Ban hành Quy định quản lý'
     >>> clean_title('Quyết định 2304/QĐ-UBND', 'Quyết định', ['2304/QĐ-UBND']) is None
     True
     >>> clean_title(None, None, None) is None
@@ -1357,7 +1391,13 @@ def clean_title(
     t = strip_doctype_docnum_crossrefs(t)
     if t is None:
         return None
-    if len(t) < _MIN_STRIPPED_TITLE_LEN:
+    # Final pass: the legal-type-prefix + cross-reference strippers
+    # can *expose* a leading or trailing decorative quote that was
+    # embedded in the middle of the source title and therefore
+    # invisible to ``normalise_title`` (which ran first). Apply the
+    # canonical quote-strip once more on the now-stable boundaries.
+    t = _strip_decorative_quotes(t)
+    if not t or len(t) < _MIN_STRIPPED_TITLE_LEN:
         return None
     return t
 
@@ -1503,11 +1543,43 @@ def normalise_co_quan_ban_hanh(raw: str | None) -> str | None:
 #: The three pieces (``Document Content`` label, ``body { … }``
 #: rule, ``p { … }`` rule) are all optional and appear in roughly
 #: 45-55 % of docs depending on the source's vintage.
+#:
+#: The label terminator is ``\s*`` (any whitespace), not ``\n+``,
+#: because the May-2026 corpus has many bodies where the gateway
+#: dropped the CSS shim but kept the label inline, so the document
+#: opens like ``Document Content SẮC LỆNH ...`` with only a single
+#: space between the label and the real body. ``\b`` is required so
+#: ``Document\s*Content`` doesn't gobble a legitimate word starting
+#: with ``Content`` (eg. an English-language doc).
 _MD_LEADING_WRAPPER_RE = re.compile(
     r"\A\s*"
-    r"(?:Document\s*Content\s*\n+)?"
-    r"(?:\s*body\s*\{[^}]*\}\s*\n+)?"
-    r"(?:\s*p\s*\{[^}]*\}\s*\n+)?",
+    r"(?:Document\s*Content\b\s*)?"
+    r"(?:\s*body\s*\{[^}]*\}\s*\n*)?"
+    r"(?:\s*p\s*\{[^}]*\}\s*\n*)?",
+    re.IGNORECASE,
+)
+
+#: Non-anchored sweep for the ``Document Content`` gateway label.
+#: The leading-anchor regex above catches the common case (label at
+#: ``\A``, ~74 K rows). For PDF/DOCX-sourced docs the parser
+#: sometimes splices the bibliographic header (``BỘ TÀI CHÍNH ...
+#: Số: 65/2020/TT-BTC Ngày 9 tháng 7 năm 2020``) in front of the
+#: gateway label, so it ends up mid-stream (~13 rows). The literal
+#: phrase ``Document Content`` is English boilerplate that does not
+#: occur in legitimate Vietnamese legal text, so a non-anchored
+#: sweep is safe.
+#:
+#: ``\s+`` (not ``\s*``) between ``Document`` and ``Content`` is
+#: required so we never match the camel-case JavaScript i18n key
+#: ``documentContent`` that leaks in via ``shell_html`` bodies --
+#: those rows are NULL'd in the published parquet anyway, but the
+#: extract tier should still leave them untouched for diagnostic
+#: replay. ``\b`` on both sides guards against word-internal
+#: collisions (no realistic Vietnamese text combines these two
+#: English nouns with a single space, but the boundary is cheap
+#: insurance).
+_MD_DOC_CONTENT_LABEL_RE = re.compile(
+    r"\bDocument\s+Content\b\s*",
     re.IGNORECASE,
 )
 
@@ -1700,6 +1772,12 @@ def strip_markdown_junk(md: str | None) -> str | None:
 
     >>> strip_markdown_junk('Document Content\\n\\nbody { font-family: Arial; }\\np { margin: 10px 0; }\\n\\nHello\\n')
     'Hello'
+    >>> strip_markdown_junk('Document Content SẮC LỆNH ...')
+    'SẮC LỆNH ...'
+    >>> strip_markdown_junk('Document Content\\nReal text')
+    'Real text'
+    >>> strip_markdown_junk('Số: 65/2020/TT-BTC Ngày 9 tháng 7 năm 2020 Document Content Bộ TÀI CHÍNH')
+    'Số: 65/2020/TT-BTC Ngày 9 tháng 7 năm 2020 Bộ TÀI CHÍNH'
     >>> strip_markdown_junk('Header\\n\\n<!-- /* css */ p.MsoNormal { margin: 0; } -->\\n\\nBody\\n')
     'Header\\n\\n\\nBody'
     >>> strip_markdown_junk('p.MsoNormal { margin:0in;\\nfont-size:12pt;}\\nh1 { font-family: Arial; }\\nReal text')
@@ -1722,6 +1800,7 @@ def strip_markdown_junk(md: str | None) -> str | None:
 
     s = md
     s = _MD_LEADING_WRAPPER_RE.sub("", s, count=1)
+    s = _MD_DOC_CONTENT_LABEL_RE.sub("", s)
     s = _MD_HTML_COMMENT_RE.sub("", s)
 
     def _maybe_strip(m: re.Match[str]) -> str:

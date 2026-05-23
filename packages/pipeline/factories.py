@@ -33,6 +33,7 @@ from nemo_curator.stages.text.io.reader import JsonlReader, ParquetReader
 
 from packages.common import SiteLayout
 from packages.embedder.stage import build_embedder_stage
+from packages.extractor.normalizers import build_normalizer_chain
 from packages.extractor.stage import LegalExtractStage
 from packages.pipeline.io import (
     JsonlPerDocWriter,
@@ -78,24 +79,35 @@ def build_extract_pipeline(
     fpp = files_per_partition or _stage_override(
         cfg, "extract_files_per_partition", DEFAULT_FPP["extract"],
     )
+    # Declarative normalizer chain (wiki.md §3.5). When
+    # ``cfg.extractor.normalizers`` is non-empty the chain runs as a
+    # Curator ``ProcessingStage`` between the reader and
+    # ``LegalExtractStage`` — visible in ``Pipeline.describe()`` and
+    # recorded in the per-stage manifest for reproducibility.
+    stages: list[Any] = [
+        MarkdownReader(
+            file_paths=str(layout.md_dir),
+            files_per_partition=fpp,
+        ),
+    ]
+    chain = build_normalizer_chain(cfg)
+    if chain is not None:
+        stages.append(chain)
+    stages.extend([
+        LegalExtractStage(cfg=cfg),
+        JsonlPerDocWriter(
+            path=str(layout.jsonl_dir),
+            doc_name_field="doc_name",
+            fields=list(jsonl_fields),
+        ),
+    ])
     return Pipeline(
         name=f"{cfg.host}-extract",
         description=(
             description
             or f"{site} Extractor: markdown -> JSONL (legal extract)."
         ),
-        stages=[
-            MarkdownReader(
-                file_paths=str(layout.md_dir),
-                files_per_partition=fpp,
-            ),
-            LegalExtractStage(cfg=cfg),
-            JsonlPerDocWriter(
-                path=str(layout.jsonl_dir),
-                doc_name_field="doc_name",
-                fields=list(jsonl_fields),
-            ),
-        ],
+        stages=stages,
         config={"host": str(cfg.host), "jsonl_dir": str(layout.jsonl_dir)},
     )
 
@@ -113,32 +125,51 @@ def build_embed_pipeline(
     description: str | None = None,
     files_per_partition: int | None = None,
     jsonl_path: str | None = None,
+    parquet_path: str | None = None,
 ) -> Pipeline:
-    """Return the Embedder :class:`Pipeline`: JSONL -> embeddings parquet.
+    """Return the Embedder :class:`Pipeline`: extract → embeddings parquet.
 
-    ``jsonl_path`` overrides the default of ``layout.jsonl_dir`` for
-    sites whose extract output is a single consolidated JSONL file
-    (e.g. ``data/<host>/jsonl/extract.jsonl``) rather than the
-    per-doc shards anle / congbobanan write. When ``None`` the
-    behavior matches anle / congbobanan: read every ``*.jsonl`` in
-    ``layout.jsonl_dir``.
+    Input source resolution (highest precedence first):
+
+    * ``parquet_path`` -- canonical wiki.md §3.5 pattern. Reads
+      ``parquet/extract/*.parquet`` directly via :class:`ParquetReader`,
+      saving one JSONL ↔ parquet hop. Recommended for new sites.
+    * ``jsonl_path`` -- legacy single-file JSONL override
+      (``data/<host>/jsonl/extract.jsonl``) for sites whose extract
+      stage emits a consolidated file.
+    * default -- read every ``*.jsonl`` under ``layout.jsonl_dir``
+      (per-doc shard pattern, matches anle / congbobanan).
     """
     fpp = files_per_partition or _stage_override(
         cfg, "embed_files_per_partition", DEFAULT_FPP["embed"],
     )
-    file_paths = jsonl_path if jsonl_path is not None else str(layout.jsonl_dir)
+    if parquet_path is not None:
+        reader = ParquetReader(
+            file_paths=parquet_path,
+            fields=list(read_fields),
+            files_per_partition=fpp,
+        )
+        input_path = parquet_path
+        input_key = "parquet_path"
+    else:
+        file_paths = (
+            jsonl_path if jsonl_path is not None else str(layout.jsonl_dir)
+        )
+        reader = JsonlReader(
+            file_paths=file_paths,
+            fields=list(read_fields),
+            files_per_partition=fpp,
+        )
+        input_path = file_paths
+        input_key = "jsonl_path"
     return Pipeline(
         name=f"{cfg.host}-embed",
         description=(
             description
-            or f"{site} Embedder: JSONL -> embeddings parquet."
+            or f"{site} Embedder: extract → embeddings parquet."
         ),
         stages=[
-            JsonlReader(
-                file_paths=file_paths,
-                fields=list(read_fields),
-                files_per_partition=fpp,
-            ),
+            reader,
             build_embedder_stage(cfg),
             ParquetPerDocWriter(
                 path=str(layout.embeddings_dir),
@@ -148,7 +179,7 @@ def build_embed_pipeline(
         ],
         config={
             "host": str(cfg.host),
-            "jsonl_path": file_paths,
+            input_key: input_path,
             "embeddings_dir": str(layout.embeddings_dir),
         },
     )
