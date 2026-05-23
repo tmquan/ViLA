@@ -1,6 +1,6 @@
 """Compute analytical roll-ups over the phapdien Bộ pháp điển corpus.
 
-Reads ``data/<host>/jsonl/{articles,demucs,tree_nodes,manifest}.jsonl``
+Reads ``data/<host>/jsonl/{articles,subjects,tree_nodes,manifest}.jsonl``
 and writes ``data/<host>/jsonl/analytics.json`` -- a single self-
 contained JSON consumed by the HF dataset card and any downstream
 visualisation. Re-runnable in a few seconds; safe to call after every
@@ -11,8 +11,8 @@ Roll-ups produced:
 * ``corpus`` -- top-line counts (records, distinct content hashes,
   field null rates, length summaries).
 * ``topics`` -- per-Chủ đề counts + median article length + a sample
-  ``demuc_id``; sorted descending by article count.
-* ``demucs`` -- per-Đề mục article counts + median length, sorted
+  ``subject_id``; sorted descending by article count.
+* ``subjects`` -- per-Đề mục article counts + median length, sorted
   descending; useful to see which đề-mục dominate the corpus.
 * ``length_distribution`` -- bucketed histogram of article content
   char length.
@@ -69,7 +69,7 @@ _LENGTH_BUCKETS_CONTENT = [
 
 def analyze(jsonl_dir: Path) -> dict[str, Any]:
     articles = _read_jsonl(jsonl_dir / "articles.jsonl")
-    demucs = _read_jsonl(jsonl_dir / "demucs.jsonl")
+    subjects = _read_jsonl(jsonl_dir / "subjects.jsonl")
     tree_nodes = _read_jsonl(jsonl_dir / "tree_nodes.jsonl")
     manifest = json.loads(
         (jsonl_dir / "manifest.json").read_text(encoding="utf-8")
@@ -80,9 +80,9 @@ def analyze(jsonl_dir: Path) -> dict[str, Any]:
         "completed_at": manifest.get("completed_at"),
     }
 
-    out["corpus"] = _corpus_stats(articles, demucs, tree_nodes)
+    out["corpus"] = _corpus_stats(articles, subjects, tree_nodes)
     out["topics"] = _topic_stats(articles)
-    out["demucs"] = _demuc_stats(articles)
+    out["subjects"] = _subject_stats(articles)
     out["length_distribution"] = _length_distribution(articles)
     out["citations"] = _citation_stats(articles)
     out["source_links"] = _source_link_stats(articles)
@@ -97,13 +97,13 @@ def analyze(jsonl_dir: Path) -> dict[str, Any]:
 
 def _corpus_stats(
     articles: list[dict[str, Any]],
-    demucs: list[dict[str, Any]],
+    subjects: list[dict[str, Any]],
     tree_nodes: list[dict[str, Any]],
 ) -> dict[str, Any]:
     n = len(articles)
     n_topics = sum(1 for t in tree_nodes if t.get("kind") == "topic")
-    n_demucs = sum(1 for t in tree_nodes if t.get("kind") == "demuc")
-    fetch_status = Counter(d.get("fetch_status") for d in demucs)
+    n_subjects = sum(1 for t in tree_nodes if t.get("kind") == "subject")
+    fetch_status = Counter(d.get("fetch_status") for d in subjects)
 
     content_hashes = {
         hashlib.sha1((r.get("content_text") or "").encode("utf-8")).hexdigest()
@@ -113,9 +113,9 @@ def _corpus_stats(
 
     return {
         "articles": n,
-        "demucs_total": n_demucs,
-        "demucs_ok": fetch_status.get("ok", 0),
-        "demucs_err": sum(v for k, v in fetch_status.items() if k and k != "ok"),
+        "subjects_total": n_subjects,
+        "subjects_ok": fetch_status.get("ok", 0),
+        "subjects_err": sum(v for k, v in fetch_status.items() if k and k != "ok"),
         "topics": n_topics,
         "distinct_content_hashes": len(content_hashes),
         "with_chapter_title": sum(1 for r in articles if r.get("chapter_title")),
@@ -167,7 +167,7 @@ def _topic_stats(articles: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "topic_number": number_of[tid],
             "topic_title": title_of[tid],
             "article_count": len(items),
-            "demuc_count": len({it["demuc_id"] for it in items}),
+            "subject_count": len({it["subject_id"] for it in items}),
             "chars_median": int(statistics.median(chars)) if chars else 0,
             "chars_total": sum(chars),
         })
@@ -175,27 +175,27 @@ def _topic_stats(articles: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
-# ---- demucs ----------------------------------------------------------
+# ---- subjects ----------------------------------------------------------
 
 
-def _demuc_stats(articles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _subject_stats(articles: list[dict[str, Any]]) -> list[dict[str, Any]]:
     bucket: dict[str, list[dict[str, Any]]] = {}
     meta: dict[str, dict[str, Any]] = {}
     for r in articles:
-        did = r.get("demuc_id") or ""
+        did = r.get("subject_id") or ""
         bucket.setdefault(did, []).append(r)
         meta.setdefault(did, {
             "topic_id": r.get("topic_id"),
             "topic_number": r.get("topic_number"),
             "topic_title": r.get("topic_title"),
-            "demuc_number": r.get("demuc_number"),
-            "demuc_title": r.get("demuc_title"),
+            "subject_number": r.get("subject_number"),
+            "subject_title": r.get("subject_title"),
         })
     rows = []
     for did, items in bucket.items():
         chars = [it["content_char_len"] for it in items]
         rows.append({
-            "demuc_id": did,
+            "subject_id": did,
             **meta[did],
             "article_count": len(items),
             "chars_median": int(statistics.median(chars)) if chars else 0,
@@ -224,7 +224,7 @@ def _topic_examples(
         out.append({
             "topic_number":   mid.get("topic_number"),
             "topic_title":    mid.get("topic_title"),
-            "demuc_title":    mid.get("demuc_title"),
+            "subject_title":    mid.get("subject_title"),
             "article_anchor": mid.get("article_anchor"),
             "article_title":  mid.get("article_title"),
             "chapter_title":  mid.get("chapter_title"),

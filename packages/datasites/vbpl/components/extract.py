@@ -241,10 +241,10 @@ class VbplDocumentExtractor:
             "doc_type": meta.get("doc_type"),
             "legal_type": meta.get("legal_type"),
             "legal_area": meta.get("legal_area"),
-            "so_hieu": meta.get("so_hieu"),
-            "ngay_ban_hanh": meta.get("ngay_ban_hanh"),
-            "co_quan_ban_hanh": meta.get("co_quan_ban_hanh"),
-            "trich_yeu": meta.get("trich_yeu"),
+            "doc_number": meta.get("doc_number"),
+            "issue_date": meta.get("issue_date"),
+            "issuing_body": meta.get("issuing_body"),
+            "summary": meta.get("summary"),
             "scrape_run_id": meta.get("scrape_run_id"),
             "parse_run_id": meta.get("parse_run_id"),
             "extract_run_id": self._run_id,
@@ -317,10 +317,10 @@ def _scraper_meta_from(meta: dict[str, Any]) -> dict[str, Any]:
         "doc_type",
         "legal_type",
         "legal_area",
-        "so_hieu",
-        "ngay_ban_hanh",
-        "co_quan_ban_hanh",
-        "trich_yeu",
+        "doc_number",
+        "issue_date",
+        "issuing_body",
+        "summary",
         "source_url",
     ):
         v = meta.get(k)
@@ -329,8 +329,8 @@ def _scraper_meta_from(meta: dict[str, Any]) -> dict[str, Any]:
     # Aliases the upstream extractor knows about (anle precedent
     # vocabulary). Cheap to forward; ignored if the layer doesn't
     # use them.
-    if meta.get("ngay_ban_hanh"):
-        out.setdefault("adopted_date", meta["ngay_ban_hanh"])
+    if meta.get("issue_date"):
+        out.setdefault("adopted_date", meta["issue_date"])
     return out
 
 

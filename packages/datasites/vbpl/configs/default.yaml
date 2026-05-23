@@ -127,7 +127,7 @@ parser:
 # ``NormalizerChainStage`` (wiki.md §3.5) between the markdown reader
 # and the regex / structure layers, so every layer sees a single
 # canonical orthography AND every vbpl-specific cleanup (Word/Ant
-# Design CSS scaffolding, title prefix peeling, so_hieu CSV split,
+# Design CSS scaffolding, title prefix peeling, doc_number CSV split,
 # agency code stripping) is applied exactly once, declaratively, and
 # is recorded in the per-stage manifest for reproducibility.
 #
@@ -137,7 +137,7 @@ parser:
 # quotes and stray combining marks are already canonical when the
 # CSS / Word stylesheet stripper scans regex anchors; the title
 # chain (``vbpl_normalise_title`` -> ``vbpl_clean_title``) reads
-# the already-normalised ``legal_type`` + ``so_hieu`` columns to
+# the already-normalised ``legal_type`` + ``doc_number`` columns to
 # peel the doc's own prefix, so the column-typed normalizers must
 # precede ``vbpl_clean_title``.
 #
@@ -152,11 +152,11 @@ extractor:
     - vietnamese_text
     - vbpl_strip_markdown_junk
     - vbpl_normalise_title
-    - vbpl_so_hieu_list
+    - vbpl_doc_number_list
     - vbpl_clean_title
-    - vbpl_co_quan_ban_hanh
+    - vbpl_issuing_body
     - vbpl_legal_area
-    - vbpl_trich_yeu_text
+    - vbpl_summary_text
   run_text_normalization: false
   run_generic_layer: true
   run_site_layer: false

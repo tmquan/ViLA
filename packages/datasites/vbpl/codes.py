@@ -86,7 +86,7 @@ RAW_CODE_TO_CANONICAL: dict[str, str] = {
 #: round-trips losslessly to the Vietnamese name via
 #: :func:`legal_type_name`. Short codes like ``QĐ`` / ``TTLT`` are
 #: still exposed in :data:`CANONICAL_CODE_TO_NAME` and in
-#: ``so_hieu`` itself (``"143/QĐ-KHTC"``), so consumers who need the
+#: ``doc_number`` itself (``"143/QĐ-KHTC"``), so consumers who need the
 #: compact form can recover it from :data:`SLUG_TO_CANONICAL_CODE`.
 CANONICAL_CODE_TO_SLUG: dict[str, str] = {
     "HP":    "hien_phap",

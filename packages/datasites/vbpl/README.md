@@ -268,8 +268,8 @@ provenance:
 | `doc_name` / `item_id` | str | docs.jsonl | primary key (string form, see above) |
 | `scope` | str | docs.jsonl | `trung_uong` / `dia_phuong` |
 | `source` / `source_url` / `api_url` | str | docs.jsonl | provenance |
-| `doc_type`, `legal_type`, `legal_area`, `ngay_ban_hanh`, `co_quan_ban_hanh`, `trich_yeu`, `title` | str? | docs.jsonl | sidebar metadata; `doc_type` is a self-describing ASCII snake_case slug (e.g. `quyet_dinh`, `thong_tu_lien_tich`) auto-derived from `legal_type` via `slugify_vi`, `legal_type` is the canonical Vietnamese full name (e.g. `Quyết định`), `legal_area` the first non-empty area label (e.g. `Đất đai`, defaulting to `Chưa phân loại`); `title` is post-scrub (legal-type head + leading `Lỗi` marker + `<DocType> <DocNum>` cross-refs removed via `clean_title`) and may be `null` for pathological titles that were nothing but a doc-num |
-| `so_hieu` | list&lt;str&gt;? | docs.jsonl | document number(s), one per cell — e.g. `["43/2026/NĐ-CP"]`. A small minority of rows pack multiple identifiers (separated by Vietnamese ` và ` or `,`) and ship as multi-element lists. `normalise_so_hieu_list` peels leading legal-type words, strips trailing annotations (`(1)`, ` ngày ...`, ` 2022`, ` VĂN BẢN TRÙNG`, ` & XH`), and validates each chunk against `^\d+[A-Za-z]?[/-][\w/-]+$`. The `Không số` sentinel is preserved verbatim. |
+| `doc_type`, `legal_type`, `legal_area`, `issue_date`, `issuing_body`, `summary`, `title` | str? | docs.jsonl | sidebar metadata; `doc_type` is a self-describing ASCII snake_case slug (e.g. `quyet_dinh`, `thong_tu_lien_tich`) auto-derived from `legal_type` via `slugify_vi`, `legal_type` is the canonical Vietnamese full name (e.g. `Quyết định`), `legal_area` the first non-empty area label (e.g. `Đất đai`, defaulting to `Chưa phân loại`); `title` is post-scrub (legal-type head + leading `Lỗi` marker + `<DocType> <DocNum>` cross-refs removed via `clean_title`) and may be `null` for pathological titles that were nothing but a doc-num |
+| `doc_number` | list&lt;str&gt;? | docs.jsonl | document number(s), one per cell — e.g. `["43/2026/NĐ-CP"]`. A small minority of rows pack multiple identifiers (separated by Vietnamese ` và ` or `,`) and ship as multi-element lists. `normalise_doc_number_list` peels leading legal-type words, strips trailing annotations (`(1)`, ` ngày ...`, ` 2022`, ` VĂN BẢN TRÙNG`, ` & XH`), and validates each chunk against `^\d+[A-Za-z]?[/-][\w/-]+$`. The `Không số` sentinel is preserved verbatim. |
 | `file_paths` | obj[] | docs.jsonl | downloaded attachment manifest |
 | `html_path` / `md_path` | str | filesystem | absolute paths |
 | `body_source` | str | runtime | which source produced the markdown: `file` (downloaded PDF/.doc/.docx), `body_html` (API-captured), `shell_html` (Next.js shell fallback — the gateway never delivered a real body), or `empty`. In the published parquet, every row whose final `body_source` is still `shell_html` after the **May-2026 live-API recovery sweep** carries `markdown=null` (the source genuinely has no body for those legacy IDs); the bibliographic columns stay populated. |
@@ -291,13 +291,13 @@ One row per parsed document, schema fields and order pinned in
 | `scope` | str | meta | `trung_uong` / `dia_phuong` |
 | `source` / `source_url` / `api_url` | str | meta | provenance |
 | `html_path` / `md_path` / `file_paths` | str / obj[] | meta | filesystem audit trail |
-| `markdown` | str? | runtime | NFC-normalised, Vietnamese tone-canonicalised body (the column the embedder will hash + chunk). Gateway/Word/Next.js scaffolding is stripped via `strip_markdown_junk`: the `Document Content` gateway label (both at `\A` when the gateway includes the CSS shim, **and** mid-stream when the parser splices a bibliographic header in front of it — common on PDF/DOCX-sourced docs), `<!-- @font-face … -->` Word stylesheet dumps, Ant Design `:where(.css-…)` chains, `@keyframes` blocks, and malformed inline `<span style="…">` tags. **Null** in the published parquet when `body_source == "shell_html"` after the May-2026 live-API recovery (the source genuinely has no body for those legacy IDs). The legacy `"Lỗi "` editorial-marker null-out rule was retired in May 2026 — corpus audit showed every such title is a legitimate use of the Vietnamese noun `Lỗi`/`lỗi`/`loi` ("fault / error"), not a CMS sentinel, so those rows now ship with their bodies intact. Bibliographic metadata (title, agency, so_hieu, ...) stays populated on NULL-markdown rows. |
+| `markdown` | str? | runtime | NFC-normalised, Vietnamese tone-canonicalised body (the column the embedder will hash + chunk). Gateway/Word/Next.js scaffolding is stripped via `strip_markdown_junk`: the `Document Content` gateway label (both at `\A` when the gateway includes the CSS shim, **and** mid-stream when the parser splices a bibliographic header in front of it — common on PDF/DOCX-sourced docs), `<!-- @font-face … -->` Word stylesheet dumps, Ant Design `:where(.css-…)` chains, `@keyframes` blocks, and malformed inline `<span style="…">` tags. **Null** in the published parquet when `body_source == "shell_html"` after the May-2026 live-API recovery (the source genuinely has no body for those legacy IDs). The legacy `"Lỗi "` editorial-marker null-out rule was retired in May 2026 — corpus audit showed every such title is a legitimate use of the Vietnamese noun `Lỗi`/`lỗi`/`loi` ("fault / error"), not a CMS sentinel, so those rows now ship with their bodies intact. Bibliographic metadata (title, agency, doc_number, ...) stays populated on NULL-markdown rows. |
 | `num_pages` / `confidence` / `parser_model` / `parser_runtime` / `body_source` / `parsed_at` | mixed | meta | parse-stage provenance forwarded |
 | `text_hash` | str | runtime | SHA-256 of `markdown` (stable dedup key, deterministic across re-runs) |
 | `char_len` | int | runtime | post-normalisation length |
 | `extracted` | obj | GenericExtractor | `{entities, relations, statute_refs}` (regex NER + Vietnamese statute linker) |
 | `structure` | obj? | LegalStructureExtractor | `{meta, stats, sections, paragraphs, sentences}` -- hierarchical legal-doc model with section / paragraph / sentence backpointers; `null` when `cfg.extractor.run_structure_layer=false` |
-| `title`, `doc_type`, `legal_type`, `legal_area`, `so_hieu`, `ngay_ban_hanh`, `co_quan_ban_hanh`, `trich_yeu` | str? | meta | sidebar metadata forwarded; `doc_type` is a snake_case Vietnamese slug (e.g. `quyet_dinh`, `thong_tu_lien_tich`), `legal_type` the canonical full name (e.g. `Quyết định`), `legal_area` the first non-empty area label (defaults to `Chưa phân loại`), `title` has the redundant `"<legal_type> số <so_hieu>"` head stripped (90.7% of titles affected) |
+| `title`, `doc_type`, `legal_type`, `legal_area`, `doc_number`, `issue_date`, `issuing_body`, `summary` | str? | meta | sidebar metadata forwarded; `doc_type` is a snake_case Vietnamese slug (e.g. `quyet_dinh`, `thong_tu_lien_tich`), `legal_type` the canonical full name (e.g. `Quyết định`), `legal_area` the first non-empty area label (defaults to `Chưa phân loại`), `title` has the redundant `"<legal_type> số <doc_number>"` head stripped (90.7% of titles affected) |
 | `scrape_run_id` / `parse_run_id` / `extract_run_id` / `extracted_at` | str | runtime | full provenance chain |
 
 ### `parquet/embeddings/<id>.parquet` (embed output)
@@ -346,14 +346,14 @@ The reducer parquet no longer carries `tsne_x` / `tsne_y` columns.
 | `api_url` | str? | first captured API response | URL of the metadata endpoint |
 | `scraped_at` | str | UTC now | per-record fetch timestamp |
 | `scrape_run_id` | str | UTC at run start | groups records from one run |
-| `doc_type` | str? | API JSON | self-describing snake_case slug (`quyet_dinh`, `nghi_dinh`, `thong_tu_lien_tich`, …) auto-derived from `legal_type` via `slugify_vi`; the compact short code (`QĐ`, `NĐ`, `TTLT`, …) still appears inside `so_hieu` and is recoverable via `SLUG_TO_CANONICAL_CODE`. Legacy `docType.code` values like `CThi` / `LVB-SLe` are normalised through `packages.datasites.vbpl.codes`. |
+| `doc_type` | str? | API JSON | self-describing snake_case slug (`quyet_dinh`, `nghi_dinh`, `thong_tu_lien_tich`, …) auto-derived from `legal_type` via `slugify_vi`; the compact short code (`QĐ`, `NĐ`, `TTLT`, …) still appears inside `doc_number` and is recoverable via `SLUG_TO_CANONICAL_CODE`. Legacy `docType.code` values like `CThi` / `LVB-SLe` are normalised through `packages.datasites.vbpl.codes`. |
 | `legal_type` | str? | API JSON | canonical Vietnamese full name (`Quyết định`, `Nghị định`, `Chỉ thị`, …) |
 | `legal_area` | str? | API JSON | first non-empty area label from `documentFields[]` (`Đất đai`, `Đường bộ`, …). Defaults to `Chưa phân loại` when the doc isn't tagged on the source portal. |
-| `so_hieu` | str? | API JSON | document number (e.g. "43/2026/NĐ-CP") |
-| `ngay_ban_hanh` | str? | API JSON | issue date, ISO `YYYY-MM-DD` |
-| `co_quan_ban_hanh` | str? | API JSON | issuing agency |
-| `trich_yeu` | str? | API JSON | abstract / summary |
-| `title` | str | API JSON / sitemap slug | NFC + HTML-entity decoded, smart quotes flattened, redundant `"<legal_type> số <so_hieu>"` prefix stripped (e.g. `"Quyết định số 143/QĐ-KHTC Ban hành Quy chế quản lý ngân sách ngành Tư pháp"` becomes `"Ban hành Quy chế quản lý ngân sách ngành Tư pháp"`). The legal-type + document-number facts already live in dedicated columns so the boilerplate head would only dilute downstream embeddings. |
+| `doc_number` | str? | API JSON | document number (e.g. "43/2026/NĐ-CP") |
+| `issue_date` | str? | API JSON | issue date, ISO `YYYY-MM-DD` |
+| `issuing_body` | str? | API JSON | issuing agency |
+| `summary` | str? | API JSON | abstract / summary |
+| `title` | str | API JSON / sitemap slug | NFC + HTML-entity decoded, smart quotes flattened, redundant `"<legal_type> số <doc_number>"` prefix stripped (e.g. `"Quyết định số 143/QĐ-KHTC Ban hành Quy chế quản lý ngân sách ngành Tư pháp"` becomes `"Ban hành Quy chế quản lý ngân sách ngành Tư pháp"`). The legal-type + document-number facts already live in dedicated columns so the boilerplate head would only dilute downstream embeddings. |
 | `body_html` | str | API JSON | preserved verbatim |
 | `body_text` | str | derived | tag-stripped, whitespace-collapsed |
 | `body_char_len` | int | derived | for length analysis |
@@ -566,12 +566,12 @@ of stats. Both audiences see:
     gloss).
   * `overview-year-stack.png` — stacked area of documents-per-
     year split by `scope`. Only meaningful after the
-    so_hieu/date/agency backfill restored `ngay_ban_hanh` (was
+    doc_number/date/agency backfill restored `issue_date` (was
     0% populated in the legacy parquet).
   * `overview-doctype-year-heatmap.png` — top-12 `doc_type` ×
     year heatmap (log₁₀ scale) showing the legal-instrument mix
     over time.
-  * `overview-agency-bars.png` — top-15 `co_quan_ban_hanh`.
+  * `overview-agency-bars.png` — top-15 `issuing_body`.
     Likewise only meaningful after the backfill.
 * **Five embedding scatter PNGs** (one per colour facet, UMAP
   only):

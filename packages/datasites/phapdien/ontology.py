@@ -5,8 +5,8 @@ Three sources of truth, all hand-curated:
 * :data:`TOPIC_TRANSLATIONS` — the 42 ``chủ đề`` (top-level codified
   topics, fixed by the Ministry of Justice's official codification
   scheme). Vietnamese ``topic_number`` → English title.
-* :data:`DEMUC_TRANSLATIONS` — every one of the 202 ``đề mục``
-  (subjects), keyed by the exact Vietnamese title (`demuc_title`).
+* :data:`SUBJECT_TRANSLATIONS` — every one of the 202 ``đề mục``
+  (subjects), keyed by the exact Vietnamese title (`subject_title`).
 * :data:`LEGAL_GLOSSARY` — a thematic legal-term dictionary
   (instrument types, hierarchy elements, court / agency / role
   vocabulary, common procedure terms). Used as an analyst's quick-
@@ -197,7 +197,7 @@ TOPIC_TRANSLATIONS: dict[str, dict[str, str]] = {
 # government English bulletins.
 # ---------------------------------------------------------------------
 
-DEMUC_TRANSLATIONS: dict[str, str] = {
+SUBJECT_TRANSLATIONS: dict[str, str] = {
     # ---- 1 An ninh quốc gia ----
     "An ninh mạng": "Cybersecurity",
     "An ninh quốc gia": "National Security",
@@ -776,6 +776,11 @@ def build_ontology(analytics_path: Path) -> dict[str, Any]:
     """
     analytics = json.loads(analytics_path.read_text(encoding="utf-8"))
 
+    # English-primary bilingual convention: the unsuffixed column
+    # (``topic_title`` / ``subject_title`` / ``term``) carries the
+    # English label; the ``_vi``-suffixed companion carries the
+    # Vietnamese. This is the inverse of the older ``_en`` / ``_vi``
+    # pair convention this module used to emit.
     topics_out: list[dict[str, Any]] = []
     seen_topic_numbers: set[str] = set()
     for t in sorted(analytics["topics"], key=lambda r: int(r["topic_number"])):
@@ -790,40 +795,40 @@ def build_ontology(analytics_path: Path) -> dict[str, Any]:
             logger.warning("topic %s has no curated EN translation", num)
             tr = {"vi": t["topic_title"], "en": None, "note": ""}
         topics_out.append({
-            "topic_id":     t["topic_id"],
-            "topic_number": int(num),
+            "topic_id":       t["topic_id"],
+            "topic_number":   int(num),
+            "topic_title":    tr["en"],
             "topic_title_vi": t["topic_title"],
-            "topic_title_en": tr["en"],
             "topic_note":     tr.get("note", ""),
             "article_count":  t["article_count"],
-            "demuc_count":    t["demuc_count"],
+            "subject_count":  t["subject_count"],
         })
 
     # Pre-normalise the curated table to NFC so lookups are
     # diacritic-form-agnostic (Vietnamese precomposed vs decomposed).
-    demuc_table = {_nfc(k): v for k, v in DEMUC_TRANSLATIONS.items()}
+    subject_table = {_nfc(k): v for k, v in SUBJECT_TRANSLATIONS.items()}
 
-    demucs_out: list[dict[str, Any]] = []
+    subjects_out: list[dict[str, Any]] = []
     untranslated: list[str] = []
     by_topic = {t["topic_id"]: t for t in analytics["topics"]}
     for d in sorted(
-        analytics["demucs"],
-        key=lambda r: (int(by_topic[r["topic_id"]]["topic_number"]), r["demuc_title"]),
+        analytics["subjects"],
+        key=lambda r: (int(by_topic[r["topic_id"]]["topic_number"]), r["subject_title"]),
     ):
-        title_vi = d["demuc_title"]
-        en = demuc_table.get(_nfc(title_vi))
+        title_vi = d["subject_title"]
+        en = subject_table.get(_nfc(title_vi))
         if en is None:
             untranslated.append(title_vi)
         topic = by_topic[d["topic_id"]]
-        demucs_out.append({
-            "topic_id":       d["topic_id"],
-            "topic_number":   int(topic["topic_number"]),
-            "topic_title_vi": topic["topic_title"],
-            "topic_title_en": TOPIC_TRANSLATIONS.get(str(topic["topic_number"]), {}).get("en"),
-            "demuc_id":       d["demuc_id"],
-            "demuc_title_vi": title_vi,
-            "demuc_title_en": en,
-            "article_count":  d["article_count"],
+        subjects_out.append({
+            "topic_id":         d["topic_id"],
+            "topic_number":     int(topic["topic_number"]),
+            "topic_title":      TOPIC_TRANSLATIONS.get(str(topic["topic_number"]), {}).get("en"),
+            "topic_title_vi":   topic["topic_title"],
+            "subject_id":       d["subject_id"],
+            "subject_title":    en,
+            "subject_title_vi": title_vi,
+            "article_count":    d["article_count"],
         })
 
     if untranslated:
@@ -832,18 +837,32 @@ def build_ontology(analytics_path: Path) -> dict[str, Any]:
             len(untranslated), untranslated[:5],
         )
 
+    # The curated glossary stores ``vi`` / ``en`` keys internally; the
+    # published parquet uses the ``term`` (EN, primary) /
+    # ``term_vi`` (VI, suffixed) convention shared with every other
+    # bilingual table.
+    glossary_out: list[dict[str, Any]] = [
+        {
+            "category": g["category"],
+            "term":     g["en"],
+            "term_vi":  g["vi"],
+            "note":     g.get("note", ""),
+        }
+        for g in LEGAL_GLOSSARY
+    ]
+
     return {
         "host":         analytics.get("host"),
         "completed_at": analytics.get("completed_at"),
         "summary": {
             "topics":     len(topics_out),
-            "demucs":     len(demucs_out),
-            "glossary_entries": len(LEGAL_GLOSSARY),
-            "untranslated_demucs": len(untranslated),
+            "subjects":     len(subjects_out),
+            "glossary_entries": len(glossary_out),
+            "untranslated_subjects": len(untranslated),
         },
         "topics":   topics_out,
-        "demucs":   demucs_out,
-        "glossary": LEGAL_GLOSSARY,
+        "subjects":   subjects_out,
+        "glossary": glossary_out,
     }
 
 
@@ -861,26 +880,26 @@ def write_ontology_json(payload: dict[str, Any], path: Path) -> Path:
 
 
 def write_ontology_csv(payload: dict[str, Any], out_dir: Path) -> dict[str, Path]:
-    """Three CSVs: topics, demucs, glossary."""
+    """Three CSVs: topics, subjects, glossary."""
     out_dir.mkdir(parents=True, exist_ok=True)
     paths: dict[str, Path] = {}
     paths["topics"] = _write_csv(
         out_dir / "ontology_topics.csv",
         payload["topics"],
-        ["topic_number", "topic_title_vi", "topic_title_en",
-         "article_count", "demuc_count", "topic_note", "topic_id"],
+        ["topic_number", "topic_title", "topic_title_vi",
+         "article_count", "subject_count", "topic_note", "topic_id"],
     )
-    paths["demucs"] = _write_csv(
-        out_dir / "ontology_demucs.csv",
-        payload["demucs"],
-        ["topic_number", "topic_title_vi", "topic_title_en",
-         "demuc_title_vi", "demuc_title_en", "article_count",
-         "topic_id", "demuc_id"],
+    paths["subjects"] = _write_csv(
+        out_dir / "ontology_subjects.csv",
+        payload["subjects"],
+        ["topic_number", "topic_title", "topic_title_vi",
+         "subject_title", "subject_title_vi", "article_count",
+         "topic_id", "subject_id"],
     )
     paths["glossary"] = _write_csv(
         out_dir / "ontology_glossary.csv",
         payload["glossary"],
-        ["category", "vi", "en", "note"],
+        ["category", "term", "term_vi", "note"],
     )
     return paths
 
@@ -904,7 +923,7 @@ def write_ontology_parquet(payload: dict[str, Any], out_dir: Path) -> dict[str, 
     paths: dict[str, Path] = {}
     for key, rows in (
         ("topics",   payload["topics"]),
-        ("demucs",   payload["demucs"]),
+        ("subjects",   payload["subjects"]),
         ("glossary", payload["glossary"]),
     ):
         p = out_dir / f"ontology_{key}.parquet"
@@ -945,9 +964,9 @@ def main(argv: list[str] | None = None) -> int:
     for k, p in parquet_paths.items():
         print(f"ontology_{k}.parquet -> {p} ({p.stat().st_size:,} bytes)")
     print(f"\ntopics={payload['summary']['topics']} "
-          f"demucs={payload['summary']['demucs']} "
+          f"subjects={payload['summary']['subjects']} "
           f"glossary={payload['summary']['glossary_entries']} "
-          f"untranslated={payload['summary']['untranslated_demucs']}")
+          f"untranslated={payload['summary']['untranslated_subjects']}")
     return 0
 
 

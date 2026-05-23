@@ -543,8 +543,8 @@ def render_year_stack(
 ) -> Path:
     """Stacked area: documents-per-year split by ``scope``.
 
-    Only meaningful after the so_hieu+date backfill; under the legacy
-    parquet (every ``ngay_ban_hanh`` null) this would render a flat
+    Only meaningful after the doc_number+date backfill; under the legacy
+    parquet (every ``issue_date`` null) this would render a flat
     line. Filters out implausibly old years (<``_YEAR_MIN``) which
     are mostly OCR / data-entry noise on legacy CMS rows.
     """
@@ -679,8 +679,8 @@ def render_agency_bars(
 ) -> Path:
     """Top-K issuing-agency horizontal bars.
 
-    Now meaningful since the so_hieu/date/agency backfill restored
-    ``co_quan_ban_hanh`` across the corpus (was 0% populated in the
+    Now meaningful since the doc_number/date/agency backfill restored
+    ``issuing_body`` across the corpus (was 0% populated in the
     legacy parquet). Provincial People's Councils tend to share the
     space with Quốc hội, Chính phủ, and the larger ministries.
     """
@@ -884,7 +884,7 @@ def render_embedding_scatter(
     on a slide. When ``coord_range`` is supplied the *axis* range is
     also pinned, so a point at data ``(5, 5)`` lands on the exact
     same pixel across every facet -- even ``year`` (which filters
-    rows missing ``ngay_ban_hanh``) is overlay-compatible with the
+    rows missing ``issue_date``) is overlay-compatible with the
     full-corpus ``scope`` facet. The right strip beyond the plot is
     reserved for the legend (categorical) or colourbar (continuous),
     and is free to flow into multiple lines / wrap long labels

@@ -11,8 +11,8 @@ vbpl follows the canonical wiki.md §3.5 pattern: the Embedder reads
 directly from the parquet consumption tier produced by the extract
 stage (``data/<host>/parquet/extract/extract-*.parquet``), not from
 JSONL. Avoids one serialisation hop and lets the embedder pull the
-sidebar metadata columns (``so_hieu``, ``ngay_ban_hanh``,
-``co_quan_ban_hanh``, ``trich_yeu``, ``legal_type``, ``legal_area``,
+sidebar metadata columns (``doc_number``, ``issue_date``,
+``issuing_body``, ``summary``, ``legal_type``, ``legal_area``,
 ``doc_type``, ``scope``, ``source_url``, ``title``) through to the
 embed parquet shards so they're self-describing.
 """

@@ -32,11 +32,11 @@ Everything lands under `data/phapdien.moj.gov.vn/`:
 
 ```text
 html/tree.html                 # raw tree response
-html/view/<demuc_id>.html      # ViewBoPD shell with fileVersion
-html/content/<demuc_id>.html   # full legal text HTML from ActionHandler
-md/<demuc_id>.md               # plain markdown-ish text
+html/view/<subject_id>.html      # ViewBoPD shell with fileVersion
+html/content/<subject_id>.html   # full legal text HTML from ActionHandler
+md/<subject_id>.md               # plain markdown-ish text
 jsonl/tree_nodes.jsonl         # topics and de-muc nodes
-jsonl/demucs.jsonl             # one row per de-muc fetch
+jsonl/subjects.jsonl             # one row per de-muc fetch
 jsonl/articles.jsonl           # article-level corpus rows
 jsonl/manifest.json            # run summary
 ```

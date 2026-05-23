@@ -1,7 +1,7 @@
 """Materialise the phapdien corpus as a HuggingFace-ready dataset.
 
 Reads the JSONL outputs of the scraper (``articles.jsonl``,
-``demucs.jsonl``, ``tree_nodes.jsonl``, ``analytics.json``) and writes
+``subjects.jsonl``, ``tree_nodes.jsonl``, ``analytics.json``) and writes
 a self-contained ``hf/`` folder that is valid as the working tree of a
 ``datasets`` repo:
 
@@ -10,7 +10,7 @@ a self-contained ``hf/`` folder that is valid as the working tree of a
     data/phapdien.moj.gov.vn/hf/
         README.md            # dataset card with YAML frontmatter
         articles.parquet     # 64,464-row legal-article corpus
-        demucs.parquet       # 202 đề-mục fetch metadata
+        subjects.parquet       # 202 đề-mục fetch metadata
         tree_nodes.parquet   # 244 nodes (42 chủ-đề + 202 đề-mục)
         analytics.json       # roll-ups consumed by the card
 
@@ -32,6 +32,11 @@ import pyarrow as pa
 
 from packages.common.hf import read_jsonl, write_parquet
 from packages.datasites.phapdien.analyze import analyze
+from packages.datasites.phapdien.ontology import (
+    SUBJECT_TRANSLATIONS,
+    TOPIC_TRANSLATIONS,
+    _nfc,
+)
 from packages.datasites.phapdien.viz import render_all as render_viz, render_mermaid_mindmap
 
 logger = logging.getLogger(__name__)
@@ -44,7 +49,7 @@ DEFAULT_LICENSE = "cc-by-4.0"
 #: the cross-corpus convention shared with ``anle`` / ``congbobanan``
 #: (10 K rows/shard) so every ViLA datasite ships under the same
 #: naming + sizing rule. With ~64 K articles in the codified Bộ Pháp
-#: Điển the corpus fans out to ~7 shards of ~3-4 MB each.  ``demucs``
+#: Điển the corpus fans out to ~7 shards of ~3-4 MB each.  ``subjects``
 #: (202 rows) and ``tree_nodes`` (244 rows) stay single-file because
 #: they're under the chunk size by two orders of magnitude.
 CHUNK_SIZE = 10_000
@@ -55,7 +60,7 @@ CHUNK_SIZE = 10_000
 #
 # HF dataset-server statistics-engine notes:
 #
-# * ``topic_number`` / ``demuc_number`` (and ``number`` in tree_nodes)
+# * ``topic_number`` / ``subject_number`` (and ``number`` in tree_nodes)
 #   are int64 -- the raw scraper jsonl encodes them as digit strings,
 #   but with only 1- or 2-digit values their per-row ``len()``
 #   histogram is degenerate and crashes the stats engine. Casting to
@@ -70,13 +75,24 @@ CHUNK_SIZE = 10_000
 #   recover the raw id.
 ANCHOR_PREFIX = "#"
 
+# Bilingual column-name convention used by every published table:
+# the unsuffixed column (``topic_title`` / ``subject_title``) is the
+# **English** label (primary key); the ``_vi`` companion carries the
+# Vietnamese. The articles writer joins EN onto each row from the
+# :data:`TOPIC_TRANSLATIONS` / :data:`SUBJECT_TRANSLATIONS` tables in
+# :mod:`packages.datasites.phapdien.ontology`. Vietnamese content
+# fields whose source has no English counterpart (``article_title``,
+# ``chapter_title``, ``content_text``, ...) keep their unsuffixed
+# names because there is no bilingual pair to disambiguate.
 _ARTICLE_SCHEMA = pa.schema([
-    pa.field("demuc_id",          pa.string()),
+    pa.field("subject_id",          pa.string()),
     pa.field("topic_id",          pa.string()),
     pa.field("topic_number",      pa.int64()),
     pa.field("topic_title",       pa.string()),
-    pa.field("demuc_number",      pa.int64()),
-    pa.field("demuc_title",       pa.string()),
+    pa.field("topic_title_vi",    pa.string()),
+    pa.field("subject_number",      pa.int64()),
+    pa.field("subject_title",       pa.string()),
+    pa.field("subject_title_vi",    pa.string()),
     pa.field("article_anchor",    pa.string()),
     pa.field("article_title",     pa.string()),
     pa.field("chapter_title",     pa.string()),
@@ -96,13 +112,15 @@ _ARTICLE_SCHEMA = pa.schema([
     pa.field("scraped_at",        pa.string()),
 ])
 
-_DEMUC_SCHEMA = pa.schema([
-    pa.field("demuc_id",          pa.string()),
+_SUBJECT_SCHEMA = pa.schema([
+    pa.field("subject_id",          pa.string()),
     pa.field("topic_id",          pa.string()),
     pa.field("topic_number",      pa.int64()),
     pa.field("topic_title",       pa.string()),
-    pa.field("demuc_number",      pa.int64()),
-    pa.field("demuc_title",       pa.string()),
+    pa.field("topic_title_vi",    pa.string()),
+    pa.field("subject_number",      pa.int64()),
+    pa.field("subject_title",       pa.string()),
+    pa.field("subject_title_vi",    pa.string()),
     pa.field("source_url",        pa.string()),
     pa.field("file_version",      pa.string()),
     pa.field("fetch_status",      pa.string()),
@@ -130,12 +148,48 @@ def _to_int(value: Any) -> int | None:
         return None
 
 
+def _topic_en(topic_number: Any) -> str | None:
+    """Lookup the curated English topic title by display number."""
+    if topic_number in (None, ""):
+        return None
+    tr = TOPIC_TRANSLATIONS.get(str(topic_number))
+    return tr.get("en") if tr else None
+
+
+# Pre-normalise the curated đề-mục table to NFC once per process so
+# every row lookup is diacritic-form-agnostic (Vietnamese precomposed
+# vs decomposed encodings compare unequal as plain str).
+_SUBJECT_EN_INDEX: dict[str, str] = {
+    _nfc(k): v for k, v in SUBJECT_TRANSLATIONS.items()
+}
+
+
+def _subject_en(title_vi: Any) -> str | None:
+    if not title_vi:
+        return None
+    return _SUBJECT_EN_INDEX.get(_nfc(str(title_vi)))
+
+
 def _coerce_articles(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Project raw scraper rows into the published article schema.
+
+    The scraper emits VI-only ``topic_title`` / ``subject_title``
+    columns; the published parquet exposes those as the ``_vi``
+    companions and joins the English label from the curated
+    :mod:`packages.datasites.phapdien.ontology` translation tables
+    onto the unsuffixed primary column.
+    """
     out: list[dict[str, Any]] = []
     for r in rows:
         rec = dict(r)
         rec["topic_number"] = _to_int(rec.get("topic_number"))
-        rec["demuc_number"] = _to_int(rec.get("demuc_number"))
+        rec["subject_number"] = _to_int(rec.get("subject_number"))
+        topic_vi = rec.pop("topic_title", None)
+        subject_vi = rec.pop("subject_title", None)
+        rec["topic_title"]    = _topic_en(rec.get("topic_number"))
+        rec["topic_title_vi"] = topic_vi
+        rec["subject_title"]    = _subject_en(subject_vi)
+        rec["subject_title_vi"] = subject_vi
         anchor = rec.get("article_anchor")
         if anchor and not str(anchor).startswith(ANCHOR_PREFIX):
             rec["article_anchor"] = f"{ANCHOR_PREFIX}{anchor}"
@@ -143,12 +197,24 @@ def _coerce_articles(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def _coerce_demucs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _coerce_subjects(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Same English-primary bilingual projection as the articles writer.
+
+    Per-đề-mục fetch metadata; ``topic_title`` / ``subject_title``
+    become EN-primary with ``_vi`` companions, mirroring the articles
+    table so a downstream join keeps a single canonical key naming.
+    """
     out: list[dict[str, Any]] = []
     for r in rows:
         rec = dict(r)
         rec["topic_number"] = _to_int(rec.get("topic_number"))
-        rec["demuc_number"] = _to_int(rec.get("demuc_number"))
+        rec["subject_number"] = _to_int(rec.get("subject_number"))
+        topic_vi = rec.pop("topic_title", None)
+        subject_vi = rec.pop("subject_title", None)
+        rec["topic_title"]    = _topic_en(rec.get("topic_number"))
+        rec["topic_title_vi"] = topic_vi
+        rec["subject_title"]    = _subject_en(subject_vi)
+        rec["subject_title_vi"] = subject_vi
         out.append(rec)
     return out
 
@@ -211,29 +277,29 @@ def _write_chunked_articles(
 
 
 def export_parquet(jsonl_dir: Path, out_dir: Path) -> dict[str, Path]:
-    """Convert articles/demucs/tree_nodes JSONL to parquet under ``out_dir``.
+    """Convert articles/subjects/tree_nodes JSONL to parquet under ``out_dir``.
 
     The 64 K-row ``articles`` table is fanned out into ~7 shards of
     :data:`CHUNK_SIZE` rows each so it matches the cross-corpus
     convention shared with ``anle`` / ``congbobanan`` / ``vbpl``;
-    ``demucs`` (202 rows) and ``tree_nodes`` (244 rows) stay
+    ``subjects`` (202 rows) and ``tree_nodes`` (244 rows) stay
     single-file because they're under the chunk size by two orders
     of magnitude.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
 
     articles = _coerce_articles(read_jsonl(jsonl_dir / "articles.jsonl"))
-    demucs   = _coerce_demucs(read_jsonl(jsonl_dir / "demucs.jsonl"))
+    subjects   = _coerce_subjects(read_jsonl(jsonl_dir / "subjects.jsonl"))
     tree     = _coerce_tree(read_jsonl(jsonl_dir / "tree_nodes.jsonl"))
 
     article_shards = _write_chunked_articles(articles, out_dir)
     paths: dict[str, Path] = {
-        "demucs":     out_dir / "demucs.parquet",
+        "subjects":     out_dir / "subjects.parquet",
         "tree_nodes": out_dir / "tree_nodes.parquet",
     }
     for i, sp in enumerate(article_shards):
         paths[f"articles_shard_{i:05d}"] = sp
-    write_parquet(demucs, _DEMUC_SCHEMA, paths["demucs"])
+    write_parquet(subjects, _SUBJECT_SCHEMA, paths["subjects"])
     write_parquet(tree, _TREE_SCHEMA, paths["tree_nodes"])
     return paths
 
@@ -286,10 +352,10 @@ configs:
   data_files:
   - split: train
     path: articles-*.parquet
-- config_name: demucs
+- config_name: subjects
   data_files:
   - split: train
-    path: demucs.parquet
+    path: subjects.parquet
 - config_name: tree_nodes
   data_files:
   - split: train
@@ -298,10 +364,10 @@ configs:
   data_files:
   - split: train
     path: ontology_topics.parquet
-- config_name: ontology_demucs
+- config_name: ontology_subjects
   data_files:
   - split: train
-    path: ontology_demucs.parquet
+    path: ontology_subjects.parquet
 - config_name: ontology_glossary
   data_files:
   - split: train
@@ -318,7 +384,7 @@ def _topic_table_md(analytics: dict[str, Any]) -> str:
     ]
     for r in rows:
         lines.append(
-            f"| {r['topic_number']} | {r['topic_title']} | {r['demuc_count']} | "
+            f"| {r['topic_number']} | {r['topic_title']} | {r['subject_count']} | "
             f"{_format_int(r['article_count'])} | {_format_int(r['chars_median'])} |"
         )
     return "\n".join(lines)
@@ -375,7 +441,7 @@ def _example_block_md(analytics: dict[str, Any]) -> str:
     for ex in ex_list:
         out.append(
             f"#### Chủ đề {ex['topic_number']} — {ex['topic_title']}\n\n"
-            f"_Đề mục: {ex['demuc_title']} · {ex.get('chapter_title') or 'no chapter'}_  \n"
+            f"_Đề mục: {ex['subject_title']} · {ex.get('chapter_title') or 'no chapter'}_  \n"
             f"**{ex['article_title']}**\n\n"
             f"> {ex['content_text']}\n\n"
             f"[Source on phapdien.moj.gov.vn]({ex['source_url']})"
@@ -389,20 +455,20 @@ def _ontology_section_md(analytics: dict[str, Any]) -> str:
     """
     mindmap = render_mermaid_mindmap(analytics)
     n_topics = len(analytics["topics"])
-    n_demucs = sum(t["demuc_count"] for t in analytics["topics"])
+    n_subjects = sum(t["subject_count"] for t in analytics["topics"])
     n_articles = analytics["corpus"]["articles"]
     return f"""## Cấu trúc Bộ Pháp Điển — Ontology
 
 Bộ Pháp Điển được tổ chức theo ba cấp:
 **Chủ đề** (topic) → **Đề mục** (subject) → **Điều** (article).
-Bộ dữ liệu này phủ toàn bộ **{n_topics} chủ đề**, **{_format_int(n_demucs)} đề mục**, và **{_format_int(n_articles)} điều**.
+Bộ dữ liệu này phủ toàn bộ **{n_topics} chủ đề**, **{_format_int(n_subjects)} đề mục**, và **{_format_int(n_articles)} điều**.
 Một **Bộ từ điển pháp luật song ngữ Việt – Anh** được kèm theo (xem mục
 "Vietnamese ↔ English ontology" bên dưới).
 
 The Vietnamese legal codification has a strict three-level ontology:
 **topic** (Chủ đề) → **subject** (Đề mục) → **article** (Điều). This
 dataset covers the complete ontology — **{n_topics} topics**,
-**{_format_int(n_demucs)} subjects**, and **{_format_int(n_articles)} articles**.
+**{_format_int(n_subjects)} subjects**, and **{_format_int(n_articles)} articles**.
 A curated **Vietnamese ↔ English bilingual legal dictionary** ships
 alongside the corpus (see "Vietnamese ↔ English ontology" below).
 
@@ -453,21 +519,32 @@ sits in the hierarchy.
 
 _BILINGUAL_ONTOLOGY_SECTION = """## Vietnamese ↔ English ontology
 
+> **Schema convention (English-primary bilingual columns).** Every
+> bilingual column pair in this dataset is shaped so the unsuffixed
+> column carries the **English** label (primary) and the
+> `_vi`-suffixed companion carries the **Vietnamese**. For example,
+> `topic_title` is English (`"Civil law"`) while `topic_title_vi` is
+> Vietnamese (`"Dân sự"`). Vietnamese content fields
+> (`article_title`, `chapter_title`, `content_text`,
+> `source_note_text`, ...) keep their unsuffixed names because the
+> source publishes them only in Vietnamese — there is no English
+> counterpart to disambiguate.
+
 Một bộ từ điển song ngữ Việt – Anh thủ công đi kèm bộ dữ liệu, gồm
-**{topics_n} chủ đề + {demucs_n} đề mục + {glossary_n} thuật ngữ pháp
+**{topics_n} chủ đề + {subjects_n} đề mục + {glossary_n} thuật ngữ pháp
 lý** (gồm các loại văn bản pháp luật, kết cấu văn bản, toà án, cơ
 quan, vai trò tố tụng, các khái niệm dân sự / hình sự / hành chính
 phổ biến). — A hand-curated Vietnamese ↔ English ontology ships
-alongside the corpus, covering **{topics_n} topics + {demucs_n}
+alongside the corpus, covering **{topics_n} topics + {subjects_n}
 subjects + {glossary_n} legal-glossary terms** (legal-instrument
 types, document structure, courts, agencies, procedure roles, and
 common civil / criminal / administrative concepts).
 
 | File | Rows | What it gives you |
 |---|---:|---|
-| `ontology_topics.parquet` / `.csv`     | {topics_n}   | Each chủ đề with `topic_title_vi`, `topic_title_en`, article count, đề-mục count, and an explanatory note. |
-| `ontology_demucs.parquet` / `.csv`     | {demucs_n}   | Each đề mục with parent-topic context, `demuc_title_vi`, `demuc_title_en`, and article count. |
-| `ontology_glossary.parquet` / `.csv`   | {glossary_n} | Cross-cutting Vietnamese ↔ English legal-term lexicon, organised by `category` (`instrument`, `structure`, `codification`, `court`, `agency`, `procedure`, `civil`, `criminal`, `admin`, `status`, `finance`, `labour`, `police`). |
+| `ontology_topics.parquet` / `.csv`     | {topics_n}   | Each chủ đề with `topic_title` (EN, primary) + `topic_title_vi` (VI), article count, đề-mục count, and an explanatory `topic_note`. |
+| `ontology_subjects.parquet` / `.csv`     | {subjects_n}   | Each đề mục with parent-topic context, `subject_title` (EN, primary) + `subject_title_vi` (VI), and article count. |
+| `ontology_glossary.parquet` / `.csv`   | {glossary_n} | Cross-cutting Vietnamese ↔ English legal-term lexicon: `term` (EN, primary), `term_vi` (VI), free-text `note`, and a `category` slug (`instrument`, `structure`, `codification`, `court`, `agency`, `procedure`, `civil`, `criminal`, `admin`, `status`, `finance`, `labour`, `police`). |
 | `ontology.json`                       | —            | One JSON document with all three tables + a metadata header. Useful when you want the whole ontology as a tree, not as flat tables. |
 
 Quick load:
@@ -476,13 +553,13 @@ Quick load:
 from datasets import load_dataset
 
 topics   = load_dataset("{repo_owner}/{repo_name}", "ontology_topics",   split="train")
-demucs   = load_dataset("{repo_owner}/{repo_name}", "ontology_demucs",   split="train")
+subjects   = load_dataset("{repo_owner}/{repo_name}", "ontology_subjects",   split="train")
 glossary = load_dataset("{repo_owner}/{repo_name}", "ontology_glossary", split="train")
 
-# Join EN topic title onto the article corpus.
+# `articles` already carries both bilingual columns -- no join required.
 articles = load_dataset("{repo_owner}/{repo_name}", "articles", split="train")
-en_by_id = {{t["topic_id"]: t["topic_title_en"] for t in topics}}
-articles = articles.map(lambda r: {{"topic_title_en": en_by_id.get(r["topic_id"])}})
+print(articles[0]["topic_title"], "/", articles[0]["topic_title_vi"])
+print(articles[0]["subject_title"], "/", articles[0]["subject_title_vi"])
 ```
 
 A few translation conventions used throughout:
@@ -533,7 +610,7 @@ def render_card(analytics: dict[str, Any], license_id: str, repo_owner: str, rep
 | Chỉ số · Metric | Giá trị · Value |
 |---|---:|
 | Điều luật · Articles (`Điều`) | **{_format_int(corpus['articles'])}** |
-| Đề mục · Subjects | {_format_int(corpus['demucs_total'])} |
+| Đề mục · Subjects | {_format_int(corpus['subjects_total'])} |
 | Chủ đề · Topics | {_format_int(corpus['topics'])} |
 | Số mã băm nội dung khác nhau · Distinct content hashes | {_format_int(corpus['distinct_content_hashes'])} |
 | Tổng số ký tự · Total characters | {_format_int(corpus['total_chars'])} |
@@ -552,7 +629,7 @@ p99 {_format_int(corpus['content_chars']['p99'])}, max {_format_int(corpus['cont
 {_ontology_section_md(analytics)}
 
 {_BILINGUAL_ONTOLOGY_SECTION.format(
-    topics_n=42, demucs_n=202, glossary_n=116,
+    topics_n=42, subjects_n=202, glossary_n=116,
     repo_owner=repo_owner, repo_name=repo_name,
 )}
 
@@ -570,7 +647,7 @@ from datasets import load_dataset
 ds = load_dataset("{repo_owner}/{repo_name}", "articles", split="train")
 
 # Siêu dữ liệu mỗi đề mục · Per-đề-mục fetch metadata (one row per đề-mục)
-demucs = load_dataset("{repo_owner}/{repo_name}", "demucs", split="train")
+subjects = load_dataset("{repo_owner}/{repo_name}", "subjects", split="train")
 
 # Cây chủ đề / đề mục · Topic / đề-mục tree (one row per node)
 tree = load_dataset("{repo_owner}/{repo_name}", "tree_nodes", split="train")
@@ -578,14 +655,23 @@ tree = load_dataset("{repo_owner}/{repo_name}", "tree_nodes", split="train")
 
 ## Lược đồ bảng `articles` · `articles` schema
 
+All bilingual column pairs are **English-primary**: the unsuffixed
+column carries the English label, the `_vi`-suffixed companion
+carries the Vietnamese. Vietnamese content fields (`article_title`,
+`chapter_title`, `content_text`, `source_note_text`,
+`related_note_text`) keep their unsuffixed names because they have
+no English counterpart on this source.
+
 | Trường · Field | Kiểu · Type | Mô tả · Description |
 |---|---|---|
-| `demuc_id` | string | UUID đề mục mà điều này thuộc về · UUID of the đề-mục this article belongs to. |
+| `subject_id` | string | UUID đề mục mà điều này thuộc về · UUID of the đề-mục this article belongs to. |
 | `topic_id` | string | UUID chủ đề chứa đề mục · UUID of the chủ-đề (topic) the đề-mục sits under. |
 | `topic_number` | int64 | Số thứ tự chủ đề (1–45) · Topic display number. |
-| `topic_title` | string | Tên chủ đề · Topic name (e.g. *"An ninh quốc gia"*, *"Y tế, dược"*). |
-| `demuc_number` | int64 | Số thứ tự đề mục trong chủ đề · Đề-mục display number within its topic. |
-| `demuc_title` | string | Tên đề mục · Đề-mục name. |
+| `topic_title` | string | Tên chủ đề tiếng Anh · Topic name in **English** (e.g. *"National security"*, *"Health and pharmaceuticals"*); joined from `ontology_topics`. |
+| `topic_title_vi` | string | Tên chủ đề tiếng Việt · Topic name in **Vietnamese** (e.g. *"An ninh quốc gia"*, *"Y tế, dược"*). |
+| `subject_number` | int64 | Số thứ tự đề mục trong chủ đề · Đề-mục display number within its topic. |
+| `subject_title` | string | Tên đề mục tiếng Anh · Đề-mục name in **English**; joined from `ontology_subjects`. |
+| `subject_title_vi` | string | Tên đề mục tiếng Việt · Đề-mục name in **Vietnamese**. |
 | `article_anchor` | string | Mã neo phân cấp ổn định, có tiền tố `#` · Stable hierarchical id, prefixed with `#` (e.g. `#0100100000000000100000100000000000000000`). The `#` byte is required to keep the HF dataset-server stats engine from coercing the 40-digit id to a Python int and overflowing C `long`; strip it client-side to recover the raw id. |
 | `article_title` | string | Tiêu đề đầy đủ kèm tiền tố *Điều N.M.X.Y* · Full title incl. the *Điều N.M.X.Y* prefix and the article heading. |
 | `chapter_title` | string | Tiêu đề chương sở thuộc · Chapter heading the article sits under (`"Chương I - …"`), if any. |
@@ -678,7 +764,7 @@ public JSON / SOAP endpoint for the codified content. Four steps:
    outbound links, and the related cross-references.
 
 Thu thập lúc · Captured at `{analytics.get('completed_at')}`.
-**{_format_int(corpus['demucs_ok'])}/{_format_int(corpus['demucs_total'])}** đề mục lấy được không lỗi · đề-mục fetched without error.
+**{_format_int(corpus['subjects_ok'])}/{_format_int(corpus['subjects_total'])}** đề mục lấy được không lỗi · đề-mục fetched without error.
 
 ## Nguồn · Source
 

@@ -21,9 +21,9 @@ columns:
 
 * **Identification + meta** -- ``doc_name`` (= ``item_id``), ``scope``
   (``trung_uong`` / ``dia_phuong``), ``source_url``, ``api_url``,
-  ``title``, ``doc_type``, ``so_hieu`` (document number),
-  ``ngay_ban_hanh`` (issue date), ``year``, ``co_quan_ban_hanh``
-  (issuing agency), ``trich_yeu`` (summary). All flat, queryable
+  ``title``, ``doc_type``, ``doc_number`` (document number),
+  ``issue_date`` (issue date), ``year``, ``issuing_body``
+  (issuing agency), ``summary`` (summary). All flat, queryable
   without parsing JSON.
 * **Body + stats** -- ``markdown`` (NFC-normalised, Vietnamese tone
   canonicalised), ``num_pages``, ``num_sections``, ``num_paragraphs``,
@@ -173,16 +173,16 @@ _DOCUMENT_SCHEMA = pa.schema([
     pa.field("doc_type",            pa.string()),    # canonical short code
     pa.field("legal_type",          pa.string()),    # canonical VI full name
     pa.field("legal_area",          pa.string()),    # canonical VI area name
-    # ``so_hieu`` is now a list because a small minority of vbpl
+    # ``doc_number`` is now a list because a small minority of vbpl
     # docs pack several identifiers into one source cell separated by
     # ``" và "`` ("and") or ASCII commas. Single-value docs (99%+)
     # ship a one-element list; an empty list maps to ``null`` here
     # (parquet rejects empty lists with strict schema enforcement).
-    pa.field("so_hieu",             pa.list_(pa.string()), nullable=True),
-    pa.field("ngay_ban_hanh",       pa.string()),
+    pa.field("doc_number",             pa.list_(pa.string()), nullable=True),
+    pa.field("issue_date",       pa.string()),
     pa.field("year",                pa.int32()),
-    pa.field("co_quan_ban_hanh",    pa.string()),
-    pa.field("trich_yeu",           pa.string()),
+    pa.field("issuing_body",    pa.string()),
+    pa.field("summary",           pa.string()),
 
     # Body
     pa.field("markdown",            pa.string()),
@@ -224,7 +224,7 @@ def _project_record(rec: dict[str, Any]) -> dict[str, Any] | None:
       live-API retry confirmed the publisher only ships metadata for
       this class). Ship the row with ``markdown=None``, ``char_len=0``,
       ``text_hash=None``; the bibliographic columns (title, agency,
-      so_hieu, ...) are still populated so consumers retain the citation
+      doc_number, ...) are still populated so consumers retain the citation
       handle.
     * **Everything else** -- pass the already-chain-normalised
       ``markdown`` straight through, falling back to
@@ -247,8 +247,8 @@ def _project_record(rec: dict[str, Any]) -> dict[str, Any] | None:
        title shape.
 
     Field-level normalization (``strip_markdown_junk``,
-    ``clean_title``, ``normalise_so_hieu_list``,
-    ``normalise_co_quan_ban_hanh``, ...) is **not** done here -- the
+    ``clean_title``, ``normalise_doc_number_list``,
+    ``normalise_issuing_body``, ...) is **not** done here -- the
     extract Curator pipeline's ``NormalizerChainStage`` is the single
     source of truth (wiki.md §3.5 + ``cfg.extractor.normalizers`` in
     ``configs/default.yaml``). The HF export is a pure projection on
@@ -309,21 +309,21 @@ def _project_record(rec: dict[str, Any]) -> dict[str, Any] | None:
                 if not legal_type_pretty:
                     legal_type_pretty = CANONICAL_CODE_TO_NAME.get(inferred)
 
-    # ``so_hieu`` arrives as a ``list[str]`` from the chain
-    # (``vbpl_so_hieu_list`` normalizer + the ``so_hieu`` column on
+    # ``doc_number`` arrives as a ``list[str]`` from the chain
+    # (``vbpl_doc_number_list`` normalizer + the ``doc_number`` column on
     # the per-doc JSONL); the projection simply maps an empty list
     # to ``None`` so consumers see a clean null signal.
-    raw_so_hieu = rec.get("so_hieu")
-    if isinstance(raw_so_hieu, list):
-        so_hieu_list = [x for x in raw_so_hieu if isinstance(x, str) and x]
-    elif isinstance(raw_so_hieu, str) and raw_so_hieu.strip():
+    raw_doc_number = rec.get("doc_number")
+    if isinstance(raw_doc_number, list):
+        doc_number_list = [x for x in raw_doc_number if isinstance(x, str) and x]
+    elif isinstance(raw_doc_number, str) and raw_doc_number.strip():
         # Legacy single-string vintage -- accept and split on commas
         # so old JSONLs still flow through. The chain runs on new
         # data; this branch is a compat shim for partial reruns.
-        so_hieu_list = [s.strip() for s in raw_so_hieu.split(",") if s.strip()]
+        doc_number_list = [s.strip() for s in raw_doc_number.split(",") if s.strip()]
     else:
-        so_hieu_list = []
-    so_hieu_value: list[str] | None = so_hieu_list if so_hieu_list else None
+        doc_number_list = []
+    doc_number_value: list[str] | None = doc_number_list if doc_number_list else None
 
     return _scrub_nan({
         # Identification
@@ -336,12 +336,12 @@ def _project_record(rec: dict[str, Any]) -> dict[str, Any] | None:
 
         # Sidebar metadata.
         # ``title`` arrives already cleaned by ``vbpl_clean_title``
-        # (legal_type / so_hieu head peeling, cross-ref stripping,
+        # (legal_type / doc_number head peeling, cross-ref stripping,
         # decorative quote stripping). The chain returns ``None``
         # for degenerate titles (e.g. just a doc-num token like
         # ``"1938/QĐ-UBND"``); the parquet then ships
         # ``title=null`` with the bibliographic columns
-        # (so_hieu, legal_type, ...) still carrying the citation
+        # (doc_number, legal_type, ...) still carrying the citation
         # handle. The Vietnamese noun ``Lỗi`` ("fault / error")
         # is preserved wherever it appears in source titles --
         # it's a legitimate subject word, not a CMS marker.
@@ -349,11 +349,11 @@ def _project_record(rec: dict[str, Any]) -> dict[str, Any] | None:
         "doc_type":         doc_type_value,
         "legal_type":       legal_type_pretty,
         "legal_area":       legal_area_pretty,
-        "so_hieu":          so_hieu_value,
-        "ngay_ban_hanh":    rec.get("ngay_ban_hanh"),
-        "year":             _year_from(rec.get("ngay_ban_hanh")),
-        "co_quan_ban_hanh": rec.get("co_quan_ban_hanh"),
-        "trich_yeu":        rec.get("trich_yeu"),
+        "doc_number":          doc_number_value,
+        "issue_date":    rec.get("issue_date"),
+        "year":             _year_from(rec.get("issue_date")),
+        "issuing_body": rec.get("issuing_body"),
+        "summary":        rec.get("summary"),
 
         # Body. ``markdown`` is None for shell_html-after-retry rows
         # so the parquet faithfully signals "no body on source"
@@ -454,18 +454,18 @@ def _synthesize_metadata_markdown(rec: dict[str, Any]) -> str:
     # ``float('nan')``); a truthy NaN slipped through the old
     # ``rec.get(...) or ""`` pattern and crashed ``.strip()``.
     title = _str_or_empty(rec.get("title"))
-    raw_so_hieu = rec.get("so_hieu")
-    if isinstance(raw_so_hieu, list):
-        so_hieu = ", ".join(
-            _str_or_empty(x) for x in raw_so_hieu if _str_or_empty(x)
+    raw_doc_number = rec.get("doc_number")
+    if isinstance(raw_doc_number, list):
+        doc_number = ", ".join(
+            _str_or_empty(x) for x in raw_doc_number if _str_or_empty(x)
         ).strip()
     else:
-        so_hieu = _str_or_empty(raw_so_hieu)
+        doc_number = _str_or_empty(raw_doc_number)
     legal_type = _str_or_empty(rec.get("legal_type"))
-    agency = _str_or_empty(rec.get("co_quan_ban_hanh"))
-    date = _str_or_empty(rec.get("ngay_ban_hanh"))
-    trich = _str_or_empty(rec.get("trich_yeu"))
-    if not (title or so_hieu or agency or trich):
+    agency = _str_or_empty(rec.get("issuing_body"))
+    date = _str_or_empty(rec.get("issue_date"))
+    trich = _str_or_empty(rec.get("summary"))
+    if not (title or doc_number or agency or trich):
         return ""
     lines: list[str] = []
     if title:
@@ -474,8 +474,8 @@ def _synthesize_metadata_markdown(rec: dict[str, Any]) -> str:
     bullets: list[str] = []
     if legal_type:
         bullets.append(f"- Loại văn bản · Document type: {legal_type}")
-    if so_hieu:
-        bullets.append(f"- Số hiệu · Document number: {so_hieu}")
+    if doc_number:
+        bullets.append(f"- Số hiệu · Document number: {doc_number}")
     if date:
         bullets.append(f"- Ngày ban hành · Issue date: {date}")
     if agency:
@@ -729,7 +729,7 @@ def _build_manifest(
         r.get("legal_area") or UNCATEGORISED_AREA for r in rows
     )
     by_agency = Counter(
-        (r.get("co_quan_ban_hanh") or "unknown") for r in rows
+        (r.get("issuing_body") or "unknown") for r in rows
     )
     by_year = Counter(r["year"] for r in rows if r["year"] is not None)
     by_body_source = Counter(r["body_source"] or "unknown" for r in rows)
@@ -1119,7 +1119,7 @@ full Vietnamese name via
 [`slugify_vi`](https://github.com/tmquan/ViLA/blob/main/packages/datasites/vbpl/codes.py)
 so a reader can interpret the doc type without consulting a separate
 codebook. The compact short code (`QĐ`, `NĐ`, `TTLT`, ...) still
-appears inside `so_hieu` itself (`43/2026/NĐ-CP`) and can be
+appears inside `doc_number` itself (`43/2026/NĐ-CP`) and can be
 recovered from any slug via the `SLUG_TO_CANONICAL_CODE` table in
 `codes.py`. The set of slugs follows Luật Ban hành Văn bản Quy phạm
 Pháp luật 2015 — `hien_phap` / `bo_luat` / `luat` / `phap_lenh` /
@@ -1157,9 +1157,9 @@ chia khá đều phần `dia_phuong`.
 
 ## Năm ban hành · Year of issue
 
-Phân bố năm theo `ngay_ban_hanh` (ISO `YYYY-MM-DD`); rỗng nếu cổng
+Phân bố năm theo `issue_date` (ISO `YYYY-MM-DD`); rỗng nếu cổng
 không cung cấp được trường này. — Year distribution from
-`ngay_ban_hanh`; null when the source portal didn't expose the issue
+`issue_date`; null when the source portal didn't expose the issue
 date.
 
 {_year_block(manifest['by_year'])}
@@ -1190,20 +1190,20 @@ The parquet has three families of columns:
 | `source` | string | Source host, always `vbpl.vn`. |
 | `source_url` / `api_url` | string | Deep link back to the portal page / the underlying gateway API. |
 | `title` | string (nullable) | Document subject after the full title scrub: (1) baseline cleanup (NFC, HTML-entity decode, `"số số"` doubling fix, trailing sentence punctuation), (2) decorative quote stripping at the title boundary and around inline phrases — leading / trailing / paired runs of `"`, `'`, `"`, `'`, `'`, `'` are removed but **word-internal single quotes are preserved** so legitimate Vietnamese / loan-word names survive intact (`Đắk R'lấp`, `M'nông`, `D'Ran`, `Côte d'Ivoire`, `Ea T'ling`, `Đạ M'ri`, …), (3) leading `"<Legal-type> số <Number> "` boilerplate head peeled (e.g. `"Quyết định số 143/QĐ-KHTC Ban hành Quy chế"` → `"Ban hành Quy chế"`), and (4) every `"<DocType> [số] <DocNum> [ngày <date>]"` cross-reference of OTHER documents stripped from anywhere in the body (`"Bãi bỏ Nghị quyết số 84/2018/NQ-HĐND ngày 07/12/2018 của HĐND tỉnh..."` → `"Bãi bỏ của HĐND tỉnh..."`). The Vietnamese noun `Lỗi` / `lỗi` / `loi` ("fault / error") is preserved wherever it appears — it's a legitimate subject word (e.g. `"Lỗi Ban hành Quy chế hoạt động của hội đồng tư vấn mua sắm tài sản"`), not a CMS marker. `null` for the pathological tail where the entire source title was just a bare doc-num token (e.g. `"1938/QĐ-UBND"`); other bibliographic columns still carry the citation handle. |
-| `doc_type` | string | Self-describing **ASCII snake_case slug** of the Vietnamese doc-type name (`quyet_dinh`, `nghi_dinh`, `thong_tu_lien_tich`, `chi_thi`, `van_ban_hop_nhat`, ...). Auto-derived from `legal_type` via `slugify_vi`; the compact short code (`QĐ`, `NĐ`, `TTLT`, ...) still appears in `so_hieu` itself (`43/2026/NĐ-CP`) and is recoverable via `SLUG_TO_CANONICAL_CODE`. |
+| `doc_type` | string | Self-describing **ASCII snake_case slug** of the Vietnamese doc-type name (`quyet_dinh`, `nghi_dinh`, `thong_tu_lien_tich`, `chi_thi`, `van_ban_hop_nhat`, ...). Auto-derived from `legal_type` via `slugify_vi`; the compact short code (`QĐ`, `NĐ`, `TTLT`, ...) still appears in `doc_number` itself (`43/2026/NĐ-CP`) and is recoverable via `SLUG_TO_CANONICAL_CODE`. |
 | `legal_type` | string | Canonical Vietnamese **full name** for the document type (`Luật`, `Nghị định`, `Thông tư`, `Quyết định`, `Nghị quyết`, `Chỉ thị`, …). Round-trips with `doc_type` via `slugify_vi`. |
 | `legal_area` | string | Legal area / subject domain (`Đất đai`, `Đường bộ`, `Lĩnh vực giá`, …). Defaults to `Chưa phân loại` when the source portal hasn't tagged the doc. |
-| `so_hieu` | list&lt;string&gt; (nullable) | Document number(s) as a list of canonical short forms (e.g. `["43/2026/NĐ-CP"]`). A small minority of vbpl rows pack several identifiers into one source cell separated by Vietnamese ` và ` ("and") or `,`; those ship as multi-element lists (e.g. `["142/2009/QĐ-TTg", "49/2012/QĐ-TTg"]`). Source-side cruft is stripped: leading legal-type words (`"Nghị quyết số: 528/2018/UBTVQH14"` → `["528/2018/UBTVQH14"]`), trailing annotations (`"109/2005/QĐ-BCA (A11)"` → `["109/2005/QĐ-BCA"]`, `"49/2007/TTLT-BTC-BGD ngày 18/5/2007"` → `["49/2007/TTLT-BTC-BGD"]`), and the legitimate `"Không số"` ("no number") sentinel is preserved. `null` for rows with no usable number. |
-| `ngay_ban_hanh` | string | Issue date, ISO `YYYY-MM-DD`. |
-| `year` | int32 | Year extracted from `ngay_ban_hanh`. |
-| `co_quan_ban_hanh` | string | Issuing agency (e.g. `"Chính phủ"`, `"Bộ Tài chính"`, `"Hội đồng nhân dân tỉnh A"`). |
-| `trich_yeu` | string | Abstract / summary. |
+| `doc_number` | list&lt;string&gt; (nullable) | Document number(s) as a list of canonical short forms (e.g. `["43/2026/NĐ-CP"]`). A small minority of vbpl rows pack several identifiers into one source cell separated by Vietnamese ` và ` ("and") or `,`; those ship as multi-element lists (e.g. `["142/2009/QĐ-TTg", "49/2012/QĐ-TTg"]`). Source-side cruft is stripped: leading legal-type words (`"Nghị quyết số: 528/2018/UBTVQH14"` → `["528/2018/UBTVQH14"]`), trailing annotations (`"109/2005/QĐ-BCA (A11)"` → `["109/2005/QĐ-BCA"]`, `"49/2007/TTLT-BTC-BGD ngày 18/5/2007"` → `["49/2007/TTLT-BTC-BGD"]`), and the legitimate `"Không số"` ("no number") sentinel is preserved. `null` for rows with no usable number. |
+| `issue_date` | string | Issue date, ISO `YYYY-MM-DD`. |
+| `year` | int32 | Year extracted from `issue_date`. |
+| `issuing_body` | string | Issuing agency (e.g. `"Chính phủ"`, `"Bộ Tài chính"`, `"Hội đồng nhân dân tỉnh A"`). |
+| `summary` | string | Abstract / summary. |
 
 ### Body + stats
 
 | Field | Type | Description |
 |---|---|---|
-| `markdown` | string (nullable) | NFC-normalised, modern-orthography Vietnamese markdown (page-segmented with `## Page N` headings when parsed from a PDF). Gateway / Word / Next.js scaffolding is stripped: the `Document Content\\n\\nbody {{ font-family: ... }}\\np {{ margin: ... }}` API preamble (~50 % of bodies), Word `<!-- /* Font Definitions */ @font-face {{ ... }} p.MsoNormal {{ ... }} -->` stylesheet dumps, standalone CSS rule blocks gated by property / selector / structural CSS tells, Ant Design `:where(.css-...){{ ... }}@keyframes ...{{ ... }}` chains, orphan selector fragments, and malformed inline `<span lang="..." style="...">` tags. ~90 % of rows lose 1-200 KB of boilerplate; total corpus markdown shrunk by ~1.77 GB / 42 %. **Null** when `body_source == "shell_html"` after the May-2026 live-API recovery (the source genuinely has no body for those legacy IDs); bibliographic metadata (title, agency, so_hieu, ...) is still populated on NULL-markdown rows so consumers retain the citation handle. |
+| `markdown` | string (nullable) | NFC-normalised, modern-orthography Vietnamese markdown (page-segmented with `## Page N` headings when parsed from a PDF). Gateway / Word / Next.js scaffolding is stripped: the `Document Content\\n\\nbody {{ font-family: ... }}\\np {{ margin: ... }}` API preamble (~50 % of bodies), Word `<!-- /* Font Definitions */ @font-face {{ ... }} p.MsoNormal {{ ... }} -->` stylesheet dumps, standalone CSS rule blocks gated by property / selector / structural CSS tells, Ant Design `:where(.css-...){{ ... }}@keyframes ...{{ ... }}` chains, orphan selector fragments, and malformed inline `<span lang="..." style="...">` tags. ~90 % of rows lose 1-200 KB of boilerplate; total corpus markdown shrunk by ~1.77 GB / 42 %. **Null** when `body_source == "shell_html"` after the May-2026 live-API recovery (the source genuinely has no body for those legacy IDs); bibliographic metadata (title, agency, doc_number, ...) is still populated on NULL-markdown rows so consumers retain the citation handle. |
 | `num_pages` | int32 | Page count from the parser (PDF/DOCX only). |
 | `num_sections` / `num_paragraphs` / `num_sentences` | int32 | Counts from the structure layer. |
 | `char_len` | int32 | Character length of `markdown` **after** the junk-strip pass (recomputed at export time so consumers can dedupe on the actual shipped body). |
@@ -1229,12 +1229,12 @@ from datasets import load_dataset
 
 ds = load_dataset("{repo_owner}/{repo_name}", split="train")
 row = ds[0]
-print(row["doc_type"], row["so_hieu"], row["ngay_ban_hanh"])
+print(row["doc_type"], row["doc_number"], row["issue_date"])
 # e.g. "quyet_dinh 143/QĐ-KHTC 2018-01-29"
 print(row["title"])
 # e.g. "Ban hành Quy chế quản lý ngân sách ngành Tư pháp"
 # (the redundant "Quyết định số 143/QĐ-KHTC " head has been
-#  stripped; recombine via f"{{row['legal_type']}} số {{row['so_hieu']}} {{row['title']}}"
+#  stripped; recombine via f"{{row['legal_type']}} số {{row['doc_number']}} {{row['title']}}"
 #  if your downstream pipeline still wants the full original.)
 structure = json.loads(row["structure_json"])
 for sec in structure.get("sections", []):

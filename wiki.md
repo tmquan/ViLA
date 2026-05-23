@@ -555,6 +555,36 @@ REDUCER_PARQUET_FIELDS: list[str] = [
 verbatim. Add site-specific fields on top; never rename a shared
 field. The visualizer and HF export both key off them.
 
+### 3.4 Column-name language rule
+
+Every column stem in every published parquet/jsonl table must be
+**ASCII English snake_case**. Vietnamese in column names is allowed
+only as the right-hand half of a deliberate `*_vi` / `*_en` bilingual
+pair (e.g. `term_name_vi` / `term_name_en`, `topic_title_vi` /
+`topic_title_en`); the **stem** (`term_name`, `topic_title`) must
+still be English.
+
+**Why this exists.** A May-2026 audit found four Vietnamese stems
+on `vbpl.vn/documents` (`so_hieu`, `ngay_ban_hanh`, `co_quan_ban_hanh`,
+`trich_yeu`) and three on `phapdien.moj.gov.vn/{articles,demucs,
+ontology_demucs}` (`demuc_id`, `demuc_number`, `demuc_title`). They
+shipped because §3 only constrains the *shared* columns; site-specific
+columns were unconstrained. Renaming after publication forced a
+~660-line code rewrite + rewriting 41 parquet shards. Catch this at
+authoring time instead.
+
+**What about Vietnamese-only domain concepts?** If a Vietnamese
+structural concept genuinely has no English analog (rare; `đề mục`
+came close but maps cleanly to *subject heading* in the LCSH sense),
+either pick the closest legal-bibliography English term or surface
+the Vietnamese word as the right-hand half of a `*_vi` / `*_en`
+pair. Don't ship a Vietnamese-only stem.
+
+**What about column *values*?** Out of scope — values can be
+Vietnamese (e.g. `legal_type = "Nghị định"`, `doc_type = "ban_an"`,
+`scope = "trung_uong"`). Source-language slugs preserve round-trip
+fidelity with the source portal and are deliberate.
+
 ---
 
 ## 3.5 The two-tier output rule (file layout spine)
@@ -1690,7 +1720,7 @@ flow shows up under different stage names:
 | Site                      | `PIPELINE_NAMES`                  | What each stage does                                                                                          |
 |---                        |---                                |---                                                                                                            |
 | `pbgdpl`                  | `("harvest", "detail")`           | `harvest` walks listings + LinhVuc taxonomy → `listings.jsonl` + `taxonomy.json`; `detail` fetches `?ItemID=` → `qa.jsonl`. |
-| `phapdien`                | `("tree", "detail")`              | `tree` POSTs `TreeBoPD.aspx` → `tree_nodes.jsonl`; `detail` walks each de-muc through `ViewBoPD.aspx` + `ActionHandler.aspx` → `demucs.jsonl` + `articles.jsonl`. |
+| `phapdien`                | `("tree", "detail")`              | `tree` POSTs `TreeBoPD.aspx` → `tree_nodes.jsonl`; `detail` walks each đề mục (`subject`) through `ViewBoPD.aspx` + `ActionHandler.aspx` → `subjects.jsonl` + `articles.jsonl`. |
 | `thuvienphapluat_tnpl`    | `("harvest", "detail", "translate")` | `harvest` derives the LinhVuc taxonomy + ID probe range → `taxonomy.json` + `listings.jsonl`; `detail` fetches `/tnpl/{id}/x` → `terms.jsonl`; `translate` runs the NIM `nvidia/nemotron-3-super-120b-a12b` translator → `terms_translated.jsonl` (bilingual VI+EN). |
 
 The CLI shape is identical to Family A — `--pipeline {name|all}`,

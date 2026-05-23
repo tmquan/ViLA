@@ -16,13 +16,13 @@ TREE_NODE_FIELDS: list[str] = [
     "raw_text",
 ]
 
-DEMUC_FIELDS: list[str] = [
-    "demuc_id",
+SUBJECT_FIELDS: list[str] = [
+    "subject_id",
     "topic_id",
     "topic_number",
     "topic_title",
-    "demuc_number",
-    "demuc_title",
+    "subject_number",
+    "subject_title",
     "source_url",
     "view_html_path",
     "content_html_path",
@@ -34,12 +34,12 @@ DEMUC_FIELDS: list[str] = [
 ]
 
 ARTICLE_FIELDS: list[str] = [
-    "demuc_id",
+    "subject_id",
     "topic_id",
     "topic_number",
     "topic_title",
-    "demuc_number",
-    "demuc_title",
+    "subject_number",
+    "subject_title",
     "article_anchor",
     "article_title",
     "chapter_title",
@@ -58,7 +58,7 @@ def build_layout(cfg: Any) -> SiteLayout:
     """Ensure the phapdien data layout exists and return it.
 
     Uses the shared ``"html"`` profile + three phapdien-specific
-    extras: the markdown directory (per-demuc body) and the
+    extras: the markdown directory (per-subject body) and the
     ``html/view`` / ``html/content`` HTML caches.
     """
     layout = SiteLayout.from_cfg(cfg)
@@ -75,7 +75,7 @@ def build_layout(cfg: Any) -> SiteLayout:
 
 __all__ = [
     "ARTICLE_FIELDS",
-    "DEMUC_FIELDS",
+    "SUBJECT_FIELDS",
     "TREE_NODE_FIELDS",
     "build_layout",
 ]

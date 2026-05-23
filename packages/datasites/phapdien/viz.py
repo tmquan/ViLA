@@ -495,7 +495,7 @@ def render_topic_bars_bilingual(
         ax.text(
             bar.get_width() + total * 0.003,
             bar.get_y() + bar.get_height() / 2,
-            f"{count:,} điều · {t['demuc_count']} đề mục",
+            f"{count:,} điều · {t['subject_count']} đề mục",
             va="center", ha="left",
             fontsize=8.5, color="#333",
         )
@@ -655,10 +655,10 @@ def render_sunburst(analytics: dict[str, Any], out_path: Path) -> Path:
     topics = sorted(
         analytics["topics"], key=lambda r: -r["article_count"],
     )
-    demucs_by_topic: dict[str, list[dict[str, Any]]] = {}
-    for d in analytics["demucs"]:
-        demucs_by_topic.setdefault(d["topic_id"], []).append(d)
-    for arr in demucs_by_topic.values():
+    subjects_by_topic: dict[str, list[dict[str, Any]]] = {}
+    for d in analytics["subjects"]:
+        subjects_by_topic.setdefault(d["topic_id"], []).append(d)
+    for arr in subjects_by_topic.values():
         arr.sort(key=lambda r: -r["article_count"])
 
     total = sum(t["article_count"] for t in topics)
@@ -739,7 +739,7 @@ def render_sunburst(analytics: dict[str, Any], out_path: Path) -> Path:
             )
 
         # Outer ring: đề mục children of this topic.
-        sub = demucs_by_topic.get(t["topic_id"], [])
+        sub = subjects_by_topic.get(t["topic_id"], [])
         sub_total = sum(s["article_count"] for s in sub) or 1
         sub_angle = theta0
         for s in sub:
@@ -764,7 +764,7 @@ def render_sunburst(analytics: dict[str, Any], out_path: Path) -> Path:
                 r = (outer_r0 + outer_r1) / 2
                 ax.text(
                     r * math.cos(mid), r * math.sin(mid),
-                    _shorten(s["demuc_title"], 16),
+                    _shorten(s["subject_title"], 16),
                     ha="center", va="center",
                     fontsize=6,
                     color="#222",
@@ -871,7 +871,7 @@ def render_mermaid_mindmap(analytics: dict[str, Any]) -> str:
         title = t["topic_title"].replace("(", "[").replace(")", "]")
         lines.append(
             f"    #{t['topic_number']} {title}<br/>"
-            f"{t['article_count']:,} Điều · {t['demuc_count']} Đề mục"
+            f"{t['article_count']:,} Điều · {t['subject_count']} Đề mục"
         )
     return "\n".join(lines)
 

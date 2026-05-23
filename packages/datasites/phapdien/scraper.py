@@ -25,7 +25,7 @@ from packages.common import PoliteSession, SiteLayout
 from packages.common.http import session_from_scraper_cfg
 from packages.datasites.phapdien._shared import (
     ARTICLE_FIELDS,
-    DEMUC_FIELDS,
+    SUBJECT_FIELDS,
     TREE_NODE_FIELDS,
     build_layout,
 )
@@ -53,13 +53,13 @@ class TreeNode:
 
 
 @dataclass
-class DemucNode:
-    demuc_id: str
+class SubjectNode:
+    subject_id: str
     topic_id: str | None
     topic_number: str
     topic_title: str
-    demuc_number: str
-    demuc_title: str
+    subject_number: str
+    subject_title: str
 
 
 class PhapdienCrawler:
@@ -95,24 +95,24 @@ class PhapdienCrawler:
         session = self._ensure_session()
         tree_html = self._fetch_tree_html(session)
         nodes = parse_tree_nodes(tree_html)
-        demucs = build_demuc_index(nodes)
+        subjects = build_subject_index(nodes)
         if self._limit is not None:
-            demucs = demucs[: int(self._limit)]
+            subjects = subjects[: int(self._limit)]
 
-        demuc_out = self.layout.jsonl_dir / "demucs.jsonl"
+        subject_out = self.layout.jsonl_dir / "subjects.jsonl"
         article_out = self.layout.jsonl_dir / "articles.jsonl"
         ok = err = article_count = 0
         scraped_at = _utc_now_iso()
 
-        with demuc_out.open("w", encoding="utf-8") as demuc_f, article_out.open(
+        with subject_out.open("w", encoding="utf-8") as subject_f, article_out.open(
             "w",
             encoding="utf-8",
         ) as article_f:
-            for idx, demuc in enumerate(demucs, 1):
-                meta, articles = self._fetch_one_demuc(session, demuc, scraped_at)
-                demuc_f.write(
+            for idx, subject in enumerate(subjects, 1):
+                meta, articles = self._fetch_one_subject(session, subject, scraped_at)
+                subject_f.write(
                     json.dumps(
-                        {k: meta.get(k) for k in DEMUC_FIELDS},
+                        {k: meta.get(k) for k in SUBJECT_FIELDS},
                         ensure_ascii=False,
                     )
                     + "\n"
@@ -132,39 +132,39 @@ class PhapdienCrawler:
                     err += 1
                 if idx % 10 == 0:
                     logger.info(
-                        "detail progress: %d/%d demucs ok=%d err=%d articles=%d",
-                        idx, len(demucs), ok, err, article_count,
+                        "detail progress: %d/%d subjects ok=%d err=%d articles=%d",
+                        idx, len(subjects), ok, err, article_count,
                     )
 
         self._write_manifest(
-            demucs_total=len(demucs),
-            demucs_ok=ok,
-            demucs_err=err,
+            subjects_total=len(subjects),
+            subjects_ok=ok,
+            subjects_err=err,
             articles_total=article_count,
         )
         logger.info(
-            "detail written: %s, %s (demucs=%d ok=%d err=%d articles=%d)",
-            demuc_out, article_out, len(demucs), ok, err, article_count,
+            "detail written: %s, %s (subjects=%d ok=%d err=%d articles=%d)",
+            subject_out, article_out, len(subjects), ok, err, article_count,
         )
         return article_out
 
-    def _fetch_one_demuc(
+    def _fetch_one_subject(
         self,
         session: PoliteSession,
-        demuc: DemucNode,
+        subject: SubjectNode,
         scraped_at: str,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        view_url = f"{VIEW_URL}?{urlencode({'obj': '', 'demucid': demuc.demuc_id, 'mapc': '1'})}"
-        view_path = self.layout.html_dir / "view" / f"{demuc.demuc_id}.html"
-        content_path = self.layout.html_dir / "content" / f"{demuc.demuc_id}.html"
-        md_path = self.layout.md_dir / f"{demuc.demuc_id}.md"
+        view_url = f"{VIEW_URL}?{urlencode({'obj': '', 'demucid': subject.subject_id, 'mapc': '1'})}"
+        view_path = self.layout.html_dir / "view" / f"{subject.subject_id}.html"
+        content_path = self.layout.html_dir / "content" / f"{subject.subject_id}.html"
+        md_path = self.layout.md_dir / f"{subject.subject_id}.md"
         base_meta = {
-            "demuc_id": demuc.demuc_id,
-            "topic_id": demuc.topic_id,
-            "topic_number": demuc.topic_number,
-            "topic_title": demuc.topic_title,
-            "demuc_number": demuc.demuc_number,
-            "demuc_title": demuc.demuc_title,
+            "subject_id": subject.subject_id,
+            "topic_id": subject.topic_id,
+            "topic_number": subject.topic_number,
+            "topic_title": subject.topic_title,
+            "subject_number": subject.subject_number,
+            "subject_title": subject.subject_title,
             "source_url": view_url,
             "view_html_path": str(view_path.resolve()),
             "content_html_path": str(content_path.resolve()),
@@ -187,7 +187,7 @@ class PhapdienCrawler:
                 resp = session.post(
                     ACTION_URL,
                     data={
-                        "deMucID": demuc.demuc_id,
+                        "deMucID": subject.subject_id,
                         "fileVersion": file_version,
                         "do": "html",
                     },
@@ -204,10 +204,10 @@ class PhapdienCrawler:
                 if self._cache_html:
                     content_path.write_text(content_html, encoding="utf-8")
             md_path.write_text(html_to_markdown_text(content_html), encoding="utf-8")
-            articles = parse_articles(content_html, demuc, view_url, scraped_at)
+            articles = parse_articles(content_html, subject, view_url, scraped_at)
             return base_meta, articles
         except Exception as exc:  # noqa: BLE001 - preserve row-level failures
-            logger.exception("demuc failed: %s", demuc.demuc_id)
+            logger.exception("subject failed: %s", subject.subject_id)
             base_meta["fetch_status"] = f"error:{type(exc).__name__}"
             base_meta["fetch_error"] = str(exc)
             return base_meta, []
@@ -242,20 +242,20 @@ class PhapdienCrawler:
     def _write_manifest(
         self,
         *,
-        demucs_total: int,
-        demucs_ok: int,
-        demucs_err: int,
+        subjects_total: int,
+        subjects_ok: int,
+        subjects_err: int,
         articles_total: int,
     ) -> None:
         payload = {
             "host": self.layout.host,
             "completed_at": _utc_now_iso(),
-            "demucs_total": demucs_total,
-            "demucs_ok": demucs_ok,
-            "demucs_err": demucs_err,
+            "subjects_total": subjects_total,
+            "subjects_ok": subjects_ok,
+            "subjects_err": subjects_err,
             "articles_total": articles_total,
             "tree_nodes_jsonl": str((self.layout.jsonl_dir / "tree_nodes.jsonl").resolve()),
-            "demucs_jsonl": str((self.layout.jsonl_dir / "demucs.jsonl").resolve()),
+            "subjects_jsonl": str((self.layout.jsonl_dir / "subjects.jsonl").resolve()),
             "articles_jsonl": str((self.layout.jsonl_dir / "articles.jsonl").resolve()),
         }
         (self.layout.jsonl_dir / "manifest.json").write_text(
@@ -279,7 +279,7 @@ def parse_tree_nodes(tree_html: str) -> list[TreeNode]:
     nodes: list[TreeNode] = []
     for item in payload:
         cls = (item.get("li_attr") or {}).get("class") or ""
-        kind = "topic" if cls == "treenode-chude" else "demuc"
+        kind = "topic" if cls == "treenode-chude" else "subject"
         raw_text = _text_without_action_links(item.get("text") or "")
         number, title = _split_numbered_title(raw_text, kind)
         parent = item.get("parent")
@@ -296,29 +296,29 @@ def parse_tree_nodes(tree_html: str) -> list[TreeNode]:
     return nodes
 
 
-def build_demuc_index(nodes: list[TreeNode]) -> list[DemucNode]:
+def build_subject_index(nodes: list[TreeNode]) -> list[SubjectNode]:
     topics = {n.node_id: n for n in nodes if n.kind == "topic"}
-    out: list[DemucNode] = []
+    out: list[SubjectNode] = []
     for node in nodes:
-        if node.kind != "demuc":
+        if node.kind != "subject":
             continue
         topic = topics.get(node.parent_id or "")
         out.append(
-            DemucNode(
-                demuc_id=node.node_id,
+            SubjectNode(
+                subject_id=node.node_id,
                 topic_id=node.parent_id,
                 topic_number=topic.number if topic else "",
                 topic_title=topic.title if topic else "",
-                demuc_number=node.number,
-                demuc_title=node.title,
+                subject_number=node.number,
+                subject_title=node.title,
             )
         )
-    return sorted(out, key=lambda d: (int(d.topic_number or 0), _sortable_number(d.demuc_number), d.demuc_title))
+    return sorted(out, key=lambda d: (int(d.topic_number or 0), _sortable_number(d.subject_number), d.subject_title))
 
 
 def parse_articles(
     content_html: str,
-    demuc: DemucNode,
+    subject: SubjectNode,
     source_url: str,
     scraped_at: str,
 ) -> list[dict[str, Any]]:
@@ -369,12 +369,12 @@ def parse_articles(
         content_text = "\n".join(content_chunks).strip()
         records.append(
             {
-                "demuc_id": demuc.demuc_id,
-                "topic_id": demuc.topic_id,
-                "topic_number": demuc.topic_number,
-                "topic_title": demuc.topic_title,
-                "demuc_number": demuc.demuc_number,
-                "demuc_title": demuc.demuc_title,
+                "subject_id": subject.subject_id,
+                "topic_id": subject.topic_id,
+                "topic_number": subject.topic_number,
+                "topic_title": subject.topic_title,
+                "subject_number": subject.subject_number,
+                "subject_title": subject.subject_title,
                 "article_anchor": anchor,
                 "article_title": article_title,
                 "chapter_title": " - ".join(chapter_parts),
@@ -468,7 +468,7 @@ __all__ = [
     "ALL_PIPELINES_ORDER",
     "PIPELINES",
     "PhapdienCrawler",
-    "build_demuc_index",
+    "build_subject_index",
     "parse_articles",
     "parse_tree_nodes",
     "run_detail",

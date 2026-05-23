@@ -217,13 +217,13 @@ class DetailRecord:
     #: ``" và "`` ("and") or ``,``. Single-value docs (99%+) ship
     #: with a 1-element list; an empty list (mapped to ``null`` in
     #: parquet) means "no number on source".
-    so_hieu: list[str] = field(default_factory=list)
+    doc_number: list[str] = field(default_factory=list)
     doc_type: str | None = None
     legal_type: str | None = None
     legal_area: str | None = None
-    ngay_ban_hanh: str | None = None
-    co_quan_ban_hanh: str | None = None
-    trich_yeu: str | None = None
+    issue_date: str | None = None
+    issuing_body: str | None = None
+    summary: str | None = None
     body_html: str = ""
     body_text: str = ""
     file_paths: list[FilePath] = field(default_factory=list)
@@ -236,7 +236,7 @@ class DetailRecord:
 # and fall back to common English-camelCase. The first non-empty
 # value wins.
 _TITLE_KEYS = ("tieuDe", "tenVanBan", "title", "name")
-_SO_HIEU_KEYS = ("soHieu", "soHieuVanBan", "documentNumber", "docNum")
+_DOC_NUMBER_KEYS = ("soHieu", "soHieuVanBan", "documentNumber", "docNum")
 # Document-type discovery. We prefer the structured ``docType`` block
 # (``{name, code, parentCode, ...}``) because it carries both the
 # Vietnamese full name AND the short code; the older Spring-Boot
@@ -244,7 +244,7 @@ _SO_HIEU_KEYS = ("soHieu", "soHieuVanBan", "documentNumber", "docNum")
 _DOC_TYPE_KEYS = (
     "docType", "loaiVanBanText", "loaiVanBan", "type", "tenLoaiVanBan",
 )
-_NGAY_KEYS = (
+_ISSUE_DATE_KEYS = (
     "issueDate", "ngayBanHanh", "ngayKy", "ngayHieuLuc",
     "issuedDate", "signedDate",
 )
@@ -252,7 +252,7 @@ _AGENCY_KEYS = (
     "agencyName", "coQuanBanHanh", "tenCoQuanBanHanh", "noiBanHanh",
     "issuingAgency", "agency",
 )
-_TRICH_KEYS = ("trichYeu", "summary", "abstract")
+_SUMMARY_KEYS = ("trichYeu", "summary", "abstract")
 _BODY_HTML_KEYS = (
     "content", "noiDung", "toanVan", "noiDungVanBan", "body",
     "htmlContent", "bodyHtml",
@@ -304,20 +304,20 @@ def detail_record_from_api_json(
         # §3.5 + ``cfg.extractor.normalizers``). The detail stage's
         # only job is to extract raw values from the API JSON and
         # coerce types where the dataclass needs them (date parsing,
-        # slug → canonical-code lookup, so_hieu split-on-CSV). The
+        # slug → canonical-code lookup, doc_number split-on-CSV). The
         # normalizer chain then NFC-canonicalises, strips smart
         # quotes, peels redundant title prefixes, etc. -- once,
         # idempotently, recorded in the manifest.
         for d in _walk_dicts(payload):
             if not rec.title:
                 rec.title = _none_or_str(_first_nonempty(d, _TITLE_KEYS)) or ""
-            if not rec.so_hieu:
+            if not rec.doc_number:
                 # Split-on-CSV is a typing concern (the dataclass
                 # field is ``list[str]``), not presentation
                 # normalization. The per-token cleanup is handled
-                # by the ``vbpl_so_hieu_list`` chain entry.
-                rec.so_hieu = normalise_so_hieu_list(
-                    _none_or_str(_first_nonempty(d, _SO_HIEU_KEYS))
+                # by the ``vbpl_doc_number_list`` chain entry.
+                rec.doc_number = normalise_doc_number_list(
+                    _none_or_str(_first_nonempty(d, _DOC_NUMBER_KEYS))
                 )
             if rec.doc_type is None or rec.legal_type is None:
                 raw_dt = _first_nonempty(d, _DOC_TYPE_KEYS)
@@ -326,7 +326,7 @@ def detail_record_from_api_json(
                         # ``doc_type`` is the self-describing snake_case
                         # slug ("quyet_dinh", "thong_tu_lien_tich",
                         # ...). The compact short code ("QĐ", "TTLT")
-                        # is still exposed via the so_hieu field
+                        # is still exposed via the doc_number field
                         # itself and via ``codes.SLUG_TO_CANONICAL_CODE``.
                         rec.doc_type = doc_type_slug(raw_dt)
                     if rec.legal_type is None:
@@ -339,15 +339,15 @@ def detail_record_from_api_json(
                     # area name); ``normalise_label`` (presentation
                     # cleanup) now lives in the chain.
                     rec.legal_area = legal_area_label(raw_area)
-            if rec.ngay_ban_hanh is None:
-                rec.ngay_ban_hanh = _iso_date(_first_nonempty(d, _NGAY_KEYS))
-            if rec.co_quan_ban_hanh is None:
-                rec.co_quan_ban_hanh = _none_or_str(
+            if rec.issue_date is None:
+                rec.issue_date = _iso_date(_first_nonempty(d, _ISSUE_DATE_KEYS))
+            if rec.issuing_body is None:
+                rec.issuing_body = _none_or_str(
                     _first_nonempty(d, _AGENCY_KEYS),
                 )
-            if rec.trich_yeu is None:
-                rec.trich_yeu = _none_or_str(
-                    _first_nonempty(d, _TRICH_KEYS),
+            if rec.summary is None:
+                rec.summary = _none_or_str(
+                    _first_nonempty(d, _SUMMARY_KEYS),
                 )
             if not rec.body_html:
                 rec.body_html = _str_or_empty(
@@ -381,14 +381,14 @@ def detail_record_from_api_json(
     if rec.legal_area is None:
         rec.legal_area = "Chưa phân loại"
 
-    # Drop the redundant ``"<legal_type> số <so_hieu>"`` head + any
+    # Drop the redundant ``"<legal_type> số <doc_number>"`` head + any
     # cross-references of the shape ``<DocType> <DocNum>`` from the
     # title. :func:`clean_title` runs the full chain (normalise +
     # prefix-strip + crossref-strip) and may return ``None`` when
     # the title is degenerate (e.g. the whole title is just a
     # doc-num token like ``"1938/QĐ-UBND"``).
     if rec.title:
-        rec.title = clean_title(rec.title, rec.legal_type, rec.so_hieu)
+        rec.title = clean_title(rec.title, rec.legal_type, rec.doc_number)
     return rec
 
 
@@ -418,7 +418,7 @@ def _none_or_str(v: Any) -> str | None:
 #: (e.g. ``"1333/TP-KHTC Lỗi"`` where the body is just CSS junk).
 #: The leading whitespace before the marker is mandatory in the
 #: pattern -- without it we would chop "Lỗi" out of legitimate
-#: ``so_hieu`` values that happen to end in "Lỗi" (unlikely but
+#: ``doc_number`` values that happen to end in "Lỗi" (unlikely but
 #: future-proofing against a Vietnamese acronym collision).
 _DEFECT_SUFFIX_RE = re.compile(r"\s+(?:Lỗi|lỗi|LỖI|ERROR|error)\s*$")
 
@@ -450,7 +450,7 @@ _LEADING_LABEL_RE = re.compile(
 _TRAILING_PUNCT_RE = re.compile(r"[.,;]+\s*$")
 
 
-#: Doc-number token shape. The canonical so_hieu after normalisation
+#: Doc-number token shape. The canonical doc_number after normalisation
 #: is ``<digits>[<letter>][/-]<word-segment>+``. ``\w`` is Unicode-
 #: aware in Python 3 and includes Vietnamese letters (``Đ``, ``Đ``
 #: U+0110, accented forms) so ``142/2009/QĐ-TTg`` validates cleanly.
@@ -550,7 +550,7 @@ _SOHIEU_LEGAL_TYPE_PREFIX_RE = re.compile(
 )
 
 
-def normalise_so_hieu(raw: str | None) -> str | None:
+def normalise_doc_number(raw: str | None) -> str | None:
     """Clean up the cosmetic artifacts present in vbpl ``soHieu`` values.
 
     The vbpl.vn CMS exposes the document number ("so hieu") with a
@@ -567,26 +567,26 @@ def normalise_so_hieu(raw: str | None) -> str | None:
       editors append when the underlying page is broken
       (typically the body is just CSS/HTML chrome with no
       content). The flag is metadata, not part of the legal
-      identifier, so we strip it from ``so_hieu``.
+      identifier, so we strip it from ``doc_number``.
 
     Returns ``None`` for empty / whitespace-only input, the
     sentinel string ``"Không số"`` (Vietnamese for "no number")
     untouched (legitimately nameless documents like 1957-era
     Quốc hội cultural resolutions use it), or the cleaned form.
 
-    >>> normalise_so_hieu("'22/2025/QĐ-UBND")
+    >>> normalise_doc_number("'22/2025/QĐ-UBND")
     '22/2025/QĐ-UBND'
-    >>> normalise_so_hieu("04/2007/TT- NHNN")
+    >>> normalise_doc_number("04/2007/TT- NHNN")
     '04/2007/TT-NHNN'
-    >>> normalise_so_hieu("1333/TP-KHTC Lỗi")
+    >>> normalise_doc_number("1333/TP-KHTC Lỗi")
     '1333/TP-KHTC'
-    >>> normalise_so_hieu("Số: 06 /2023/QĐ-UBND")
+    >>> normalise_doc_number("Số: 06 /2023/QĐ-UBND")
     '06/2023/QĐ-UBND'
-    >>> normalise_so_hieu("03/2020/QĐ-UBND.")
+    >>> normalise_doc_number("03/2020/QĐ-UBND.")
     '03/2020/QĐ-UBND'
-    >>> normalise_so_hieu("Không số")
+    >>> normalise_doc_number("Không số")
     'Không số'
-    >>> normalise_so_hieu("  ") is None
+    >>> normalise_doc_number("  ") is None
     True
     """
     if raw is None:
@@ -609,14 +609,14 @@ def normalise_so_hieu(raw: str | None) -> str | None:
         s = _SEPARATOR_SPACE_RE.sub(r"\1", s)
     # Final whitespace squeeze (defensive -- some rows have a
     # tab between the prefix and "TT-LB" etc) plus trailing-quote
-    # strip (a small set of titles leak a closing quote into so_hieu
+    # strip (a small set of titles leak a closing quote into doc_number
     # when the source title was a quoted phrase).
     s = re.sub(r"\s+", " ", s).strip()
     s = re.sub(r"[\"'`\u2018\u2019\u201C\u201D]+$", "", s).strip()
     return s or None
 
 
-def _strip_sohieu_legal_prefix(s: str) -> str:
+def _strip_doc_number_legal_prefix(s: str) -> str:
     """Iteratively peel a leading ``<LegalType>[/<LegalType>][số:] `` prefix.
 
     Convergent: re-applies the regex until the head no longer
@@ -637,8 +637,8 @@ def _strip_sohieu_legal_prefix(s: str) -> str:
     return s
 
 
-def _strip_sohieu_trailing_noise(s: str) -> str:
-    """Drop everything after the FIRST whitespace inside a so_hieu chunk.
+def _strip_doc_number_trailing_noise(s: str) -> str:
+    """Drop everything after the FIRST whitespace inside a doc_number chunk.
 
     The vbpl CMS pastes a wide variety of editorial trailers onto
     individual ``soHieu`` cells once the doc-number itself is
@@ -648,7 +648,7 @@ def _strip_sohieu_trailing_noise(s: str) -> str:
     on the doc-number-shaped head at the start of the string and
     drop everything after the first whitespace, **unless** what
     follows is itself another doc-number token (in which case the
-    multi-value splitter in :func:`normalise_so_hieu_list` should
+    multi-value splitter in :func:`normalise_doc_number_list` should
     have caught it first; we leave the string untouched here to
     avoid double-handling).
 
@@ -696,7 +696,7 @@ def _looks_like_docnum_after_prefix_strip(chunk: str) -> bool:
     """
     if not chunk:
         return False
-    c = _strip_sohieu_legal_prefix(chunk.strip())
+    c = _strip_doc_number_legal_prefix(chunk.strip())
     if not c:
         return False
     if _is_khong_so(c):
@@ -704,7 +704,7 @@ def _looks_like_docnum_after_prefix_strip(chunk: str) -> bool:
     return bool(re.search(r"\d", c) and re.search(r"[/\-]", c))
 
 
-def normalise_so_hieu_list(raw: str | None) -> list[str]:
+def normalise_doc_number_list(raw: str | None) -> list[str]:
     """Split + clean a ``soHieu`` cell into a list of canonical doc-nums.
 
     The vbpl ``soHieu`` field is *usually* a single document number
@@ -717,7 +717,7 @@ def normalise_so_hieu_list(raw: str | None) -> list[str]:
 
     Pipeline:
 
-    1. Run :func:`normalise_so_hieu` over the whole string to apply
+    1. Run :func:`normalise_doc_number` over the whole string to apply
        the existing baseline cleanup (quotes, ``Số:`` label, defect
        suffix, trailing punctuation, separator whitespace).
     2. Strip any leading punctuation / comma cruft (a small number
@@ -741,44 +741,44 @@ def normalise_so_hieu_list(raw: str | None) -> list[str]:
     Returns ``[]`` for empty / whitespace / invalid input so the
     projection can translate it to ``null`` for the parquet column.
 
-    >>> normalise_so_hieu_list('Nghị quyết số: 528/2018/UBTVQH14')
+    >>> normalise_doc_number_list('Nghị quyết số: 528/2018/UBTVQH14')
     ['528/2018/UBTVQH14']
-    >>> normalise_so_hieu_list('Thông tư 04/2018/TT-BKHĐT')
+    >>> normalise_doc_number_list('Thông tư 04/2018/TT-BKHĐT')
     ['04/2018/TT-BKHĐT']
-    >>> normalise_so_hieu_list('Văn bản hợp nhất / Thông tư 18/VBHN-BTC')
+    >>> normalise_doc_number_list('Văn bản hợp nhất / Thông tư 18/VBHN-BTC')
     ['18/VBHN-BTC']
-    >>> normalise_so_hieu_list('109/2005/QĐ-BCA (A11)')
+    >>> normalise_doc_number_list('109/2005/QĐ-BCA (A11)')
     ['109/2005/QĐ-BCA']
-    >>> normalise_so_hieu_list('22/2023/NĐ-CP (1)')
+    >>> normalise_doc_number_list('22/2023/NĐ-CP (1)')
     ['22/2023/NĐ-CP']
-    >>> normalise_so_hieu_list('05/2009/NĐ-CP VĂN BẢN TRÙNG')
+    >>> normalise_doc_number_list('05/2009/NĐ-CP VĂN BẢN TRÙNG')
     ['05/2009/NĐ-CP']
-    >>> normalise_so_hieu_list('49/2007/TTLT-BTC-BGD ngày 18/5/2007')
+    >>> normalise_doc_number_list('49/2007/TTLT-BTC-BGD ngày 18/5/2007')
     ['49/2007/TTLT-BTC-BGD']
-    >>> normalise_so_hieu_list('01/VBHN-BCT 2022')
+    >>> normalise_doc_number_list('01/VBHN-BCT 2022')
     ['01/VBHN-BCT']
-    >>> normalise_so_hieu_list('142/2009/QĐ-TTg và 49/2012/QĐ-TTg')
+    >>> normalise_doc_number_list('142/2009/QĐ-TTg và 49/2012/QĐ-TTg')
     ['142/2009/QĐ-TTg', '49/2012/QĐ-TTg']
-    >>> normalise_so_hieu_list('60/CP, 61/CP')
+    >>> normalise_doc_number_list('60/CP, 61/CP')
     ['60/CP', '61/CP']
-    >>> normalise_so_hieu_list('03/2004/TTLT-BCA-BTC-BNV-BLĐTB & XH')
+    >>> normalise_doc_number_list('03/2004/TTLT-BCA-BTC-BNV-BLĐTB & XH')
     ['03/2004/TTLT-BCA-BTC-BNV-BLĐTB']
-    >>> normalise_so_hieu_list(',31/2019/QĐ-UBND')
+    >>> normalise_doc_number_list(',31/2019/QĐ-UBND')
     ['31/2019/QĐ-UBND']
-    >>> normalise_so_hieu_list('Không số')
+    >>> normalise_doc_number_list('Không số')
     ['Không số']
-    >>> normalise_so_hieu_list(None)
+    >>> normalise_doc_number_list(None)
     []
-    >>> normalise_so_hieu_list('   ')
+    >>> normalise_doc_number_list('   ')
     []
     """
     if raw is None:
         return []
-    base = normalise_so_hieu(raw)
+    base = normalise_doc_number(raw)
     if base is None:
         return []
     # Strip leading/trailing comma/semicolon/dot cruft that
-    # ``normalise_so_hieu`` doesn't touch (e.g. ``",31/2019/QĐ-UBND"``).
+    # ``normalise_doc_number`` doesn't touch (e.g. ``",31/2019/QĐ-UBND"``).
     base = re.sub(r"^[\s,;.]+|[\s,;.]+$", "", base).strip()
     if not base:
         return []
@@ -800,8 +800,8 @@ def normalise_so_hieu_list(raw: str | None) -> list[str]:
         c = chunk.strip().strip("\"'`\u2018\u2019\u201C\u201D")
         if not c:
             continue
-        c = _strip_sohieu_legal_prefix(c)
-        c = _strip_sohieu_trailing_noise(c)
+        c = _strip_doc_number_legal_prefix(c)
+        c = _strip_doc_number_trailing_noise(c)
         c = c.strip().strip("\"'`\u2018\u2019\u201C\u201D")
         if not c:
             continue
@@ -1037,10 +1037,10 @@ _TITLE_PREFIX_ALIASES: tuple[str, ...] = (
 _MIN_STRIPPED_TITLE_LEN = 3
 
 
-def _coerce_sohieu_list(
-    so_hieu: str | list[str] | tuple[str, ...] | None,
+def _coerce_doc_number_list(
+    doc_number: str | list[str] | tuple[str, ...] | None,
 ) -> list[str]:
-    """Accept old (string) or new (list) ``so_hieu`` shape; return a list.
+    """Accept old (string) or new (list) ``doc_number`` shape; return a list.
 
     The legacy callers passed a single string ``"143/QĐ-KHTC"`` to
     :func:`strip_redundant_title_prefix`; the new pipeline ships
@@ -1048,19 +1048,19 @@ def _coerce_sohieu_list(
     rows). Both call shapes round-trip through this helper without
     the call sites needing two different signatures.
     """
-    if so_hieu is None:
+    if doc_number is None:
         return []
-    if isinstance(so_hieu, str):
-        return [so_hieu] if so_hieu.strip() else []
-    return [x for x in so_hieu if isinstance(x, str) and x.strip()]
+    if isinstance(doc_number, str):
+        return [doc_number] if doc_number.strip() else []
+    return [x for x in doc_number if isinstance(x, str) and x.strip()]
 
 
 def strip_redundant_title_prefix(
     title: str | None,
     legal_type: str | None,
-    so_hieu: str | list[str] | tuple[str, ...] | None,
+    doc_number: str | list[str] | tuple[str, ...] | None,
 ) -> str | None:
-    """Strip the redundant ``"{legal_type} số {so_hieu}"`` head from a title.
+    """Strip the redundant ``"{legal_type} số {doc_number}"`` head from a title.
 
     Vietnamese legal-document titles on vbpl.vn follow a consistent
     template::
@@ -1070,22 +1070,22 @@ def strip_redundant_title_prefix(
     e.g. ``"Quyết định số 143/QĐ-KHTC Ban hành Quy chế quản lý ngân
     sách ngành Tư pháp"``. The leading ``"<Legal type> số <Number>"``
     block is fully redundant because both pieces ship in their own
-    columns (``legal_type`` + ``so_hieu``); keeping it in the title
+    columns (``legal_type`` + ``doc_number``); keeping it in the title
     pads every embedding token by ~10-20 boilerplate tokens that
     push the actual subject matter toward the truncation tail.
 
     Strategy:
 
-    1. **Anchor on ``so_hieu``** when the cleaned value appears
+    1. **Anchor on ``doc_number``** when the cleaned value appears
        literally in the title (96% of rows). Match
-       ``^{legal_type}\\s+(số\\s+)?{so_hieu}\\s+`` and strip.
-       When ``so_hieu`` is a list, the first element is used as
+       ``^{legal_type}\\s+(số\\s+)?{doc_number}\\s+`` and strip.
+       When ``doc_number`` is a list, the first element is used as
        the anchor (it's the canonical / primary doc-number).
     2. **Token-based fallback** for the 4% where the cleaned
-       so_hieu doesn't match the title verbatim (raw title might
+       doc_number doesn't match the title verbatim (raw title might
        still carry whitespace around ``/`` or ``-`` that the
-       so_hieu column has had collapsed). Match the legal-type
-       prefix + ``"số"`` + a permissive so_hieu-shaped token.
+       doc_number column has had collapsed). Match the legal-type
+       prefix + ``"số"`` + a permissive doc_number-shaped token.
     3. **Alias fallback** for ``"Bản dịch văn bản"`` and friends
        whose title starts with a *different* legal-type name (the
        original decree's name, not the translation's).
@@ -1159,8 +1159,8 @@ def strip_redundant_title_prefix(
     if not s:
         return None
 
-    sohieu_list = _coerce_sohieu_list(so_hieu)
-    anchor = sohieu_list[0] if sohieu_list else None
+    doc_number_list = _coerce_doc_number_list(doc_number)
+    anchor = doc_number_list[0] if doc_number_list else None
 
     candidates: list[str] = []
     if legal_type:
@@ -1231,7 +1231,7 @@ _DOCTYPE_DOCNUM_CROSSREF_RE = re.compile(
     re.UNICODE,
 )
 
-#: Bare so_hieu strip: a doc-num-shaped token preceded by one of the
+#: Bare doc_number strip: a doc-num-shaped token preceded by one of the
 #: Vietnamese reference connectives ``số`` / ``Số`` / ``theo`` /
 #: ``Theo`` / ``tại`` / ``Tại`` / ``của`` / ``Của``. The connective
 #: itself stays in place (it's usually carrying the surrounding
@@ -1340,7 +1340,7 @@ def strip_doctype_docnum_crossrefs(title: str | None) -> str | None:
 def clean_title(
     raw: str | None,
     legal_type: str | None,
-    so_hieu: str | list[str] | tuple[str, ...] | None,
+    doc_number: str | list[str] | tuple[str, ...] | None,
 ) -> str | None:
     """Run the full title cleanup chain (single entry point).
 
@@ -1351,7 +1351,7 @@ def clean_title(
        quote stripping at boundary + paired runs, trailing
        sentence punctuation).
     2. :func:`strip_redundant_title_prefix` -- peel the doc's own
-       ``"<legal_type> số <so_hieu>"`` head.
+       ``"<legal_type> số <doc_number>"`` head.
     3. :func:`strip_doctype_docnum_crossrefs` -- nuke every
        ``<DocType> <DocNum>`` cross-reference left behind from
        step 2 (these cite *other* documents, not this one).
@@ -1385,7 +1385,7 @@ def clean_title(
     t = normalise_title(raw)
     if t is None:
         return None
-    t = strip_redundant_title_prefix(t, legal_type, so_hieu)
+    t = strip_redundant_title_prefix(t, legal_type, doc_number)
     if t is None:
         return None
     t = strip_doctype_docnum_crossrefs(t)
@@ -1403,7 +1403,7 @@ def clean_title(
 
 
 def _try_strip_prefix(
-    title: str, prefix: str, so_hieu: str | None,
+    title: str, prefix: str, doc_number: str | None,
 ) -> str | None:
     """Return the title with the ``"{prefix} số <number>"`` head removed.
 
@@ -1419,9 +1419,9 @@ def _try_strip_prefix(
     # therefore not addressable via a small ``[oô]`` class.
     so_word = r"s\w\.?\s*[:.]?"
 
-    # Path 1: anchor on the literal so_hieu value (fast, exact).
-    if so_hieu:
-        anchor = re.escape(so_hieu)
+    # Path 1: anchor on the literal doc_number value (fast, exact).
+    if doc_number:
+        anchor = re.escape(doc_number)
         pat = re.compile(
             rf"^\s*{lt}\s+(?:{so_word}\s*)?{anchor}\s+",
             re.IGNORECASE,
@@ -1432,7 +1432,7 @@ def _try_strip_prefix(
 
     # Path 2: token-based stripper. Accepts:
     #   * a "Không số" sentinel, OR
-    #   * a so_hieu-shaped token: alnum/&./() that **must** contain
+    #   * a doc_number-shaped token: alnum/&./() that **must** contain
     #     at least one digit or ``/-`` separator so it can't false-
     #     positive on a plain Vietnamese word like ``"hướng"`` or
     #     ``"quy"`` -- e.g. ``"Thông tư hướng dẫn ..."`` must NOT
@@ -1440,7 +1440,7 @@ def _try_strip_prefix(
     # The token character class includes Vietnamese diacritic-bearing
     # letters via ``\w`` (unicode-aware in Python regex). The leading
     # ``số`` anchor is mandatory in Path 2 -- without it the head of
-    # the title is just a noun phrase and there's no real ``so_hieu``
+    # the title is just a noun phrase and there's no real ``doc_number``
     # to peel.
     pat = re.compile(
         rf"""
@@ -1450,11 +1450,11 @@ def _try_strip_prefix(
             (?:
                 Kh\w+\s+s\w+                     # "Không số" sentinel (diacritic-tolerant)
                 |
-                [\w\.()&]*[\d/\-][\w\.()&/\-]*   # so_hieu-shaped token (must have digit or /-)
+                [\w\.()&]*[\d/\-][\w\.()&/\-]*   # doc_number-shaped token (must have digit or /-)
                 (?:\s*[/\-]\s*[\w\.()&]+)*       # ... extra /- runs
             )
             |
-            [\w\.()&]*[\d/\-][\w\.()&/\-]*       # bare so_hieu-shaped token (must have digit or /-)
+            [\w\.()&]*[\d/\-][\w\.()&/\-]*       # bare doc_number-shaped token (must have digit or /-)
             (?:\s*[/\-]\s*[\w\.()&]+)*           # ... extra /- runs
         )
         \s+                                      # whitespace before subject
@@ -1469,7 +1469,7 @@ def _try_strip_prefix(
 
 
 def normalise_label(raw: str | None) -> str | None:
-    """Normalise a short label (``legal_area``, ``co_quan_ban_hanh``).
+    """Normalise a short label (``legal_area``, ``issuing_body``).
 
     Same baseline as :func:`normalise_text` plus stripping the
     trailing sentence punctuation that vbpl pastes into the
@@ -1505,28 +1505,28 @@ _AGENCY_LEAKED_CODE_RE = re.compile(
 )
 
 
-def normalise_co_quan_ban_hanh(raw: str | None) -> str | None:
+def normalise_issuing_body(raw: str | None) -> str | None:
     """Normalise the issuing-agency name.
 
     Applies :func:`normalise_label` (text cleanup + trailing
     punctuation strip) then peels any leaked VBPL doc-type code
     prefix (e.g. ``"CT UBND ..."`` -> ``"UBND ..."``). Idempotent.
 
-    >>> normalise_co_quan_ban_hanh('CT UBND Tỉnh Thanh Hóa')
+    >>> normalise_issuing_body('CT UBND Tỉnh Thanh Hóa')
     'UBND Tỉnh Thanh Hóa'
-    >>> normalise_co_quan_ban_hanh('UBND Tỉnh Thanh Hóa')
+    >>> normalise_issuing_body('UBND Tỉnh Thanh Hóa')
     'UBND Tỉnh Thanh Hóa'
-    >>> normalise_co_quan_ban_hanh('QĐ Bộ Tài chính')
+    >>> normalise_issuing_body('QĐ Bộ Tài chính')
     'Bộ Tài chính'
-    >>> normalise_co_quan_ban_hanh('Bộ Công an')
+    >>> normalise_issuing_body('Bộ Công an')
     'Bộ Công an'
-    >>> normalise_co_quan_ban_hanh('CT')
+    >>> normalise_issuing_body('CT')
     'CT'
-    >>> normalise_co_quan_ban_hanh('  CT  UBND Tỉnh Thanh Hóa  ')
+    >>> normalise_issuing_body('  CT  UBND Tỉnh Thanh Hóa  ')
     'UBND Tỉnh Thanh Hóa'
-    >>> normalise_co_quan_ban_hanh(None) is None
+    >>> normalise_issuing_body(None) is None
     True
-    >>> normalise_co_quan_ban_hanh('Hội đồng nhân dân tỉnh CT')
+    >>> normalise_issuing_body('Hội đồng nhân dân tỉnh CT')
     'Hội đồng nhân dân tỉnh CT'
     """
     s = normalise_label(raw)
@@ -1958,10 +1958,10 @@ __all__ = [
     "clean_title",
     "detail_record_from_api_json",
     "item_id_from_detail_url",
-    "normalise_co_quan_ban_hanh",
+    "normalise_issuing_body",
     "normalise_label",
-    "normalise_so_hieu",
-    "normalise_so_hieu_list",
+    "normalise_doc_number",
+    "normalise_doc_number_list",
     "normalise_text",
     "normalise_title",
     "parse_sitemap_index",

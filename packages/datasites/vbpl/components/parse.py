@@ -72,7 +72,7 @@ class VbplDocumentParser:
         # the ``md/<scope>/<id>.md`` skip-existing check so the parse
         # stage re-emits every row from a refreshed ``docs.jsonl``.
         # Use this after ``--pipeline rebuild_docs`` to propagate new
-        # sidebar metadata (``so_hieu`` / ``ngay_ban_hanh`` / ...) into
+        # sidebar metadata (``doc_number`` / ``issue_date`` / ...) into
         # ``md/<scope>/<id>.meta.json`` without manually clearing the
         # 5 GB markdown cache.
         self._force: bool = bool(
@@ -347,10 +347,10 @@ class VbplDocumentParser:
             "doc_type": row.get("doc_type"),
             "legal_type": row.get("legal_type"),
             "legal_area": row.get("legal_area"),
-            "so_hieu": row.get("so_hieu"),
-            "ngay_ban_hanh": row.get("ngay_ban_hanh"),
-            "co_quan_ban_hanh": row.get("co_quan_ban_hanh"),
-            "trich_yeu": row.get("trich_yeu"),
+            "doc_number": row.get("doc_number"),
+            "issue_date": row.get("issue_date"),
+            "issuing_body": row.get("issuing_body"),
+            "summary": row.get("summary"),
             "title": row.get("title"),
             "file_paths": row.get("file_paths") or [],
             "html_path": row.get("html_path"),

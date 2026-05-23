@@ -40,7 +40,7 @@ MIN_ARTICLE_SHARDS = 4
 
 REQUIRED_FILES = (
     "README.md",
-    "demucs.parquet",
+    "subjects.parquet",
     "tree_nodes.parquet",
 )
 

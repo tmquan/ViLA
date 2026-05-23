@@ -17,14 +17,14 @@ The recipe vbpl ships in ``configs/default.yaml`` is::
       normalizers:
         - vietnamese_text          # ftfy + NFC + tone-mark + whitespace (markdown)
         - vbpl_strip_markdown_junk # Word/Ant Design CSS scaffolding (markdown)
-        - vbpl_clean_title         # peel "<legal_type> số <so_hieu>" + crossrefs (title)
-        - vbpl_so_hieu_list        # normalise + split CSV-like ``soHieu`` cells
-        - vbpl_co_quan_ban_hanh    # strip leaked doc-type code prefixes (agency)
+        - vbpl_clean_title         # peel "<legal_type> số <doc_number>" + crossrefs (title)
+        - vbpl_doc_number_list        # normalise + split CSV-like ``soHieu`` cells
+        - vbpl_issuing_body    # strip leaked doc-type code prefixes (agency)
         - vbpl_legal_area          # baseline + trailing punctuation (legal_area)
-        - vbpl_trich_yeu_text      # baseline NFC + smart quotes (trich_yeu)
+        - vbpl_summary_text      # baseline NFC + smart quotes (summary)
 
 Order matters for the title chain (``vbpl_clean_title`` reads the
-already-normalised ``legal_type`` + ``so_hieu`` columns), so list
+already-normalised ``legal_type`` + ``doc_number`` columns), so list
 the title-touching normalizers *after* the column-typed ones.
 """
 
@@ -36,9 +36,9 @@ import pandas as pd
 
 from packages.datasites.vbpl.components.parser import (
     clean_title,
-    normalise_co_quan_ban_hanh,
+    normalise_issuing_body,
     normalise_label,
-    normalise_so_hieu_list,
+    normalise_doc_number_list,
     normalise_text,
     normalise_title,
     strip_markdown_junk,
@@ -69,8 +69,8 @@ class StripMarkdownJunk:
 class CleanTitle:
     """Run the full vbpl title cleanup chain.
 
-    Reads ``legal_type`` and ``so_hieu`` to peel the doc's own
-    ``"<legal_type> số <so_hieu>"`` head + cross-references; emits
+    Reads ``legal_type`` and ``doc_number`` to peel the doc's own
+    ``"<legal_type> số <doc_number>"`` head + cross-references; emits
     ``None`` for degenerate titles (e.g. just a doc-num token).
     """
 
@@ -81,14 +81,14 @@ class CleanTitle:
         if "title" not in df.columns:
             return df
         legal_types = df["legal_type"] if "legal_type" in df.columns else None
-        so_hieus = df["so_hieu"] if "so_hieu" in df.columns else None
+        doc_numbers = df["doc_number"] if "doc_number" in df.columns else None
 
         out: list[Any] = []
         n = len(df)
         for i in range(n):
             t = df["title"].iat[i]
             lt = legal_types.iat[i] if legal_types is not None else None
-            sh = so_hieus.iat[i] if so_hieus is not None else None
+            sh = doc_numbers.iat[i] if doc_numbers is not None else None
             try:
                 out.append(clean_title(_str_or_none(t), _str_or_none(lt), sh))
             except Exception:  # noqa: BLE001
@@ -97,7 +97,7 @@ class CleanTitle:
         return df
 
 
-@register_normalizer("vbpl_so_hieu_list")
+@register_normalizer("vbpl_doc_number_list")
 class SoHieuList:
     """Canonicalise the document-number column to a ``list[str]``.
 
@@ -107,28 +107,28 @@ class SoHieuList:
     of an empty list.
     """
 
-    name: str = "vbpl_so_hieu_list"
-    columns: tuple[str, ...] = ("so_hieu",)
+    name: str = "vbpl_doc_number_list"
+    columns: tuple[str, ...] = ("doc_number",)
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        if "so_hieu" not in df.columns:
+        if "doc_number" not in df.columns:
             return df
-        df["so_hieu"] = df["so_hieu"].map(_to_so_hieu_list)
+        df["doc_number"] = df["doc_number"].map(_to_doc_number_list)
         return df
 
 
-@register_normalizer("vbpl_co_quan_ban_hanh")
+@register_normalizer("vbpl_issuing_body")
 class CoQuanBanHanh:
     """Strip leaked VBPL doc-type code prefixes from the agency name."""
 
-    name: str = "vbpl_co_quan_ban_hanh"
-    columns: tuple[str, ...] = ("co_quan_ban_hanh",)
+    name: str = "vbpl_issuing_body"
+    columns: tuple[str, ...] = ("issuing_body",)
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        if "co_quan_ban_hanh" not in df.columns:
+        if "issuing_body" not in df.columns:
             return df
-        df["co_quan_ban_hanh"] = df["co_quan_ban_hanh"].map(
-            lambda v: normalise_co_quan_ban_hanh(_str_or_none(v)),
+        df["issuing_body"] = df["issuing_body"].map(
+            lambda v: normalise_issuing_body(_str_or_none(v)),
         )
         return df
 
@@ -149,17 +149,17 @@ class LegalArea:
         return df
 
 
-@register_normalizer("vbpl_trich_yeu_text")
+@register_normalizer("vbpl_summary_text")
 class TrichYeuText:
-    """Baseline text cleanup on ``trich_yeu`` (CMS-export defects)."""
+    """Baseline text cleanup on ``summary`` (CMS-export defects)."""
 
-    name: str = "vbpl_trich_yeu_text"
-    columns: tuple[str, ...] = ("trich_yeu",)
+    name: str = "vbpl_summary_text"
+    columns: tuple[str, ...] = ("summary",)
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        if "trich_yeu" not in df.columns:
+        if "summary" not in df.columns:
             return df
-        df["trich_yeu"] = df["trich_yeu"].map(
+        df["summary"] = df["summary"].map(
             lambda v: normalise_text(_str_or_none(v)),
         )
         return df
@@ -210,8 +210,8 @@ def _str_or_none(value: Any) -> str | None:
     return None
 
 
-def _to_so_hieu_list(value: Any) -> list[str] | None:
-    """Coerce a raw cell to ``list[str] | None`` via :func:`normalise_so_hieu_list`."""
+def _to_doc_number_list(value: Any) -> list[str] | None:
+    """Coerce a raw cell to ``list[str] | None`` via :func:`normalise_doc_number_list`."""
     if value is None:
         return None
     if isinstance(value, float) and pd.isna(value):
@@ -220,10 +220,10 @@ def _to_so_hieu_list(value: Any) -> list[str] | None:
         joined = ", ".join(str(x) for x in value if x)
         if not joined:
             return None
-        normalised = normalise_so_hieu_list(joined)
+        normalised = normalise_doc_number_list(joined)
         return normalised or None
     if isinstance(value, str):
-        normalised = normalise_so_hieu_list(value)
+        normalised = normalise_doc_number_list(value)
         return normalised or None
     return None
 

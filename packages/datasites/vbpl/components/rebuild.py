@@ -5,7 +5,7 @@ The detail stage drives Playwright against vbpl.vn to capture authenticated
 sidecars. Those captures are durable (the slow part of the pipeline -- one
 ~90-hour browser run for 158K docs). When the *post-detail* mapping
 (``detail_record_from_api_json``) is updated -- e.g. to pull richer
-metadata like ``ngay_ban_hanh`` / ``co_quan_ban_hanh`` / ``legal_type``
+metadata like ``issue_date`` / ``issuing_body`` / ``legal_type``
 that earlier versions missed -- we want to re-derive ``docs.jsonl``
 without paying the browser cost again.
 
@@ -243,10 +243,10 @@ def _row_from_api_json(
         "doc_type": rec.doc_type,
         "legal_type": rec.legal_type,
         "legal_area": rec.legal_area,
-        "so_hieu": rec.so_hieu,
-        "ngay_ban_hanh": rec.ngay_ban_hanh,
-        "co_quan_ban_hanh": rec.co_quan_ban_hanh,
-        "trich_yeu": rec.trich_yeu,
+        "doc_number": rec.doc_number,
+        "issue_date": rec.issue_date,
+        "issuing_body": rec.issuing_body,
+        "summary": rec.summary,
         "title": rec.title or sitemap_row.get("slug") or "",
         "body_html": rec.body_html,
         "body_text": body_text,
