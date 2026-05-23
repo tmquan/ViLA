@@ -9,21 +9,6 @@ identifiers use the `snake_case` English forms in the rightmost column.
 Legend: **[N]** = entity / node in the KG, **[R]** = relation, **[P]** =
 process / procedural stage, **[A]** = attribute.
 
-## Companion documents
-
-- [`ontology.md`](ontology.md) — the **authoritative ontology freeze
-  v1.2.0**: classes, cardinalities, state machines, axioms, enumerated
-  vocabularies, identifier rules, JSON-LD context, Akoma Ntoso export
-  profile. Implementation follows the ontology doc when in doubt.
-- [`vn-legal-timeline.md`](vn-legal-timeline.md) — full history-span
-  reference: the eight arcs (A1–A8) of Vietnamese legal history from
-  Quốc triều hình luật (1483) through the current codes and post-2024
-  reforms. In-force codes, amendment chains, first-generation modern
-  codes (BLHS 1985, BLTTHS 1988, BLDS 1995, constitutions from 1946
-  onward), temporal-resolution rules, and seed data for `vila.codes`
-  and `vila.historical_codes`. Use when resolving statute versions or
-  building `code_id` references.
-
 ## Design rule
 
 `Tình huống`, `Vụ án`, `Cáo trạng`, `Đơn khởi kiện`, `Bản án`, `Quyết
@@ -42,7 +27,7 @@ foreign keys to the others, never nested JSON.
 ## Tree
 
 ```
-Pháp luật thông thường   (General body of law)                      [N] general_law
+Pháp luật thông thường   (General body of law)                     [N] general_law
 |
 +- Tư pháp              (Judiciary)                                [N] judiciary
     |
@@ -278,3 +263,135 @@ but a sibling representation does not:
 Treating them as siblings under `legal_type` with explicit relations
 lets the schema, KG, and agent correctly express the many real cases
 where one exists without the other.
+
+## Implementation modules
+
+The taxonomies and bilingual terminology described in this document
+are realised as two canonical Python modules under `packages/common/`:
+
+- **`packages.common.taxonomy`** — closed, hierarchical
+  classifications. Single source of truth for every datasite + the
+  visualizer + the relational schema.
+  - `LEGAL_TYPE_TREE` — the `Tư pháp` class hierarchy described
+    above (this section's subject).
+  - `CODIFICATION_TOPICS` — 42 `chủ đề` (top-level codification
+    topics) sourced from the `phapdien` (Bộ Pháp Điển) corpus.
+  - `CODIFICATION_SUBJECTS` — 202 `đề mục` (second-level codification
+    subjects), keyed by exact Vietnamese title.
+  - `LEGAL_AREAS` — 47 `lĩnh vực` (legal subject areas) sourced from
+    the `thuvienphapluat_tnpl` portal's closed dropdown taxonomy.
+  - `nfc(s)` + `lookup_topic` / `lookup_subject` / `lookup_area`
+    helpers (NFC-normalised on both sides of every comparison).
+- **`packages.common.terminology`** — bilingual VN↔EN legal-term
+  dictionary and the small closed-set status enums.
+  - `GlossaryEntry` — frozen dataclass `(category, vi, en, note)`.
+  - `LEGAL_GLOSSARY` — 116 categorised entries sourced from the
+    `phapdien` glossary.
+  - `DOCUMENT_STATUS` — 4 `Tình trạng` values (effective / expired /
+    partially expired / not yet effective) sourced from
+    `thuvienphapluat_tnpl`.
+  - `UPDATED_BY_PASSTHROUGH` — the single anonymous-editor
+    placeholder; everything else is a proper name copied verbatim.
+  - `lookup_term` / `lookup_status` / `lookup_updated_by` helpers.
+
+Datasite packages (`packages/datasites/phapdien/ontology.py`,
+`packages/datasites/thuvienphapluat_tnpl/_shared.py`) are now thin
+re-export layers over these two canonical modules — never edit the
+datasite copies; edit the common modules and the datasites pick up
+the change for free.
+
+## Codification taxonomy (42 `chủ đề` + 202 `đề mục`)
+
+Vietnam's official codification scheme (Bộ Pháp Điển) classifies all
+codified law into 42 top-level topics (`chủ đề`) further subdivided
+into 202 second-level subjects (`đề mục`). Three topic numbers (11,
+13, 29) are reserved by the Ministry of Justice but currently empty,
+so 42 of 45 topic ids are populated.
+
+Topic numbers are stable identifiers (string-keyed in
+`CODIFICATION_TOPICS`); subject titles are keyed by the exact
+Vietnamese string with NFC normalisation at lookup time. Both tables
+ship a curated `note` field for entries with non-obvious translations
+(`Pháp lệnh` between Law and Decree, `Bộ luật` as a consolidated
+code, `Đề mục` as a codification subject under a topic).
+
+Selected examples (full data in `packages.common.taxonomy`):
+
+| `topic_number` | `vi`                          | `en`                                           |
+|----------------|-------------------------------|------------------------------------------------|
+| 9              | Dân sự                        | Civil law                                      |
+| 16             | Hình sự                       | Criminal law                                   |
+| 30             | Thi hành án                   | Judgment enforcement                           |
+| 35             | Tổ chức bộ máy nhà nước       | Organisation of the state apparatus            |
+| 37             | Tố tụng và các phương thức    | Litigation and dispute-resolution procedures   |
+| 44             | Xây dựng pháp luật và thi hành| Lawmaking and law enforcement                  |
+
+## Legal areas (47 `lĩnh vực`)
+
+The `thuvienphapluat_tnpl` portal classifies every term in its legal
+dictionary into one of 47 `lĩnh vực` (legal subject areas) — a closed
+dropdown taxonomy keyed by exact Vietnamese name. Names sometimes use
+the en-dash `–` instead of the hyphen `-`; the data preserves the
+source spelling verbatim and lookup is NFC-normalised.
+
+Sample entries (full data in `LEGAL_AREAS`):
+
+| `vi`                       | `en`                              |
+|----------------------------|-----------------------------------|
+| Dân sự                     | Civil                             |
+| Trách nhiệm hình sự        | Criminal liability                |
+| Hôn nhân – Gia đình – Thừa kế | Marriage, family and inheritance |
+| Lao động – Tiền lương      | Labor and wages                   |
+| Sở hữu trí tuệ             | Intellectual property             |
+| Vi phạm hành chính         | Administrative violations         |
+| Lĩnh vực khác              | Other                             |
+
+The `LEGAL_AREAS` taxonomy is independent from the 42-topic
+`CODIFICATION_TOPICS` taxonomy: the two portals classify Vietnamese
+legal content along different axes (the Ministry's official codified
+topics vs the dictionary's editorial subject areas). Both are
+canonical for their own corpus and useful as orthogonal facets when
+joined.
+
+## Bilingual legal glossary (`LEGAL_GLOSSARY`)
+
+The `phapdien` glossary collects 116 of the most-cited legal terms
+across the corpus, bucketed into 13 categories so a downstream UI or
+NER component can scope its lookup:
+
+| Category        | Examples                                                      |
+|-----------------|---------------------------------------------------------------|
+| `instrument`    | Hiến pháp, Bộ luật, Luật, Pháp lệnh, Nghị định, Thông tư      |
+| `structure`     | Phần, Chương, Mục, Điều, Khoản, Điểm                          |
+| `codification`  | Pháp điển, Bộ Pháp Điển, Chủ đề, Đề mục                       |
+| `court`         | Tòa án nhân dân tối cao, Tòa án quân sự, Bị cáo, Bản án, Án lệ|
+| `agency`        | Quốc hội, Chính phủ, Thủ tướng, Bộ Tư pháp, Mặt trận Tổ quốc  |
+| `procedure`     | Tố tụng dân sự, Khởi kiện, Xét xử sơ thẩm, Giám đốc thẩm      |
+| `civil`         | Hợp đồng, Quyền sở hữu, Quyền sử dụng đất, Thừa kế, Hôn nhân  |
+| `criminal`      | Tội phạm, Hình phạt, Án treo, Tù chung thân, Tử hình          |
+| `admin`         | Vi phạm hành chính, Khiếu nại, Thanh tra, Giấy phép           |
+| `status`        | Hộ tịch, Hộ khẩu, Cư trú, Quốc tịch, Lý lịch tư pháp          |
+| `finance`       | Thuế GTGT, Thuế TNDN, Thuế TNCN, Hóa đơn, Ngân sách nhà nước  |
+| `labour`        | Hợp đồng lao động, Tiền lương, Bảo hiểm xã hội, Đình công     |
+| `police`        | Công an, Cảnh sát, Tạm giữ, Tạm giam, Truy nã                 |
+
+Lookup is NFC-normalised on both sides via
+`packages.common.terminology.lookup_term(term_vi, category=...)`. The
+optional `category` argument scopes the lookup so the same Vietnamese
+word resolves correctly across categories (e.g. `Bị cáo` /defendant
+under `court` carries the criminal-context note, while `Bị đơn`
+/defendant under `court` carries the civil-context note — both are
+distinct entries and `lookup_term` returns whichever matches).
+
+## Document status (`DOCUMENT_STATUS`)
+
+A four-value closed enum sourced from `thuvienphapluat_tnpl`'s
+`Tình trạng` field. Unknown values are passed through verbatim with
+a warning so future portal additions are never silently dropped.
+
+| `vi`                    | `en`              |
+|-------------------------|-------------------|
+| Còn hiệu lực            | Effective         |
+| Hết hiệu lực            | Expired           |
+| Hết hiệu lực một phần   | Partially expired |
+| Chưa có hiệu lực        | Not yet effective |

@@ -124,7 +124,7 @@ parser:
   timeout_s: 120.0
 
 # Stage 3: extract. Declarative normalizer chain runs as a Curator
-# ``NormalizerChainStage`` (wiki.md §3.5) between the markdown reader
+# ``NormalizerChainStage`` (wiki/DATASITES.md §3.5) between the markdown reader
 # and the regex / structure layers, so every layer sees a single
 # canonical orthography AND every vbpl-specific cleanup (Word/Ant
 # Design CSS scaffolding, title prefix peeling, doc_number CSV split,
@@ -165,7 +165,7 @@ extractor:
   num_workers: 4
   max_seq_length: "${..full_text_context}"
 
-# Parquet consumption tier shard sizing (wiki.md §3.5.4).
+# Parquet consumption tier shard sizing (wiki/DATASITES.md §3.5.4).
 #
 # vbpl rows are dense -- the JSONL ships ``structure_json`` (full
 # tree of articles / clauses / sentences) + ``extracted_json`` (the
@@ -177,7 +177,7 @@ extractor:
 # and keeps Parquet row-group reads cheap.
 #
 # This override is the canonical example of the per-site exception
-# rule in wiki.md §3.5.4: keep the default 10K for thin-row sites
+# rule in wiki/DATASITES.md §3.5.4: keep the default 10K for thin-row sites
 # (anle, congbobanan), drop to 5K only when row density forces it.
 # The two non-default sites that ever need to override (here +
 # congbobanan-if-it-ever-bulks-up) explain why.

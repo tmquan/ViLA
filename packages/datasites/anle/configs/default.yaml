@@ -65,7 +65,7 @@ parser:
   timeout_s: 120.0
 
 extractor:
-  # Declarative normalizer chain (wiki.md §3.5). anle ships only the
+  # Declarative normalizer chain (wiki/DATASITES.md §3.5). anle ships only the
   # universal baseline -- the in-process precedent extractor
   # (run_site_layer) handles án lệ-specific cleanup downstream
   # because those normalizers depend on the structured fields
@@ -83,7 +83,7 @@ extractor:
   llm_tier_for_ambiguous: fast
   max_seq_length: "${..full_text_context}"
 
-# Parquet consumption tier shard sizing -- anle uses the wiki.md
+# Parquet consumption tier shard sizing -- anle uses the wiki/DATASITES.md
 # §3.5 default (10K rows / shard) because precedent rows are thin
 # (no structure_json blob; the body is the markdown).
 # Override here only if shard sizes ever balloon past the HF dataset-

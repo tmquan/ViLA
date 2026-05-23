@@ -10,7 +10,7 @@ is given in weeks; durations can compress with more parallelism.
 
 | M# | Milestone | Duration | Status | Exit criteria |
 |---|---|---|---|---|
-| M-1 | Planning freeze | 0 w | GREEN | Ontology v1.2.0 (`00-overview/ontology.md`), legal timeline (`00-overview/vn-legal-timeline.md`), glossary, and schemas all consistent. Readiness checklist (section 10) all green. |
+| M-1 | Planning freeze | 0 w | GREEN | Ontology v1.2.0 (`../wiki/ONTOLOGY.md`), legal timeline (`00-overview/vn-legal-timeline.md`), glossary, and schemas all consistent. Readiness checklist (section 10) all green. |
 | M0 | Foundations | 2 w | IN PROGRESS | Monorepo scaffolded; CI green; shared schemas stood up; LLM + embed clients callable. Seed data for `vila.codes` loaded from the legal-timeline doc. |
 | M1 | Ingest baseline | 3 w | PARTIAL | Six datasites live: Family A (`anle`, `congbobanan`), Family B (`pbgdpl`, `phapdien`, `thuvienphapluat_tnpl`), and hybrid `vbpl` (Playwright + Curator embed/reduce). All ship the per-doc tier; the §3.5.2 sharded-parquet consumption tier is wired only on `vbpl` (anle/congbobanan still emit per-doc parquet under `parquet/embeddings/` + `parquet/reduced/`). 157 unit/e2e tests; object-store + Postgres sinks + lineage table not yet wired (pipelines terminate at on-disk parquet/JSONL + the HF publish surface). |
 | M2 | Parse + extract | 4 w | PARTIAL | `PdfParseStage` (nemo-parse NIM + local pypdf fallback) + regex-based `LegalExtractStage` shipped. OCR fallback, Vietnamese section tagger (YAML rules), ML-based NER, statute linker F1 targets -- all pending. |
@@ -85,7 +85,7 @@ have a local-NIM container as fallback.
   - Open follow-ups: migrate `anle` + `congbobanan` `embed` /
     `reduce` from per-doc parquet (`parquet/embeddings/` /
     `parquet/reduced/`) onto the sharded consumption tier described
-    in `wiki.md` §3.5.2.
+    in `../wiki/DATASITES.md` §3.5.2.
 - **Curator primitives**: four site-specific subclasses per datasite
   under `<site>/components/` (`URLGenerator`, `DocumentDownloader`,
   `DocumentIterator`, `DocumentExtractor`). The ad-hoc "Downloader
@@ -265,9 +265,9 @@ external downloads.
 
 | # | Artifact | Location | Status | Acceptance check |
 |---|---|---|---|---|
-| S1 | Legal taxonomy (sibling `legal_type` model) | `00-overview/glossary.md` | READY | Grep: no nested `Tình huống -> Vụ án -> Cáo trạng` chain anywhere |
+| S1 | Legal taxonomy (sibling `legal_type` model) | `../wiki/TERMINOLOGY.md` | READY | Grep: no nested `Tình huống -> Vụ án -> Cáo trạng` chain anywhere |
 | S2 | VN legal-timeline + seed data for `codes` | `00-overview/vn-legal-timeline.md` | READY | Table covers every `code_id` referenced elsewhere in docs |
-| S3 | Ontology freeze v1.2.0 | `00-overview/ontology.md` | READY | All Postgres tables, Pydantic models, Zod schemas, KG node and edge types map to an ontology class or property |
+| S3 | Ontology freeze v1.2.0 | `../wiki/ONTOLOGY.md` | READY | All Postgres tables, Pydantic models, Zod schemas, KG node and edge types map to an ontology class or property |
 | S4 | Relational schema | `05-data-infrastructure.md` | READY | All `legal_type` siblings have tables; enums covered by CHECK constraints; FK integrity satisfies AX-01..AX-18 |
 | S5 | KG node + edge catalog | `06-knowledge-graph.md` | READY | Matches ontology §2 and §3 |
 | S6 | Curator operator pipeline | `03-curation-pipeline.md` | READY | Downloader list includes all sources (congbobanan, anle, vbpl, upload, local corpus) |
@@ -278,8 +278,8 @@ external downloads.
 | S11 | UI/UX + i18n | `10-ui-ux.md` | READY | Component inventory + `next-intl` catalogs + PoC demo script |
 | S12 | Ontology comparison + adoption decisions | `01-comparative-analysis.md` §12 | READY | Cross-ontology mapping to ECLI/ELI/Akoma Ntoso/LKIF/FRBR |
 | S13 | Sample corpus layout (`data/`) | `00-overview/repo-layout.md` | READY | Layout convention documented; `.gitignore` aligned |
-| S14 | Provenance schema | `00-overview/ontology.md` §11 | READY | Example JSON matches `predictions` table shape |
-| S15 | Identifier generation rules | `00-overview/ontology.md` §7 | READY | ECLI-VN, ELI-VN, precedent URI, person-hash rules all specified |
+| S14 | Provenance schema | `../wiki/ONTOLOGY.md` §11 | READY | Example JSON matches `predictions` table shape |
+| S15 | Identifier generation rules | `../wiki/ONTOLOGY.md` §7 | READY | ECLI-VN, ELI-VN, precedent URI, person-hash rules all specified |
 
 ### 10.2 Environment and infrastructure readiness
 

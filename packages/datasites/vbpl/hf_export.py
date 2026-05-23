@@ -2,7 +2,7 @@
 
 Reads the extractor raw per-doc JSONL tier
 (``data/<host>/jsonl/<doc_name>.jsonl``, one record per file, per
-wiki.md §3.5) and the optional reducer parquets from
+wiki/DATASITES.md §3.5) and the optional reducer parquets from
 ``data/<host>/parquet/reduced/*``, writing a self-contained ``hf/``
 tree that can be uploaded with
 :mod:`packages.datasites.vbpl.push_to_hf`::
@@ -250,7 +250,7 @@ def _project_record(rec: dict[str, Any]) -> dict[str, Any] | None:
     ``clean_title``, ``normalise_doc_number_list``,
     ``normalise_issuing_body``, ...) is **not** done here -- the
     extract Curator pipeline's ``NormalizerChainStage`` is the single
-    source of truth (wiki.md §3.5 + ``cfg.extractor.normalizers`` in
+    source of truth (wiki/DATASITES.md §3.5 + ``cfg.extractor.normalizers`` in
     ``configs/default.yaml``). The HF export is a pure projection on
     top of an already-canonical JSONL.
     """
@@ -558,7 +558,7 @@ def _iter_per_doc_jsonl(jsonl_dir: Path) -> Iterator[dict[str, Any]]:
     """Yield one record per ``<doc_name>.jsonl`` under ``jsonl_dir``.
 
     The vbpl extract Curator pipeline writes the raw per-doc tier
-    (wiki.md §3.5) -- one JSON object per file keyed by
+    (wiki/DATASITES.md §3.5) -- one JSON object per file keyed by
     ``doc_name``. We sort by filename so the projection is
     deterministic across runs. Sidecars / stage manifests that
     happen to share the ``*.jsonl`` extension (``sitemap.jsonl``,
@@ -1390,7 +1390,7 @@ def export(
 
     Reads the raw per-doc tier (``<jsonl_dir>/<doc_name>.jsonl``,
     one record per file -- the canonical extract output per
-    wiki.md §3.5), projects each record through
+    wiki/DATASITES.md §3.5), projects each record through
     :func:`_project_record`, and writes the
     ``documents-NNNNN-of-KKKKK.parquet`` consumption tier under
     ``out_dir`` alongside the dataset card / manifest / figures.

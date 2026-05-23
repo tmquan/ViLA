@@ -109,7 +109,7 @@ Tabs:
 ### 4.6 Taxonomy (`/[locale]/taxonomy`)
 
 - Interactive tree view of the legal concept hierarchy (from
-  `00-overview/glossary.md`).
+  `../wiki/TERMINOLOGY.md`).
 - Leaves are clickable filters applied across other pages.
 - Leaf counts rendered from `services/kg` aggregations.
 

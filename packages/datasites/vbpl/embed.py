@@ -7,7 +7,7 @@ Stage chain (built by
     -> NimEmbedderStage | EmbeddingCreatorStage  (cfg.embedder.runtime)
     -> ParquetPerDocWriter(embeddings_dir, fields=EMBEDDER_PARQUET_FIELDS)
 
-vbpl follows the canonical wiki.md §3.5 pattern: the Embedder reads
+vbpl follows the canonical wiki/DATASITES.md §3.5 pattern: the Embedder reads
 directly from the parquet consumption tier produced by the extract
 stage (``data/<host>/parquet/extract/extract-*.parquet``), not from
 JSONL. Avoids one serialisation hop and lets the embedder pull the

@@ -130,7 +130,7 @@ class SiteLayout:
 def _curator_dirs(layout: SiteLayout) -> tuple[Path, ...]:
     """Full Curator pipeline (download → parse → extract → embed → reduce).
 
-    Two output tiers per wiki.md §3.5: the raw per-doc tier
+    Two output tiers per wiki/DATASITES.md §3.5: the raw per-doc tier
     (``pdf/`` / ``md/`` / ``jsonl/``) for resume + grep, and the
     parquet consumption tier (``parquet/<stage>/<stage>-*.parquet``)
     for downstream consumers.

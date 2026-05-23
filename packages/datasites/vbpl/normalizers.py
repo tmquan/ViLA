@@ -1,4 +1,4 @@
-"""vbpl-specific normalizers (wiki.md §3.5 + the registry pattern).
+"""vbpl-specific normalizers (wiki/DATASITES.md §3.5 + the registry pattern).
 
 Each normalizer wraps a pure function from
 :mod:`packages.datasites.vbpl.components.parser` so the same

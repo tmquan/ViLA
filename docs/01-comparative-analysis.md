@@ -264,7 +264,7 @@ Defines upper concepts (`Legal Document`, `Legal Person`, `Norm`,
 `Role`, `Action`, `Time`, …) suitable as an ontological scaffold for
 case-based reasoning.
 
-- **VN applicability**: ViLA's taxonomy in `00-overview/glossary.md`
+- **VN applicability**: ViLA's taxonomy in `../wiki/TERMINOLOGY.md`
   aligns at the conceptual level (`legal_type` maps to LKIF
   `LegalDocument` subtree; `participant` to `LegalPerson`;
   `legal_source` to `Norm`). We do not emit OWL for MVP but align
@@ -454,7 +454,7 @@ Summary of what ViLA adopts from the landscape, and why:
 ### 12.6 Cross-ontology identifier mapping
 
 A reference table showing how ViLA's canonical identifiers (from
-`00-overview/glossary.md`) align with equivalents in the standards
+`../wiki/TERMINOLOGY.md`) align with equivalents in the standards
 above. This is the practical specification for import / export.
 
 | ViLA identifier | ViLA kind | Akoma Ntoso element | LKIF class | FRBR level | ECLI / ELI | schema.org type |
@@ -491,7 +491,7 @@ alongside the export endpoint in M7 (see
 2. **Versioning is first-class.** Statute articles carry
    `effective_from` / `effective_to`; amendments never mutate in place.
 3. **Siblings, not nests.** The sibling `legal_type` model (see
-   `00-overview/glossary.md`) is chosen specifically so Vietnamese
+   `../wiki/TERMINOLOGY.md`) is chosen specifically so Vietnamese
    procedural artifacts can co-exist without forcing one to own
    another; this is consistent with Akoma Ntoso treating `<act>` and
    `<judgement>` as sibling document types.

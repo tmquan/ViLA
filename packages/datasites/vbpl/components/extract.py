@@ -1,7 +1,7 @@
 """LEGACY in-process extractor for vbpl (retired May 2026).
 
 .. deprecated:: replaced by the Curator pipeline in
-   :mod:`packages.datasites.vbpl.extract` (wiki.md §3.5 +
+   :mod:`packages.datasites.vbpl.extract` (wiki/DATASITES.md §3.5 +
    ``cfg.extractor.normalizers``). This module is no longer wired
    into ``--pipeline extract`` / ``--pipeline all`` -- the CLI now
    builds a :class:`nemo_curator.pipeline.Pipeline` that runs the

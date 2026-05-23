@@ -12,7 +12,7 @@ The ``extract`` stage is now a Curator pipeline
 (``packages.datasites.vbpl.extract``) so the in-process
 ``VbplDocumentExtractor`` driver was retired in favour of the
 shared :class:`packages.extractor.stage.LegalExtractStage`. See
-wiki.md §3.5 + §13.4 for the hybrid contract.
+wiki/DATASITES.md §3.5 + §13.4 for the hybrid contract.
 
 The driver lives in :mod:`packages.datasites.vbpl.scraper` and is
 exposed via ``python -m packages.datasites.vbpl``.

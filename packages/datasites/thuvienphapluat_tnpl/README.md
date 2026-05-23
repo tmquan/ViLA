@@ -657,7 +657,7 @@ non-exclusive expectations:
   author       = {TMQuan},
   year         = {2026},
   howpublished = {\url{https://huggingface.co/datasets/tmquan/thuvienphapluat-vn-tnpl}},
-  note         = {Bilingual mirror of the public Thu\d{a}t ng\d{u} ph\'ap l\'y corpus from THƯ VIỆN PHÁP LUẬT; English column produced by the \texttt{nvidia/nemotron-3-super-120b-a12b} NIM chat-completion model.}
+  note         = {Bilingual mirror of the public Thuật ngữ pháp lý corpus from THƯ VIỆN PHÁP LUẬT; English column produced by the \texttt{nvidia/nemotron-3-super-120b-a12b} NIM chat-completion model.}
 }
 
 @misc{thuvienphapluat_tnpl_source_2026,

@@ -89,7 +89,7 @@ class LegalExtractStage(ProcessingStage[DocumentBatch, DocumentBatch]):
         # Skip inline normalization when an upstream
         # :class:`NormalizerChainStage` already ran (the new
         # declarative chain owns normalization end-to-end —
-        # wiki.md §3.5). The legacy ``run_text_normalization``
+        # wiki/DATASITES.md §3.5). The legacy ``run_text_normalization``
         # boolean keeps the inline path alive for sites that
         # haven't migrated to the chain yet.
         chain_names = getattr(self.cfg.extractor, "normalizers", None) or []

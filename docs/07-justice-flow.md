@@ -461,7 +461,7 @@ historical data, not hard-coded.
 ## 11. Integration with the legal concept taxonomy
 
 The decision tree operates across several independent `legal_type`
-artifacts (siblings under `Tư pháp`, see `00-overview/glossary.md`),
+artifacts (siblings under `Tư pháp`, see `../wiki/TERMINOLOGY.md`),
 not a strict containment chain. The mapping below shows which decision
 nodes consume or produce which artifacts and their constituent
 attributes.

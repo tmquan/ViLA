@@ -100,7 +100,7 @@ EMBEDDER_PARQUET_READ_FIELDS: list[str] = [
 ]
 
 #: Backwards-compat alias for the legacy JSONL-input embed factory.
-#: Identical column set to the canonical parquet input; the wiki.md
+#: Identical column set to the canonical parquet input; the wiki/DATASITES.md
 #: §3.5 migration only swapped the file format, not the projection.
 EMBEDDER_JSONL_READ_FIELDS: list[str] = list(EMBEDDER_PARQUET_READ_FIELDS)
 

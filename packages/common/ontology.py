@@ -1,13 +1,18 @@
 """Minimal ontology reference used by the visualizer stage.
 
-Mirrors docs/00-overview/ontology.md sections 2 (class hierarchy),
-3 (sibling relations), and 6 (enumerated vocabularies), and
-docs/00-overview/vn-legal-timeline.md section 2 (legal arcs A1-A8).
+Mirrors the four wiki/ONTOLOGY.md surfaces the visualizer cares about:
+the class hierarchy (§2), the sibling relations (§3), the enumerated
+vocabularies (§6), and the eight legal arcs A1-A8 of Vietnamese legal
+history.
 
 Kept small and embedded so the visualizer runs without depending on
-any other ViLA package. If `packages/schemas/py/src/vila_schemas/
-vocabs/*.yaml` later materializes, point this loader at it via
-`load_ontology(custom_path)`.
+any other ViLA package. The class hierarchy itself lives in
+:data:`packages.common.taxonomy.LEGAL_TYPE_TREE` (single source of
+truth shared with the bilingual UI + the relational schema); we just
+re-export it here as :data:`TAXONOMY_TREE` for back-compat. If
+``packages/schemas/py/src/vila_schemas/vocabs/*.yaml`` later
+materializes, point this loader at it via
+``load_ontology(custom_path)``.
 """
 
 from __future__ import annotations
@@ -18,58 +23,16 @@ from typing import Any
 
 import yaml
 
+from packages.common.taxonomy import LEGAL_TYPE_TREE
+
 
 # ----------------------------------------------------------------- class tree
 
 
-TAXONOMY_TREE: dict[str, Any] = {
-    "Pháp luật thông thường": {
-        "Tư pháp": {
-            "legal_type": {
-                "legal_situation": {},
-                "case_file": {},
-                "indictment": {},
-                "lawsuit": {},
-                "investigation_conclusion": {},
-                "ruling": {},
-                "verdict": {},
-                "precedent": {},
-            },
-            "participant": {
-                "person": {},
-                "defendant": {},
-                "plaintiff": {},
-                "civil_defendant": {},
-                "victim": {},
-                "witness": {},
-                "court": {},
-                "procuracy": {},
-                "investigation_body": {},
-            },
-            "legal_source": {
-                "code": {},
-                "statute_article": {},
-                "historical_code": {},
-            },
-            "constituent_attribute": {
-                "charge": {},
-                "sentence": {},
-                "evidence_item": {},
-                "case_event": {},
-                "factor": {},
-                "determination": {},
-            },
-            "classifier": {
-                "legal_relation": {},
-                "procedure_type": {},
-                "penalty_type": {},
-                "outcome_code": {},
-                "exit_code": {},
-                "case_phase": {},
-            },
-        },
-    },
-}
+#: Back-compat alias for :data:`packages.common.taxonomy.LEGAL_TYPE_TREE`.
+#: New code should import the canonical name from
+#: :mod:`packages.common.taxonomy`.
+TAXONOMY_TREE: dict[str, Any] = LEGAL_TYPE_TREE
 
 
 # ----------------------------------------------------------------- enums

@@ -1,4 +1,4 @@
-"""Declarative normalizer registry + Curator chain stage (wiki.md §3.5).
+"""Declarative normalizer registry + Curator chain stage (wiki/DATASITES.md §3.5).
 
 The two-tier output rule + the user directive that "any normalization
 should be a list and part of nemo curator for reproducibility" boil

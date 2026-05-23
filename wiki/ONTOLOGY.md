@@ -14,17 +14,11 @@ for:
 - JSON-LD `@context` for public API output
 - Akoma Ntoso export profile
 
-The ontology is derived from and consistent with:
-
-- `00-overview/glossary.md` — Vietnamese taxonomy + sibling relations
-- `00-overview/vn-legal-timeline.md` — code identifiers + life-spans
-- `01-comparative-analysis.md` §12 — ontology comparison + adoption
-- `05-data-infrastructure.md` — Postgres DDL + Pydantic / Zod
-- `06-knowledge-graph.md` — KG node and edge catalog
-
-If this document contradicts any of the above, this document is
-authoritative for implementation; inconsistencies are bugs to fix in
-the other doc.
+This document is the authoritative ontology for ViLA implementation.
+Postgres DDL, Pydantic and Zod schemas, knowledge-graph node and edge
+types, JSON-LD contexts, and Akoma Ntoso export profiles all derive
+from the classes, properties, axioms, identifier rules, and enumerated
+vocabularies fixed below.
 
 ## 1. Namespaces
 
@@ -51,6 +45,17 @@ environment.
 All ViLA entities are grouped under five top classes, mirroring the
 glossary groupings. Every leaf class is mapped to a Postgres table,
 Pydantic/Zod model, and KG node type.
+
+The class hierarchy ships as runtime data in
+`packages.common.taxonomy.LEGAL_TYPE_TREE` (single source of truth
+shared with the visualizer, the relational schema, and the bilingual
+UI). Companion bilingual data lives next to it in the same module:
+`CODIFICATION_TOPICS` (42 `chủ đề`) and `CODIFICATION_SUBJECTS` (202
+`đề mục`) sourced from the `phapdien` (Bộ Pháp Điển) corpus, and
+`LEGAL_AREAS` (47 `lĩnh vực`) sourced from `thuvienphapluat_tnpl`.
+Bilingual term-level data ships separately in
+`packages.common.terminology` (`LEGAL_GLOSSARY`, `DOCUMENT_STATUS`,
+`UPDATED_BY_PASSTHROUGH`).
 
 ```
 vn-legal:Thing                              (abstract)
@@ -899,9 +904,9 @@ legal-history span:
   - **Constitutional anchoring** (timeline §3 rule 8): statute
     articles are implicitly anchored to the constitution in force at
     their `effective_from`.
-- Eight legal arcs (A1–A8) documented in `vn-legal-timeline.md` §2,
-  with explicit "ViLA handling" per arc (documentary vs statute-
-  linking vs active retrieval).
+- Eight legal arcs (A1–A8) of Vietnamese legal history, with explicit
+  "ViLA handling" per arc (documentary vs statute-linking vs active
+  retrieval).
 
 Breaking changes: none. `vila.codes` additions are new rows; the new
 `vila.historical_codes` table is additive. No existing column types or
@@ -932,9 +937,9 @@ audit:
 - `predictions.task` enumerated set added, matching the task matrix in
   Phase 8 §11.
 - `case_file_history.event_type` enum expanded to include
-  `regime_upgrade` (for LTPCTN-2024 transitional upgrades; see
-  `00-overview/vn-legal-timeline.md` §4) and `stay_execution` /
-  `stay_lifted` (for appellate stays; see state machine §5.5).
+  `regime_upgrade` (for LTPCTN-2024 transitional upgrades) and
+  `stay_execution` / `stay_lifted` (for appellate stays; see state
+  machine §5.5).
 
 Breaking changes: none. Implementations targeting 1.0.0 remain
 compatible; the added CHECK constraints only reject data that was

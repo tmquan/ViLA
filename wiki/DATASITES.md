@@ -2,7 +2,7 @@
 
 > Authoritative SoP (Standard Operating Procedure) for every new
 > ViLA datasite, distilled from the reference implementation under
-> [`packages/datasites/anle/`](packages/datasites/anle/). Treat this
+> `packages/datasites/anle/`. Treat this
 > file as the *checklist* a new datasite must satisfy before its
 > `--pipeline all` is green-lit for nightly cron and HF publish.
 >
@@ -25,10 +25,6 @@
 > → reduce → HF publish**. Only the orchestration backend (Curator-
 > on-Ray vs in-process) and the stage names (`download` vs
 > `harvest`/`detail`) change.
->
-> See [`docs/00-overview/repo-layout.md`](docs/00-overview/repo-layout.md)
-> §"Package boundaries / two families" for the family-boundary
-> definition itself.
 
 ## 0. TL;DR — the contract every datasite must satisfy
 
@@ -74,15 +70,15 @@ of those six contracts, anchored against the anle implementation.
 ## 1. Why NeMo Curator? (the design rationale)
 
 ViLA's curation tier is built on
-[NVIDIA NeMo Curator](https://docs.nvidia.com/nemo/curator/). The
+NVIDIA NeMo Curator. The
 key abstractions we adopt verbatim:
 
 | Curator abstraction | What we get for free |
 |---|---|
-| [`ProcessingStage[InputT, OutputT]`](https://docs.nvidia.com/nemo/curator/api/reference/api-reference/processing-stage) | Typed inputs / outputs, automatic schema validation between adjacent stages at `Pipeline.build()` time. |
-| [`DocumentBatch`](https://docs.nvidia.com/nemo/curator/api/reference/api-reference/document-batch) | The single in-memory task type (pandas-DataFrame-backed) that every ViLA stage emits + consumes — no bespoke transport. |
-| [`Pipeline`](https://docs.nvidia.com/nemo/curator/api/reference/api-reference/pipeline) | The composable graph; `Pipeline.describe()` is the human-readable schema check; `Pipeline.run(executor=...)` is the dispatch point. |
-| [`DocumentDownloadExtractStage`](https://docs.nvidia.com/nemo/curator/api/reference/api-reference/document-download-extract-stage) | A *composite* that decomposes into `URLGenerationStage → DocumentDownloadStage → DocumentIterateExtractStage` at build time, so a site only writes the four primitive subclasses, not the staging glue. |
+| `ProcessingStage[InputT, OutputT]` | Typed inputs / outputs, automatic schema validation between adjacent stages at `Pipeline.build()` time. |
+| `DocumentBatch` | The single in-memory task type (pandas-DataFrame-backed) that every ViLA stage emits + consumes — no bespoke transport. |
+| `Pipeline` | The composable graph; `Pipeline.describe()` is the human-readable schema check; `Pipeline.run(executor=...)` is the dispatch point. |
+| `DocumentDownloadExtractStage` | A *composite* that decomposes into `URLGenerationStage → DocumentDownloadStage → DocumentIterateExtractStage` at build time, so a site only writes the four primitive subclasses, not the staging glue. |
 | `JsonlReader` / `ParquetReader` / `JsonlWriter` / `ParquetWriter` | Off-the-shelf IO with `mode="ignore"` idempotency. The ViLA writers (`JsonlPerDocWriter`, `MarkdownPerDocWriter`, `ParquetShardWriter`) key the raw per-doc tier by `doc_name` and the parquet consumption tier by deterministic `<stage>-NNNNN-of-KKKKK.parquet` shards (rule §3.5). |
 | `XennaExecutor` / `RayActorPoolExecutor` / `RayDataExecutor` | Three Ray-backed dispatchers; the same `Pipeline` object runs on any of them via `--executor`. |
 
@@ -174,7 +170,7 @@ Sites that still ship a consolidated `jsonl/extract.jsonl`
 ### 2c. The four anle primitive subclasses
 
 Each Curator abstract base has one anle subclass under
-[`packages/datasites/anle/components/`](packages/datasites/anle/components/).
+`packages/datasites/anle/components/`.
 The shape is the SoP for every new site:
 
 | Curator base            | anle subclass                                | Responsibility                                                                                                                                                              |
@@ -199,7 +195,7 @@ Two repeating patterns to clone verbatim into a new site:
 ### 2d. Five pipeline factories (one file each)
 
 Top-level anle files map 1-to-1 onto the five pipelines, all under
-[`packages/datasites/anle/`](packages/datasites/anle/):
+`packages/datasites/anle/`:
 
 ```
 anle/
@@ -224,7 +220,7 @@ anle/
 
 `extract.py` / `embed.py` / `reduce.py` are *three-line wrappers*
 around shared factories in
-[`packages/pipeline/factories.py`](packages/pipeline/factories.py)
+`packages/pipeline/factories.py`
 (`build_extract_pipeline`, `build_embed_pipeline`,
 `build_reduce_pipeline`). New sites should call those shared
 factories and pass only their per-site `EXTRACTOR_JSONL_FIELDS` /
@@ -606,7 +602,7 @@ fidelity with the source portal and are deliberate.
 > * **`ParquetShardWriter` as a single Curator stage does NOT exist
 >   yet.** Treat the diagrams below as the design target; the
 >   migration to a unified shard writer is tracked under §3.5
->   follow-up work in `docs/99-implementation-roadmap.md`.
+>   follow-up work on the implementation roadmap.
 
 §3 fixed the **column shape** every datasite must ship. This
 section fixes the **file shape**. Every pipeline stage emits
@@ -683,7 +679,7 @@ synthesises — see §8.
 | `PARQUET_ROW_GROUP_SIZE` | `1_024`   | Row-group granularity inside each shard. Small enough for streaming consumers, large enough that compression amortises.                                  |
 
 These constants live in **one place** —
-[`packages/common/io.py`](packages/common/io.py) — and every
+`packages/common/io.py` — and every
 parquet writer imports them.
 
 **Per-site override (documented exception, not site-by-site
@@ -803,7 +799,7 @@ def build_parse_pipeline(cfg: Any) -> Pipeline:
 ```
 
 `PdfParseStage` (under
-[`packages/parser/stage.py`](packages/parser/stage.py)) is shared
+`packages/parser/stage.py`) is shared
 across every site and supports three runtimes selected by
 `cfg.parser.runtime`:
 
@@ -838,7 +834,7 @@ def build_extract_pipeline(cfg: Any) -> Pipeline:
 ```
 
 `LegalExtractStage` runs **three deterministic layers**
-(under [`packages/extractor/`](packages/extractor/)):
+(under `packages/extractor/`):
 
 1. **Text normalization** (`packages/extractor/normalization.py`) —
    NFC + Vietnamese tone-mark canonicalisation + PDF whitespace
@@ -892,7 +888,7 @@ def build_embed_pipeline(cfg: Any) -> Pipeline:
 ```
 
 `build_embedder_stage(cfg)` (under
-[`packages/embedder/stage.py`](packages/embedder/stage.py)) picks
+`packages/embedder/stage.py`) picks
 between:
 
 | `cfg.embedder.runtime` | Stage returned                                             | Resources           |
@@ -905,7 +901,7 @@ between:
 **Default embedding model**: `nvidia/llama-nemotron-embed-1b-v2`
 (2048-D, 8k native context). The full set of *predefined* models
 the pipeline can route to lives in
-[`packages/embedder/embedding_models.yaml`](packages/embedder/embedding_models.yaml)
+`packages/embedder/embedding_models.yaml`
 and is mirrored verbatim in
 `hf_export.PREDEFINED_EMBED_MODELS` so the dataset card can
 advertise the menu even when only the default produced the
@@ -938,7 +934,7 @@ def build_reduce_pipeline(cfg: Any) -> Pipeline:
 ```
 
 `ReducerStage` (under
-[`packages/reducer/stage.py`](packages/reducer/stage.py)) is a
+`packages/reducer/stage.py`) is a
 **full-batch** stage (`batch_size=None`): PCA + t-SNE + UMAP need
 the entire matrix to produce globally consistent coordinates.
 
@@ -1016,7 +1012,7 @@ All are Ray-backed.
 | `"ray://<head>:10001"`         | Ray Client mode: driver runs locally, stages run on the remote cluster.           |
 
 The site's `__main__.py` delegates everything to
-[`packages.common.runner.run_curator_site`](packages/common/runner.py),
+`packages.common.runner.run_curator_site`,
 which:
 
 1. Parses the shared CLI flags (`--pipeline`, `--config-name`,
@@ -1036,7 +1032,7 @@ shell out to the CLI.
 ## 7. Visualization + insights (off-pipeline renderer library)
 
 The visualizer is **deliberately not a pipeline stage**. Each file
-under [`packages/visualizer/`](packages/visualizer/) is a
+under `packages/visualizer/` is a
 `Renderer` subclass that takes a pandas DataFrame (loaded from the
 pipeline's reducer parquet + extractor JSONL) and writes one or
 more HTML / PNG / notebook artifacts under
@@ -1118,12 +1114,12 @@ The anle visualizer config publishes the following insights:
 ### 7.4 Static PNG snapshots embedded in the HF dataset card
 
 A second viz channel lives inside
-[`packages/datasites/anle/hf_export.py`](packages/datasites/anle/hf_export.py)
+`packages/datasites/anle/hf_export.py`
 under `_render_embedding_pngs` + `_EMBED_VIZ_PLOTS`. Each
 `(color_by, dim, slug)` triple writes an
 `embedding-<slug>.png` rendered with matplotlib using the
 **pinned canvas helpers** under
-[`packages/common/embed_viz.py`](packages/common/embed_viz.py),
+`packages/common/embed_viz.py`,
 so when stacked side-by-side on slide decks or the HF card the
 data rectangles are pixel-aligned across facets and across
 corpora.
@@ -1150,7 +1146,7 @@ dataset card compact.
 This is the **product surface** of the datasite: it turns the
 on-disk pipeline outputs into a self-contained
 `data/<host>/hf/` folder that
-[`packages.common.hf.run_push_cli`](packages/common/hf.py) uploads
+`packages.common.hf.run_push_cli` uploads
 to the Hub.
 
 ### 8.1 What the bundle contains
@@ -1252,7 +1248,7 @@ the SoP for every datasite:
 
 ### 8.6 The push gate
 
-[`packages/datasites/anle/push_to_hf.py`](packages/datasites/anle/push_to_hf.py)
+`packages/datasites/anle/push_to_hf.py`
 runs a pre-flight `_validate_shards` that rejects the push if:
 
 * `documents-*-of-*.parquet` has fewer than `MIN_DOCUMENTS_SHARDS=1`
@@ -1285,8 +1281,8 @@ publisher requires). For anle this is:
 
 The redistribution default is `cc-by-4.0`
 (`DEFAULT_LICENSE` in `hf_export.py`). The **repository license**
-(at the root of ViLA itself) is GPLv3 — see
-[`LICENSE`](LICENSE). Do not conflate the two:
+(at the root of ViLA itself) is GPLv3 — see the `LICENSE` file
+at the repo root. Do not conflate the two:
 
 * `LICENSE` (repo root) — **code** license (GPLv3).
 * `hf_export.DEFAULT_LICENSE` — **dataset** license declared on
@@ -1389,10 +1385,10 @@ writes; only the runtime differs.
 
 | File | Re-runs | Trigger satisfied (see §10a.2) |
 |---|---|---|
-| [`packages/datasites/anle/_extract_inproc.py`](packages/datasites/anle/_extract_inproc.py) | `LegalExtractStage` over every `md/<doc>.md` + `<doc>.meta.json` pair | (T2) iteration on the structure / normalizer regex set |
-| [`packages/datasites/anle/_reduce_inproc.py`](packages/datasites/anle/_reduce_inproc.py) | `ReducerStage` (PCA / t-SNE / UMAP + HDBSCAN) over every `parquet/embeddings/*.parquet` | (T1) full-batch stage — Ray adds zero parallelism, only overhead |
-| [`packages/datasites/pbgdpl/_embed_reduce_inproc.py`](packages/datasites/pbgdpl/_embed_reduce_inproc.py) | `build_embedder_stage(cfg)` + `ReducerStage` over `qa.jsonl` (writes one consolidated `parquet/qa_reduced.parquet`) | (T3) Family B site needs a Family A stage (embed / reduce) without rebuilding itself |
-| [`packages/datasites/thuvienphapluat_tnpl/_embed_reduce_inproc.py`](packages/datasites/thuvienphapluat_tnpl/_embed_reduce_inproc.py) | **Bilingual** embed (one multilingual encoder over both `definition_vi` and `definition_en` for cross-lingual cosine) + per-language PCA / t-SNE / UMAP + HDBSCAN | (T3) same as pbgdpl + bilingual extension |
+| `packages/datasites/anle/_extract_inproc.py` | `LegalExtractStage` over every `md/<doc>.md` + `<doc>.meta.json` pair | (T2) iteration on the structure / normalizer regex set |
+| `packages/datasites/anle/_reduce_inproc.py` | `ReducerStage` (PCA / t-SNE / UMAP + HDBSCAN) over every `parquet/embeddings/*.parquet` | (T1) full-batch stage — Ray adds zero parallelism, only overhead |
+| `packages/datasites/pbgdpl/_embed_reduce_inproc.py` | `build_embedder_stage(cfg)` + `ReducerStage` over `qa.jsonl` (writes one consolidated `parquet/qa_reduced.parquet`) | (T3) Family B site needs a Family A stage (embed / reduce) without rebuilding itself |
+| `packages/datasites/thuvienphapluat_tnpl/_embed_reduce_inproc.py` | **Bilingual** embed (one multilingual encoder over both `definition_vi` and `definition_en` for cross-lingual cosine) + per-language PCA / t-SNE / UMAP + HDBSCAN | (T3) same as pbgdpl + bilingual extension |
 
 ### 10a.2 Decision rule — when to add a new `_inproc` driver
 
@@ -1535,7 +1531,7 @@ apply identically to all three.
 ### 12b. Family B only (HTML crawler)
 
 - [ ] `packages/datasites/<site>/` mirrors the
-  [pbgdpl](packages/datasites/pbgdpl/) layout (see §13.1).
+  pbgdpl layout (see §13.1).
 - [ ] **No `pipeline.py`** — `scraper.py` owns `PIPELINES`,
   `ALL_PIPELINES_ORDER`, and `run_pipeline(cfg, name) -> Path`
   directly (see the §13.3 skeleton).
@@ -1556,7 +1552,7 @@ apply identically to all three.
 ### 12c. Hybrid (Family B harvest + Family A embed/reduce)
 
 - [ ] `packages/datasites/<site>/` mirrors the
-  [vbpl](packages/datasites/vbpl/) layout: Family B `scraper.py` +
+  vbpl layout: Family B `scraper.py` +
   `components/` for the in-process half **plus** site-specific
   `embed.py` / `reduce.py` factories around
   `packages/pipeline/factories.py` for the Curator half.
@@ -1608,7 +1604,7 @@ apply identically to all three.
 - [ ] **Shard sizes come from the shared module.** The
   `DOC_CHUNK_SIZE = 10_000` / `SENTENCE_CHUNK_SIZE = 50_000` /
   `PARQUET_ROW_GROUP_SIZE = 1_024` constants are imported from
-  [`packages/common/io.py`](packages/common/io.py), never
+  `packages/common/io.py`, never
   re-declared per site. A site whose rows are heavy enough to
   exceed the HF viewer's per-shard cliff may override
   `cfg.shards.doc_chunk_size` in its `configs/default.yaml` with
@@ -1954,40 +1950,3 @@ python -m packages.datasites.pbgdpl.push_to_hf
 The `_inproc` decision in §10a is **orthogonal** to the family
 choice — it answers a different question (when to bypass Ray for
 a single stage), not which family the site as a whole belongs to.
-
----
-
-## References
-
-* Reference implementation (Family A):
-  [`packages/datasites/anle/`](packages/datasites/anle/) +
-  [`packages/datasites/anle/README.md`](packages/datasites/anle/README.md).
-* Family A sibling port:
-  [`packages/datasites/congbobanan/`](packages/datasites/congbobanan/).
-* Family B references:
-  [`packages/datasites/pbgdpl/`](packages/datasites/pbgdpl/) (Q&A),
-  [`packages/datasites/phapdien/`](packages/datasites/phapdien/) (codified-statute tree),
-  [`packages/datasites/thuvienphapluat_tnpl/`](packages/datasites/thuvienphapluat_tnpl/) (bilingual terminology).
-* Hybrid reference:
-  [`packages/datasites/vbpl/`](packages/datasites/vbpl/) (sitemap harvest + Playwright detail + Curator embed/reduce).
-* Pipeline-level design notes:
-  [`docs/03-curation-pipeline.md`](docs/03-curation-pipeline.md).
-* Monorepo layout + Family A / Family B distinction:
-  [`docs/00-overview/repo-layout.md`](docs/00-overview/repo-layout.md).
-* Data-source catalog (legal + ethical considerations per portal):
-  [`docs/02-data-sources.md`](docs/02-data-sources.md).
-* Ontology freeze v1.2.0 (authoritative for downstream enum
-  normalisation): [`docs/00-overview/ontology.md`](docs/00-overview/ontology.md).
-* Published HF datasets:
-  [`tmquan/anle-toaan-gov-vn`](https://huggingface.co/datasets/tmquan/anle-toaan-gov-vn),
-  [`tmquan/vbpl-vn`](https://huggingface.co/datasets/tmquan/vbpl-vn),
-  [`tmquan/pbgdpl-vn-legal-qna`](https://huggingface.co/datasets/tmquan/pbgdpl-vn-legal-qna),
-  [`tmquan/thuvienphapluat-vn-tnpl`](https://huggingface.co/datasets/tmquan/thuvienphapluat-vn-tnpl).
-* Shared runner (the bootstrap both families share):
-  [`packages/common/runner.py`](packages/common/runner.py) —
-  `run_curator_site` (Family A) + `run_crawler_site`
-  (Family B + hybrid via `accept_ray_flags=True`).
-* NeMo Curator API: `nemo_curator.{pipeline.Pipeline,
-  stages.base.ProcessingStage, tasks.DocumentBatch,
-  stages.text.download.base.*, stages.text.io.{reader,writer},
-  backends.{xenna,ray_actor_pool,ray_data}}`.

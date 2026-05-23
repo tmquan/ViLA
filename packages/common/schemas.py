@@ -284,7 +284,7 @@ class ExtractorCfg:
     án lệ fits in a single call.
     """
 
-    #: Declarative normalizer list (wiki.md §3.5 + the normalizer
+    #: Declarative normalizer list (wiki/DATASITES.md §3.5 + the normalizer
     #: registry under :mod:`packages.extractor.normalizers`). Each
     #: entry is the registered name of a Curator-stage normalizer
     #: that mutates one or more columns of the ``DocumentBatch``
@@ -519,7 +519,7 @@ class RayCfg:
 
 @dataclass
 class ShardsCfg:
-    """Parquet shard sizing for the consumption tier (wiki.md §3.5).
+    """Parquet shard sizing for the consumption tier (wiki/DATASITES.md §3.5).
 
     Cross-corpus defaults are 10 K rows per ``parse`` / ``extract`` /
     ``embed`` / ``reduce`` shard and 50 K rows per sentence shard.
@@ -529,7 +529,7 @@ class ShardsCfg:
     triggering the HF dataset-viewer's ``JobManagerCrashedError``)
     MAY override ``doc_chunk_size`` in its ``configs/default.yaml``.
     The override must land on a 1 K-multiple and carry a justification
-    comment — see wiki.md §3.5.4.
+    comment — see wiki/DATASITES.md §3.5.4.
     """
 
     doc_chunk_size: int = 10_000

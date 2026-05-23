@@ -300,7 +300,7 @@ def detail_record_from_api_json(
         #
         # Field-level **presentation normalization** is deliberately
         # NOT done here -- it moved to the declarative normalizer
-        # chain that runs inside the Curator extract stage (wiki.md
+        # chain that runs inside the Curator extract stage (wiki/DATASITES.md
         # §3.5 + ``cfg.extractor.normalizers``). The detail stage's
         # only job is to extract raw values from the API JSON and
         # coerce types where the dataclass needs them (date parsing,

@@ -63,9 +63,9 @@ live under `docs/` numbered 01 through 10, with the overview set under
 | Topic | Document |
 |---|---|
 | System architecture | [docs/00-overview/architecture.md](docs/00-overview/architecture.md) |
-| Vietnamese legal taxonomy | [docs/00-overview/glossary.md](docs/00-overview/glossary.md) |
+| Vietnamese legal taxonomy | [wiki/TERMINOLOGY.md](wiki/TERMINOLOGY.md) |
 | VN legal life-span reference | [docs/00-overview/vn-legal-timeline.md](docs/00-overview/vn-legal-timeline.md) |
-| Ontology freeze (v1.2.0) | [docs/00-overview/ontology.md](docs/00-overview/ontology.md) |
+| Ontology freeze (v1.2.0) | [wiki/ONTOLOGY.md](wiki/ONTOLOGY.md) |
 | Monorepo layout | [docs/00-overview/repo-layout.md](docs/00-overview/repo-layout.md) |
 | International comparative study | [docs/01-comparative-analysis.md](docs/01-comparative-analysis.md) |
 | Data source catalog | [docs/02-data-sources.md](docs/02-data-sources.md) |

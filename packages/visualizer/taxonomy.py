@@ -16,7 +16,7 @@ def render_taxonomy(
 ) -> None:
     """Treemap of the ontology class hierarchy with instance counts.
 
-    The hierarchy's shape is fixed (docs/00-overview/ontology.md §2);
+    The hierarchy's shape is fixed (wiki/ONTOLOGY.md §2);
     only leaves that map to an attribute present in the dataset show
     instance counts.
     """

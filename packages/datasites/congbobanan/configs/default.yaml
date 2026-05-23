@@ -70,7 +70,7 @@ parser:
   timeout_s: 120.0
 
 extractor:
-  # Declarative normalizer chain (wiki.md §3.5). congbobanan ships
+  # Declarative normalizer chain (wiki/DATASITES.md §3.5). congbobanan ships
   # only the universal Vietnamese-text baseline -- the corpus is
   # high-quality court-published judgments without the
   # CMS-export artefacts vbpl has, so no site-specific
@@ -89,7 +89,7 @@ extractor:
   max_seq_length: "${..full_text_context}"
 
 # Parquet consumption tier shard sizing -- congbobanan uses the
-# wiki.md §3.5 default (10K rows / shard); judgment rows are thin
+# wiki/DATASITES.md §3.5 default (10K rows / shard); judgment rows are thin
 # (markdown + structure stats, no inline structure_json), so the
 # default packs to ~80-120 MB per shard well under the HF dataset-
 # viewer cap.

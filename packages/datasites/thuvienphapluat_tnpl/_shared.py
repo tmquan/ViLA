@@ -107,86 +107,38 @@ VI_TO_EN_COLUMN_MAP: dict[str, str] = {
 
 
 # -----------------------------------------------------------------------
-# Fixed VI→EN dictionaries for the closed-set columns. Hand-curated so
-# the translator never burns LLM cost on them and the same legal-domain
-# name is rendered identically across every row.
+# Fixed VI→EN dictionaries for the closed-set columns. Hand-curated in
+# packages.common.{taxonomy,terminology} so the translator never burns
+# LLM cost on them and the same legal-domain name is rendered
+# identically across every row + every datasite.
 # -----------------------------------------------------------------------
 
-#: LinhVuc id -> (Vietnamese name as published by the source,
-#: concise English translation). Pulled verbatim from the
-#: ``<select name="ctl00$Content$SearchTNPL$ddlField">`` dropdown
-#: on https://thuvienphapluat.vn/tnpl/home, then hand-translated.
-#: Keys 1..47 are the closed taxonomy as of 2026-05.
-LINH_VUC_VI_TO_EN: dict[str, str] = {
-    "An toàn thực phẩm":                     "Food safety",
-    "Bảo hiểm":                              "Insurance",
-    "Bộ máy hành chính":                     "Administrative apparatus",
-    "Bổ trợ Tư pháp":                        "Judicial support services",
-    "Bưu chính - Viễn thông":                "Post and telecommunications",
-    "Cán bộ - Công chức – Viên chức":        "Civil servants and public employees",
-    "Công nghệ thông tin":                   "Information technology",
-    "Chính sách xã hội":                     "Social policy",
-    "Chứng khoán":                           "Securities",
-    "Dân sự":                                "Civil",
-    "Doanh nghiệp":                          "Enterprise",
-    "Đảng":                                  "Communist Party",
-    "Đất đai – Nhà ở":                       "Land and housing",
-    "Đấu thầu":                              "Procurement and bidding",
-    "Đầu tư":                                "Investment",
-    "Điện":                                  "Electricity",
-    "Giao thông vận tải":                    "Transportation",
-    "Giáo dục":                              "Education",
-    "Hoá chất":                              "Chemicals",
-    "Hôn nhân – Gia đình – Thừa kế":         "Marriage, family and inheritance",
-    "Kế toán – Kiểm toán":                   "Accounting and auditing",
-    "Khiếu nại – Tố cáo":                    "Complaints and denunciations",
-    "Khoa học – Công nghệ":                  "Science and technology",
-    "Lao động – Tiền lương":                 "Labor and wages",
-    "Lĩnh vực khác":                         "Other",
-    "Nông – Lâm - Ngư nghiệp":               "Agriculture, forestry and fisheries",
-    "Phòng cháy chữa cháy":                  "Fire prevention and firefighting",
-    "Quốc phòng – An ninh":                  "National defense and security",
-    "Sở hữu trí tuệ":                        "Intellectual property",
-    "Tài chính":                             "Finance",
-    "Tài nguyên – Môi trường":               "Natural resources and environment",
-    "Thủ tục tố tụng":                       "Litigation procedure",
-    "Thủ tục hành chính":                    "Administrative procedure",
-    "Thi đua - Khen thưởng - Kỷ luật":       "Emulation, commendation and discipline",
-    "Thuế - Phí – Lệ phí":                   "Taxes, fees and charges",
-    "Thương mại":                            "Commerce",
-    "Tiền tệ - Ngân hàng":                   "Currency and banking",
-    "Trách nhiệm hình sự":                   "Criminal liability",
-    "Tư pháp – Hộ tịch":                     "Justice and civil status",
-    "Văn hoá – Thể thao – Du lịch":          "Culture, sports and tourism",
-    "Văn thư - Lưu trữ":                     "Records management and archives",
-    "Vi phạm hành chính":                    "Administrative violations",
-    "Xăng dầu":                              "Petroleum",
-    "Xây dựng - Đô thị":                     "Construction and urban planning",
-    "Xuất nhập cảnh":                        "Immigration",
-    "Xuất nhập khẩu":                        "Import and export",
-    "Y tế":                                  "Healthcare",
-}
+from packages.common.taxonomy import LEGAL_AREAS as _LEGAL_AREAS
+from packages.common.terminology import (
+    DOCUMENT_STATUS as _DOCUMENT_STATUS,
+    UPDATED_BY_PASSTHROUGH as _UPDATED_BY_PASSTHROUGH,
+)
+
+
+#: LinhVuc Vietnamese name → concise English translation. Pulled
+#: verbatim from the ``<select name="ctl00$Content$SearchTNPL$ddlField">``
+#: dropdown on https://thuvienphapluat.vn/tnpl/home, then hand-translated.
+#: 47 entries form the closed taxonomy as of 2026-05.
+LINH_VUC_VI_TO_EN: dict[str, str] = _LEGAL_AREAS
 
 
 #: Status string VI→EN map. The source portal only ever emits these
 #: four values for the "Tình trạng" line as of 2026-05; unknown values
 #: are passed through verbatim with a warning so future additions are
 #: never silently dropped.
-STATUS_VI_TO_EN: dict[str, str] = {
-    "Còn hiệu lực":          "Effective",
-    "Hết hiệu lực":          "Expired",
-    "Hết hiệu lực một phần": "Partially expired",
-    "Chưa có hiệu lực":      "Not yet effective",
-}
+STATUS_VI_TO_EN: dict[str, str] = _DOCUMENT_STATUS
 
 
 #: Updated-by passthrough exception: the well-known
 #: ``Người dùng không đăng nhập`` placeholder (anonymous editor) is
 #: the only ``cập_nhật_bởi`` value we translate; everything else is a
 #: proper name we copy verbatim.
-UPDATED_BY_VI_TO_EN: dict[str, str] = {
-    "Người dùng không đăng nhập": "Unauthenticated user",
-}
+UPDATED_BY_VI_TO_EN: dict[str, str] = _UPDATED_BY_PASSTHROUGH
 
 
 # -----------------------------------------------------------------------

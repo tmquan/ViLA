@@ -52,7 +52,7 @@ Every published parquet table — both upstream
 (`phapdien.moj.gov.vn/hf/`, `vbpl.vn/hf/`, `anle.toaan.gov.vn/hf/`,
 `thuvienphapluat_vn_tnpl/hf/`) and the analysis outputs in this
 document — uses **ASCII English snake_case** column stems, per
-`wiki.md` §3.4. Vietnamese appears only inside the right-hand half
+`wiki/DATASITES.md` §3.4. Vietnamese appears only inside the right-hand half
 of deliberate `*_vi` / `*_en` bilingual *value* pairs:
 
 | Vietnamese concept | Column stem (English) | Bilingual value fields |

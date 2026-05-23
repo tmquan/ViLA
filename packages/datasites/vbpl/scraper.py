@@ -14,7 +14,7 @@ Six stages, run by name:
                md/<scope>/<id>.md + sibling <id>.meta.json.
     extract -- read md + meta through a Curator pipeline, run the
                declarative cfg.extractor.normalizers chain
-               (wiki.md §3.5) + GenericExtractor +
+               (wiki/DATASITES.md §3.5) + GenericExtractor +
                LegalStructureExtractor; write the raw per-doc tier
                (jsonl/<doc>.jsonl, one file per doc) and then
                coalesce into the parquet consumption tier
@@ -33,7 +33,7 @@ short-circuits on the on-disk output of the previous one. Re-running
 an earlier stage with the same ``--limit`` is idempotent because
 each stage skips already-produced outputs (raw per-doc tier:
 filename-level via ``mode="ignore"``; parquet consumption tier:
-shard-level, see wiki.md §10).
+shard-level, see wiki/DATASITES.md §10).
 
 ``harvest`` / ``detail`` / ``parse`` run in-process (no Ray);
 ``extract`` / ``embed`` / ``reduce`` build a
@@ -123,7 +123,7 @@ def run_parse(cfg: Any) -> Path:
 def run_extract(cfg: Any) -> Path:
     """Curator extract pipeline + post-coalesce into parquet shards.
 
-    Two output tiers per wiki.md §3.5:
+    Two output tiers per wiki/DATASITES.md §3.5:
 
     1. **Raw per-doc tier** — ``jsonl/<doc>.jsonl`` (one file per
        document, keyed by ``doc_name``). Written by
@@ -230,7 +230,7 @@ def _run_curator_pipeline(cfg: Any, pipeline: Any) -> Path | None:
 def run_rechunk(cfg: Any) -> Path:
     """Coalesce legacy per-doc parquet -> consumption-tier shards.
 
-    One-shot migration step (wiki.md §3.5 + §10) that reads the
+    One-shot migration step (wiki/DATASITES.md §3.5 + §10) that reads the
     historical ``parquet/embeddings/<doc>.parquet`` +
     ``parquet/reduced/<doc>.parquet`` per-document files (one parquet
     per row, the legacy "raw + consumption tiers fused" shape) and

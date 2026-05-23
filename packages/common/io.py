@@ -1,5 +1,5 @@
 """Shared shard-size constants + coalesce helpers for the parquet
-consumption tier (wiki.md §3.5).
+consumption tier (wiki/DATASITES.md §3.5).
 
 Every ViLA pipeline stage that emits derived data
 (`parse` / `extract` / `embed` / `reduce`) ships two output tiers:
@@ -17,7 +17,7 @@ rows carry heavier auxiliary columns (e.g. vbpl ships full
 ``structure_json`` + ``extracted_json`` inline and 10 K-row shards
 hit 214 MB and triggered the HF dataset-viewer's
 ``JobManagerCrashedError``) may override the default via
-``cfg.shards.doc_chunk_size`` — see wiki.md §3.5.4 for the rule.
+``cfg.shards.doc_chunk_size`` — see wiki/DATASITES.md §3.5.4 for the rule.
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ def resolve_doc_chunk_size(cfg: Any) -> int:
 
     Allows a site whose rows are empirically too heavy for the 10 K
     default to override on a per-site basis (the rule lives in
-    wiki.md §3.5.4 and the override must be justified with a comment
+    wiki/DATASITES.md §3.5.4 and the override must be justified with a comment
     in the site's ``configs/default.yaml``). Lands on a 1 K-multiple
     so the cross-corpus shard arithmetic stays simple.
     """
@@ -86,7 +86,7 @@ def resolve_doc_chunk_size(cfg: Any) -> int:
     if n % 1000 != 0:
         logger.warning(
             "cfg.shards.doc_chunk_size=%d is not a 1 K-multiple "
-            "(rule wiki.md §3.5.4); accepting anyway", n,
+            "(rule wiki/DATASITES.md §3.5.4); accepting anyway", n,
         )
     return n
 
@@ -111,7 +111,7 @@ def resolve_row_group_size(cfg: Any) -> int:
 def shard_filename(stage: str, index: int, total: int) -> str:
     """Return the canonical shard filename for one stage shard.
 
-    Naming convention from wiki.md §3.5.2:
+    Naming convention from wiki/DATASITES.md §3.5.2:
     ``<stage>-NNNNN-of-KKKKK.parquet`` with 5-digit zero-padded
     indices (1-based ``NNNNN`` is *not* what we use; we use 0-based
     so ``shard 0 of 32`` reads ``-00000-of-00032`` to keep ASCII
@@ -138,7 +138,7 @@ def coalesce_jsonl_to_parquet_shards(
     ``<stage>-NNNNN-of-KKKKK.parquet`` shards of exactly
     ``doc_chunk_size`` rows under ``out_dir``. Rows are sorted by
     ``sort_key`` before sharding so re-runs over the same input
-    produce byte-identical shards (re-run safety, wiki.md §3.5.2).
+    produce byte-identical shards (re-run safety, wiki/DATASITES.md §3.5.2).
 
     Existing shards in ``out_dir`` are deleted first so the
     directory matches the new fan-out exactly. Pass an empty

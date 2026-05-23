@@ -420,7 +420,7 @@ def _html_to_markdown(html: str) -> str:
     # ``@keyframes`` blocks, malformed inline ``<span style="…">``
     # tags) is **not** done here -- it moved to the declarative
     # normalizer chain (``vbpl_strip_markdown_junk``) that runs
-    # inside the Curator extract stage (wiki.md §3.5). The cached
+    # inside the Curator extract stage (wiki/DATASITES.md §3.5). The cached
     # ``.md`` files on disk hold the raw markdownify output;
     # operators who want clean markdown read the per-doc JSONL
     # tier (``jsonl/<doc>.jsonl``) which already went through the

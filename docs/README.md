@@ -14,9 +14,9 @@ remains in Vietnamese.
 | Phase | Document | Deliverable |
 |-------|----------|-------------|
 | Overview | [00-overview/architecture.md](00-overview/architecture.md) | System context |
-| Overview | [00-overview/glossary.md](00-overview/glossary.md) | Vietnamese legal taxonomy |
+| Wiki | [../wiki/TERMINOLOGY.md](../wiki/TERMINOLOGY.md) | Vietnamese legal taxonomy |
 | Overview | [00-overview/vn-legal-timeline.md](00-overview/vn-legal-timeline.md) | VN legal life-span (in-force codes, amendments, seed data) |
-| Overview | [00-overview/ontology.md](00-overview/ontology.md) | **Ontology freeze v1.2.0** — implementation-ready formal ontology (history-span extension) |
+| Wiki | [../wiki/ONTOLOGY.md](../wiki/ONTOLOGY.md) | **Ontology freeze v1.2.0** — implementation-ready formal ontology (history-span extension) |
 | Overview | [00-overview/repo-layout.md](00-overview/repo-layout.md) | Monorepo layout |
 | Phase 1 | [01-comparative-analysis.md](01-comparative-analysis.md) | **D1** Comparative report |
 | Phase 2 | [02-data-sources.md](02-data-sources.md) | **D2a** Data source catalog |
@@ -63,13 +63,13 @@ remains in Vietnamese.
 ## Reading order
 
 1. `00-overview/architecture.md` — system context.
-2. `00-overview/glossary.md` — Vietnamese taxonomy (sibling `legal_type` model).
+2. `../wiki/TERMINOLOGY.md` — Vietnamese taxonomy (sibling `legal_type` model).
 3. `00-overview/vn-legal-timeline.md` — in-force codes + seed data.
-4. `00-overview/ontology.md` — authoritative ontology freeze used by implementation.
+4. `../wiki/ONTOLOGY.md` — authoritative ontology freeze used by implementation.
 5. `00-overview/repo-layout.md` — monorepo layout + `data/` sample corpus convention.
 6. Phase documents `01-*` through `10-*` in numeric order.
 7. `99-implementation-roadmap.md` — roadmap + implementation-readiness checklist.
 
-The ontology freeze (`00-overview/ontology.md`) is authoritative for
+The ontology freeze (`../wiki/ONTOLOGY.md`) is authoritative for
 implementation. Any other doc that contradicts it is a bug to fix in
 the other doc.

@@ -86,7 +86,7 @@ def build_extract_pipeline(
     fpp = files_per_partition or _stage_override(
         cfg, "extract_files_per_partition", DEFAULT_FPP["extract"],
     )
-    # Declarative normalizer chain (wiki.md §3.5). When
+    # Declarative normalizer chain (wiki/DATASITES.md §3.5). When
     # ``cfg.extractor.normalizers`` is non-empty the chain runs as a
     # Curator ``ProcessingStage`` between the reader and
     # ``LegalExtractStage`` — visible in ``Pipeline.describe()`` and
@@ -138,7 +138,7 @@ def build_embed_pipeline(
 
     Input source resolution (highest precedence first):
 
-    * ``parquet_path`` -- canonical wiki.md §3.5 pattern. Reads
+    * ``parquet_path`` -- canonical wiki/DATASITES.md §3.5 pattern. Reads
       ``parquet/extract/*.parquet`` directly via :class:`ParquetReader`,
       saving one JSONL ↔ parquet hop. Recommended for new sites.
     * ``jsonl_path`` -- legacy single-file JSONL override

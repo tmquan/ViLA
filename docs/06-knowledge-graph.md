@@ -2,7 +2,7 @@
 
 Deliverable 4: knowledge-graph (KG) structure and NVIDIA visualization
 approach, with explicit mapping to the hierarchical legal concept taxonomy
-from `00-overview/glossary.md`. Built on `cuGraph` for GPU graph
+from `../wiki/TERMINOLOGY.md`. Built on `cuGraph` for GPU graph
 analytics, visualized with `cuxfilter` and `datashader`, presented in the UI
 via a lightweight D3/Cytoscape renderer for interactivity.
 
@@ -67,7 +67,7 @@ nodes (siblings), not nested under `case_file`.
 ### Edge types
 
 Siblings under `legal_type` are connected by explicit relations (not
-containment), matching the relations catalog in `00-overview/glossary.md`.
+containment), matching the relations catalog in `../wiki/TERMINOLOGY.md`.
 
 **legal_type sibling relations**
 
@@ -302,7 +302,7 @@ highlighted passage in the original document.
 
 ### 4.4 Legal-concept taxonomy view
 
-A dedicated UI view renders the taxonomy from `00-overview/glossary.md`.
+A dedicated UI view renders the taxonomy from `../wiki/TERMINOLOGY.md`.
 The top level has a fixed shape: `Pháp luật thông thường` -> `Tư pháp`
 -> one of five groupings
 (`legal_type`, `legal_relation`, `procedure_type`, `participant`,
