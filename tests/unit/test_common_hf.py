@@ -143,10 +143,10 @@ def test_per_site_push_cli_uses_shared_runner() -> None:
     """The three site-level push_to_hf modules delegate to run_push_cli."""
     from packages.datasites.anle import push_to_hf as anle_push
     from packages.datasites.pbgdpl import push_to_hf as pbgdpl_push
-    from packages.datasites.phapdien import push_to_hf as phapdien_push
+    from packages.datasites.phapdien import push_to_hf as legal_dict_push
 
     assert callable(anle_push.main)
     assert callable(pbgdpl_push.main)
-    assert callable(phapdien_push.main)
+    assert callable(legal_dict_push.main)
     # All three modules import the shared CLI runner.
     assert "run_push_cli" in dir(__import__("packages.common.hf", fromlist=["run_push_cli"]))

@@ -253,7 +253,7 @@ def test_canonical_aliasing_to_tnpl() -> None:
     assert UPDATED_BY_VI_TO_EN is UPDATED_BY_PASSTHROUGH
 
 
-def test_phapdien_glossary_is_documented_shape_adapter() -> None:
+def test_legal_dict_glossary_is_documented_shape_adapter() -> None:
     """``phapdien.ontology.LEGAL_GLOSSARY`` is intentionally NOT
     ``is``-identical to the canonical tuple — it's a list-of-dict
     adapter rebuilt from the canonical source at import. Verify it

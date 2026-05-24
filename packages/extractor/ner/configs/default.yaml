@@ -1,0 +1,51 @@
+# Default config for `python -m packages.extractor.ner`.
+#
+# All paths resolve relative to the repo root (which is the
+# working directory when the module is invoked from there). Override
+# anything on the CLI with `--option key=value`.
+
+input:
+  md_dir: data/samplebanan.toaan.gov.vn/md
+
+output:
+  root: data/samplebanan.toaan.gov.vn/entities
+
+# Knowledge base sources. Primary KB is `legal_dict` (phapdien),
+# secondary is `legal_term` (tnpl); see `wiki/EXTRACTION.md § 0`.
+kb:
+  legal_dict:
+    parquet_glob: data/phapdien.moj.gov.vn/hf/articles-*.parquet
+  legal_term:
+    jsonl_glob: data/thuvienphapluat_vn_tnpl/hf/data/terms-*.jsonl
+  cache_dir: data/.cache/ner_kb
+
+# LLM endpoint + canonical model. The 4-model short-list is in
+# `wiki/MODELS.md`; toggles for non-canonical models are picked up
+# automatically from `client.MODEL_TOGGLES`. Note: the Qwen 3.6
+# slugs requested in the original plan are not exposed on the NIM
+# `integrate.api.nvidia.com/v1` endpoint as of this run; we use the
+# closest available analogues (Qwen 3.5 / Qwen3-next family).
+llm:
+  endpoint_url: https://integrate.api.nvidia.com/v1
+  api_key_env: NVIDIA_API_KEY
+  canonical_model: openai/gpt-oss-120b
+  compare_models:
+    - openai/gpt-oss-120b
+    - nvidia/nemotron-3-super-120b-a12b
+    - qwen/qwen3.5-122b-a10b
+    - qwen/qwen3-next-80b-a3b-instruct
+  temperature: 0.0
+  top_p: 1.0
+  seed: 42
+  max_output_tokens: 24000
+  request_timeout_s: 360.0
+  max_retries: 5
+  retry_delay_s: 5.0
+  workers: 6                # parallel chat-completion calls per model
+
+# Compare-mode parameters.
+compare:
+  slice_size: 20            # first N docs in lexicographic order
+  random_seed: 42           # not actually used for the lexicographic
+                            #   slice but pinned for any future random
+                            #   variants of the slice
