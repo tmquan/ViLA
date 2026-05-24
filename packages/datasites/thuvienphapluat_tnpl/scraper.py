@@ -20,8 +20,9 @@ cached item HTML; ``translate`` re-uses the per-row LLM cache under
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from packages.datasites.thuvienphapluat_tnpl._shared import build_layout
 from packages.datasites.thuvienphapluat_tnpl.components import (

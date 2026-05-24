@@ -17,7 +17,6 @@ from nemo_curator.stages.text.download.base import DocumentExtractor
 
 from packages.datasites.anle.components.url_generator import absolutize
 
-
 DEFAULT_SELECTORS: dict[str, list[str]] = {
     "precedent_number": ["h1.al-title", "h1", ".al-header"],
     "adopted_date": [".al-adopted-date", "span.date"],
@@ -122,6 +121,6 @@ def _merge_selectors(
 
 
 __all__ = [
-    "AnleDocumentExtractor",
     "DEFAULT_SELECTORS",
+    "AnleDocumentExtractor",
 ]

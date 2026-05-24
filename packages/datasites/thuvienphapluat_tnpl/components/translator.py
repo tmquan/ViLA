@@ -63,11 +63,12 @@ import logging
 import os
 import re
 import threading
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from packages.common import SiteLayout
 from packages.datasites.thuvienphapluat_tnpl._shared import (
@@ -404,7 +405,7 @@ class TnplTranslator:
                 tid = futs[fut]
                 try:
                     fut.result()
-                except Exception as exc:  # noqa: BLE001 - logged
+                except Exception as exc:
                     with self._stats_lock:
                         self._stats.rows_errored += 1
                         self._stats.errors.append(
@@ -458,7 +459,7 @@ class TnplTranslator:
                 idx = futs[fut]
                 try:
                     results[idx] = fut.result()
-                except Exception as exc:  # noqa: BLE001 - logged
+                except Exception as exc:
                     with self._stats_lock:
                         self._stats.rows_errored += 1
                         self._stats.errors.append(
@@ -569,7 +570,7 @@ class TnplTranslator:
                 defn_source = "mt"
                 with self._stats_lock:
                     self._stats.llm_calls += 1
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 with self._stats_lock:
                     self._stats.errors.append(
                         f"term_id={tid} definition: {exc!r}"
@@ -743,11 +744,11 @@ def _iter_terms(path: Path) -> Iterator[dict[str, Any]]:
 
 
 def _make_run_id() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
 __all__ = [

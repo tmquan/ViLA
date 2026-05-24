@@ -61,10 +61,10 @@ import re
 import sys
 import time
 import unicodedata
-from collections import Counter, defaultdict
+from collections import defaultdict
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 import pyarrow as pa
@@ -76,7 +76,6 @@ from packages.datasites.thuvienphapluat_tnpl.viz import (  # noqa: E402
     _FALLBACK_CATEGORY,
     _TOPIC_CATEGORY,
 )
-
 
 ANLE = REPO_ROOT / "data/anle.toaan.gov.vn"
 TNPL = REPO_ROOT / "data/thuvienphapluat_vn_tnpl/hf"
@@ -354,7 +353,7 @@ def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "by-doc").mkdir(parents=True, exist_ok=True)
 
-    print(f"[1/6] loading tnpl terms ...")
+    print("[1/6] loading tnpl terms ...")
     tnpl = load_tnpl_terms()
     print(f"      tnpl ok rows = {len(tnpl):,}")
 
@@ -400,7 +399,7 @@ def main() -> int:
     doc_emb = encode_corpus(doc_texts, encoder)  # (N_docs, 768)
     print(f"      docs encoded in {time.time()-t:.1f}s  shape={doc_emb.shape}")
 
-    print(f"[6/6] scoring + writing outputs ...")
+    print("[6/6] scoring + writing outputs ...")
 
     # Cosine = doc_emb @ tnpl_emb.T  (both already unit-normalised).
     # 1963 x 16247 x 768 floats = 24 MB, comfortably in RAM.
@@ -581,8 +580,8 @@ def main() -> int:
         "broad_domains": sorted({tuple(v) for v in AREA_TO_BROAD.values()} |
                                  {(FALLBACK_BROAD_VI, FALLBACK_BROAD_EN)}),
         "anle_docs": int(docs_tbl.num_rows),
-        "tnpl_terms": int(len(tnpl)),
-        "n_entities_total": int(len(ent_rows)),
+        "tnpl_terms": len(tnpl),
+        "n_entities_total": len(ent_rows),
         "top_k_terms_per_doc": TOP_K_TERMS,
         "top_k_linhvuc_per_doc": TOP_K_LINHVUC,
         "doc_sentence_budget": DOC_SENTENCE_BUDGET,

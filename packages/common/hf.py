@@ -33,8 +33,9 @@ import logging
 import os
 import shutil
 import sys
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,7 @@ def summarise_folder(folder: Path, *, name_width: int = 32) -> str:
         if p.is_file():
             rel = p.relative_to(folder)
             size_mb = p.stat().st_size / 1024 / 1024
-            rows.append(f"  {str(rel):<{name_width}}  {size_mb:>8.2f} MB")
+            rows.append(f"  {rel!s:<{name_width}}  {size_mb:>8.2f} MB")
     return "\n".join(rows)
 
 

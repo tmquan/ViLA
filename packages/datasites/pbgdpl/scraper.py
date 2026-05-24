@@ -16,8 +16,9 @@ re-running ``detail`` re-uses cached item fragments.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from packages.datasites.pbgdpl._shared import build_layout
 from packages.datasites.pbgdpl.components import (

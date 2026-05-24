@@ -53,12 +53,12 @@ import hashlib
 import json
 import logging
 import math
-import re
 import sys
 from collections import Counter
-from datetime import datetime, timezone
+from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import pandas as pd
 import pyarrow as pa
@@ -69,10 +69,8 @@ from packages.datasites.vbpl.codes import (
     CANONICAL_CODE_TO_SLUG,
     SLUG_TO_CANONICAL_CODE,
     UNCATEGORISED_AREA,
-    canonical_code,
     code_from_slug,
     doc_type_slug,
-    legal_area_label,
     legal_type_name,
 )
 
@@ -606,6 +604,7 @@ def _write_sharded_parquet(
     """
     import pyarrow as pa
     import pyarrow.parquet as pq
+
     from packages.common.hf import coerce_for_schema
 
     if chunk_size < 1:
@@ -773,7 +772,7 @@ def _build_manifest(
         "by_agency":        _pct(by_agency, top_n=15),
         "by_year":          {str(k): v for k, v in sorted(by_year.items())},
         "by_body_source":   _pct(by_body_source),
-        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "completed_at": datetime.now(UTC).isoformat(),
     }
 
 

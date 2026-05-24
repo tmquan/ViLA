@@ -29,7 +29,6 @@ from packages.parser.base import ParserAlgorithm
 from packages.parser.stage import PdfParseStage
 from packages.reducer.stage import ReducerStage
 
-
 try:
     import sklearn  # noqa: F401
 

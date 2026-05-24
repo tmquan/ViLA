@@ -42,11 +42,11 @@ execution on ``cfg.extractor.run_structure_layer``.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any, Iterator
+from typing import Any
 
 from packages.extractor.base import ExtractorAlgorithm, text_hash
-
 
 SCHEMA_VERSION = "1.0"
 
@@ -935,14 +935,14 @@ def _coerce_iso_date(value: str) -> str | None:
 
 
 __all__ = [
+    "PARAGRAPH_KINDS",
+    "SCHEMA_VERSION",
+    "SECTION_KINDS",
     "DocumentMeta",
     "DocumentStats",
     "DocumentStructure",
     "LegalStructureExtractor",
-    "PARAGRAPH_KINDS",
     "Paragraph",
-    "SCHEMA_VERSION",
-    "SECTION_KINDS",
     "Section",
     "Sentence",
 ]

@@ -580,7 +580,9 @@ def render_embedding_scatter(
     # rectangles share a pixel grid. See packages.common.embed_viz
     # for the layout primitives.
     from packages.common.embed_viz import (
-        EMBED_LEGEND_BBOX, pinned_subplots, save_pinned,
+        EMBED_LEGEND_BBOX,
+        pinned_subplots,
+        save_pinned,
     )
 
     fig, ax = pinned_subplots()

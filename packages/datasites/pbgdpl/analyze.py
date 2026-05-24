@@ -351,7 +351,7 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    import argparse, sys
+    import argparse
 
     parser = argparse.ArgumentParser(description="Analyse pbgdpl qa.jsonl.")
     parser.add_argument(

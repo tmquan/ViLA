@@ -20,7 +20,6 @@ from packages.parser.nemotron import (
     _extract_page_markdown,
 )
 
-
 #: Fixture response for ``markdown_bbox`` -- a three-region page.
 _MARKDOWN_BBOX_FIXTURE = json.dumps(
     [

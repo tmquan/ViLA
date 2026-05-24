@@ -198,7 +198,7 @@ def _embed_column(
                         "%s: cache row mismatch (%d vs %d); recomputing",
                         label, arr.shape[0], len(texts),
                     )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("%s: cache load failed (%s); recomputing", label, exc)
 
     n = len(texts)
@@ -315,7 +315,7 @@ def _reduce(matrix: np.ndarray, *, methods: list[str], n_components: int, prefer
             out[m] = np.asarray(algo.fit_transform(
                 input_mat, n_components=n_components, prefer_gpu=prefer_gpu,
             ), dtype=np.float32)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("  reducer %s failed (%s); skipping", m, exc)
     return out
 

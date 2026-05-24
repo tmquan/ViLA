@@ -71,20 +71,20 @@ Schema overview
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import logging
 import sys
 from collections import Counter
-from datetime import datetime, timezone
+from collections.abc import Iterable, Iterator
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any
 
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from packages.common.hf import iter_jsonl, coerce_for_schema
+from packages.common.hf import coerce_for_schema, iter_jsonl
 
 logger = logging.getLogger(__name__)
 
@@ -792,7 +792,7 @@ def _build_manifest(
                 "registry":      list(PREDEFINED_REDUCERS),
             },
         },
-        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "completed_at": datetime.now(UTC).isoformat(),
     }
 
 
@@ -1190,11 +1190,11 @@ def _render_companion_section(
 
     blocks: list[str] = [
         "## Companion stages · `sentences` + `embed` + `reduce`\n",
-        f"Alongside the default `documents-*.parquet` shards (one row per "
-        f"document, with markdown + structure), the dataset ships up to "
-        f"three additional parquet bundles that mirror the **extract → "
-        f"embed → reduce** stages 1-to-1. All three join back to the "
-        f"`documents` table on the `doc_name` primary key.\n",
+        "Alongside the default `documents-*.parquet` shards (one row per "
+        "document, with markdown + structure), the dataset ships up to "
+        "three additional parquet bundles that mirror the **extract → "
+        "embed → reduce** stages 1-to-1. All three join back to the "
+        "`documents` table on the `doc_name` primary key.\n",
     ]
 
     if ship_sentences:
@@ -1222,7 +1222,7 @@ def _render_companion_section(
         )
         blocks.append("Quick load:\n")
         blocks.append("```python\n")
-        blocks.append(f"from datasets import load_dataset\n\n")
+        blocks.append("from datasets import load_dataset\n\n")
         blocks.append(
             f'sents = load_dataset("{repo_owner}/{repo_name}", "sentences", split="train")\n'
             f'print(sents[0]["text"])\n'

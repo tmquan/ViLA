@@ -17,7 +17,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-
 # ----------------------------------------------------- regex dictionaries
 
 
@@ -152,10 +151,10 @@ __all__ = [
     "ARTICLE_RE",
     "COURT_RE",
     "DATE_RE",
+    "PRECEDENT_NUMBER_RE",
     "Entity",
     "ExtractorAlgorithm",
     "GenericRecord",
-    "PRECEDENT_NUMBER_RE",
     "PrecedentRecord",
     "Relation",
     "StatuteRef",

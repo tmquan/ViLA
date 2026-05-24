@@ -29,7 +29,7 @@ import json
 import logging
 import shutil
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -260,11 +260,11 @@ def _row_from_api_json(
 
 
 def _make_run_id() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
 
 def _sha256(s: str) -> str:

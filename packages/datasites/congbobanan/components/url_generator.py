@@ -99,8 +99,8 @@ class CongbobananURLGenerator(URLGenerator):
 
 
 __all__ = [
-    "CongbobananURLGenerator",
     "DEFAULT_DETAIL_URL_TEMPLATE",
     "DEFAULT_PDF_URL_TEMPLATE",
+    "CongbobananURLGenerator",
     "doc_id_from_url",
 ]

@@ -11,8 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from packages.common import SiteLayout, build_layout as _build_layout_common
-
+from packages.common import SiteLayout
+from packages.common import build_layout as _build_layout_common
 
 #: Detail JSONL columns emitted by :func:`packages.datasites.pbgdpl.scraper.run_detail`.
 #:

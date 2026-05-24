@@ -53,7 +53,7 @@ import json
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -61,7 +61,6 @@ from packages.common import SiteLayout
 from packages.datasites.vbpl._shared import (
     EXTRACTOR_JSONL_FIELDS,
     SCOPES,
-    scope_md_dir,
 )
 from packages.extractor.generic import GenericExtractor
 from packages.extractor.normalization import normalize_text
@@ -136,7 +135,7 @@ class VbplDocumentExtractor:
             for i, fut in enumerate(as_completed(futures), 1):
                 try:
                     row = fut.result()
-                except Exception:  # noqa: BLE001
+                except Exception:
                     logger.exception("extract worker crashed")
                     err += 1
                     continue
@@ -335,11 +334,11 @@ def _scraper_meta_from(meta: dict[str, Any]) -> dict[str, Any]:
 
 
 def _make_run_id() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
 def _json_default(o: Any) -> Any:

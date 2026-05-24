@@ -48,13 +48,12 @@ import logging
 import os
 import shutil
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import pandas as pd
 
 from packages.datasites.vbpl.codes import (
     CANONICAL_CODE_TO_NAME,
-    CANONICAL_CODE_TO_SLUG,
     SLUG_TO_CANONICAL_CODE,
     UNCATEGORISED_AREA,
 )
@@ -584,7 +583,7 @@ def render_year_stack(
         ))
     fig.update_layout(**_layout(
         title=_bilingual_title(
-            f"Số văn bản theo năm và phạm vi",
+            "Số văn bản theo năm và phạm vi",
             f"documents per year by scope ({years[0]}–{years[-1]}; {total:,} docs)",
         ),
         xaxis={"title": "Năm ban hành · Issue year", "dtick": 5, "showgrid": True},
@@ -763,7 +762,11 @@ _BUCKET_TOP_N: dict[str, int] = {
 # in :mod:`packages.datasites.vbpl.hf_export` keep working.
 from packages.common.embed_viz import (
     EMBED_FIG_H_PX as EMBED_FIG_H,
+)
+from packages.common.embed_viz import (
     EMBED_FIG_W_PX as EMBED_FIG_W,
+)
+from packages.common.embed_viz import (
     EMBED_PLOT_XDOMAIN,
     EMBED_PLOT_YDOMAIN,
     EMBED_SIDEBAR_X,
@@ -1109,8 +1112,9 @@ def _warmup_scattergl_tab() -> None:
 
     Writes to a temp file we immediately discard.
     """
-    import plotly.graph_objects as go
     import tempfile
+
+    import plotly.graph_objects as go
 
     fig = go.Figure(go.Scattergl(
         x=[0.0, 1.0, 2.0], y=[0.0, 1.0, 0.5],
@@ -1264,8 +1268,8 @@ def render_all(
 
 
 __all__ = [
-    "EMBED_FACETS",
     "DOC_TYPE_EN",
+    "EMBED_FACETS",
     "SCOPE_VI_EN",
     "discover_chrome",
     "load_reduced_dataframe",

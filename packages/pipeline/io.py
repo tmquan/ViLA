@@ -436,12 +436,12 @@ def _project_columns(
 
 __all__ = [
     "JSONL_EXTENSION",
-    "JsonlPerDocWriter",
     "MARKDOWN_EXTENSION",
     "META_EXTENSION",
+    "PARQUET_EXTENSION",
+    "JsonlPerDocWriter",
     "MarkdownPerDocWriter",
     "MarkdownReader",
     "MarkdownReaderStage",
-    "PARQUET_EXTENSION",
     "ParquetPerDocWriter",
 ]

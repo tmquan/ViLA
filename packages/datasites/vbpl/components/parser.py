@@ -23,14 +23,14 @@ import html
 import logging
 import re
 import unicodedata
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Iterable
+from typing import Any
 from xml.etree import ElementTree as ET
 
 from packages.datasites.vbpl.codes import (
     CANONICAL_CODE_TO_NAME,
-    canonical_code,
     code_from_slug,
     doc_type_slug,
     legal_area_label,
@@ -1958,10 +1958,10 @@ __all__ = [
     "clean_title",
     "detail_record_from_api_json",
     "item_id_from_detail_url",
-    "normalise_issuing_authority",
-    "normalise_label",
     "normalise_doc_number",
     "normalise_doc_number_list",
+    "normalise_issuing_authority",
+    "normalise_label",
     "normalise_text",
     "normalise_title",
     "parse_sitemap_index",

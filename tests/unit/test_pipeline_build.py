@@ -114,7 +114,7 @@ def test_every_pipeline_describes_without_error(tmp_path: Any) -> None:
     for name in ALL_PIPELINES_ORDER:
         pipeline = build_pipeline(_cfg(tmp_path), name)
         text = pipeline.describe()
-        assert f"Pipeline:" in text
+        assert "Pipeline:" in text
         pipeline.build()  # decomposes composites; should not raise
 
 

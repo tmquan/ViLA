@@ -313,7 +313,7 @@ def _source_link_stats(articles: list[dict[str, Any]]) -> dict[str, Any]:
                 continue
             try:
                 host = urlparse(href).netloc
-            except Exception:  # noqa: BLE001
+            except Exception:
                 host = ""
             if host:
                 host_counter[host] += 1

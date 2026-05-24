@@ -20,7 +20,8 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 from bs4 import BeautifulSoup
 from nemo_curator.stages.text.download.base import URLGenerator
@@ -258,9 +259,9 @@ def extract_doc_name_from_url(url: str) -> str | None:
 
 
 __all__ = [
-    "AnleURLGenerator",
     "DEFAULT_LISTING_SELECTORS",
     "DEFAULT_LISTING_URL",
+    "AnleURLGenerator",
     "absolutize",
     "extract_doc_name",
     "extract_doc_name_from_url",

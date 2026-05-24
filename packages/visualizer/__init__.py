@@ -49,11 +49,11 @@ RENDERER_REGISTRY: list[type[Renderer]] = [
 ]
 
 __all__ = [
+    "RENDERER_REGISTRY",
     "CitationsRenderer",
     "DashboardRenderer",
     "DistributionRenderer",
     "NotebookRenderer",
-    "RENDERER_REGISTRY",
     "RelationsRenderer",
     "Renderer",
     "ScatterRenderer",

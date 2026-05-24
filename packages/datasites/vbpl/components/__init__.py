@@ -28,7 +28,6 @@ from packages.datasites.vbpl.components.harvester import (
     VbplSitemapHarvester,
 )
 from packages.datasites.vbpl.components.parse import VbplDocumentParser
-from packages.datasites.vbpl.components.rebuild import VbplDetailRebuilder
 from packages.datasites.vbpl.components.parser import (
     DetailRecord,
     FilePath,
@@ -39,6 +38,7 @@ from packages.datasites.vbpl.components.parser import (
     parse_sitemap_urlset,
     scope_from_shard_url,
 )
+from packages.datasites.vbpl.components.rebuild import VbplDetailRebuilder
 
 __all__ = [
     "DEFAULT_API_URL_SUBSTR",

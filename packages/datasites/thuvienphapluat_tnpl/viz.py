@@ -920,7 +920,7 @@ def render_domain_coherence(
         centroid /= cn
         sim = unit @ centroid
         rows.append((
-            d, int(len(sub)),
+            d, len(sub),
             float(np.percentile(sim, 10)),
             float(sim.mean()),
             float(np.percentile(sim, 90)),

@@ -33,11 +33,11 @@ from packages.datasites.congbobanan.pipeline import (
 
 __all__ = [
     "ALL_PIPELINES_ORDER",
+    "PIPELINES",
     "CongbobananDocumentDownloader",
     "CongbobananDocumentExtractor",
     "CongbobananDocumentIterator",
     "CongbobananURLGenerator",
-    "PIPELINES",
     "build_download_pipeline",
     "build_embed_pipeline",
     "build_extract_pipeline",

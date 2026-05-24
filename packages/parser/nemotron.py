@@ -92,7 +92,7 @@ class NemoretrieverParser(ParserAlgorithm):
         for i, png_bytes in enumerate(page_images, start=1):
             try:
                 md = self._parse_image(png_bytes)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     "nemoretriever-parse: page %d failed (%s: %s); "
                     "continuing with empty page markdown",

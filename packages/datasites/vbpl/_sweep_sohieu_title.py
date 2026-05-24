@@ -24,7 +24,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from packages.datasites.vbpl.components.parser import (
@@ -90,7 +90,7 @@ def sweep(jsonl_path: Path) -> dict[str, int]:
     if not jsonl_path.exists():
         raise FileNotFoundError(jsonl_path)
 
-    utc = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    utc = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = jsonl_path.with_suffix(
         jsonl_path.suffix + f".bak-doc_number-titlescrub-{utc}",
     )

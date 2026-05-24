@@ -37,7 +37,8 @@ from packages.datasites.phapdien.ontology import (
     TOPIC_TRANSLATIONS,
     _nfc,
 )
-from packages.datasites.phapdien.viz import render_all as render_viz, render_mermaid_mindmap
+from packages.datasites.phapdien.viz import render_all as render_viz
+from packages.datasites.phapdien.viz import render_mermaid_mindmap
 
 logger = logging.getLogger(__name__)
 
@@ -244,6 +245,7 @@ def _write_chunked_articles(
     """
     import pyarrow as pa
     import pyarrow.parquet as pq
+
     from packages.common.hf import coerce_for_schema
 
     if chunk_size < 1:

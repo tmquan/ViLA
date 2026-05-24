@@ -8,10 +8,10 @@ import pytest
 
 from packages.extractor.normalization import normalize_text
 from packages.extractor.structure import (
-    DocumentStructure,
-    LegalStructureExtractor,
     SCHEMA_VERSION,
     SECTION_KINDS,
+    DocumentStructure,
+    LegalStructureExtractor,
 )
 
 

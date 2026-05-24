@@ -40,13 +40,11 @@ from __future__ import annotations
 import re
 import unicodedata
 
-import ftfy
 from ftfy import TextFixerConfig
 from nemo_curator.stages.text.modifiers.doc_modifier import DocumentModifier
 from nemo_curator.stages.text.modifiers.unicode.unicode_reformatter import (
     UnicodeReformatter,
 )
-
 
 # ----------------------------------------------------- tone-mark table
 

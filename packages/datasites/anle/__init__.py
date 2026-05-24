@@ -36,11 +36,11 @@ from packages.datasites.anle.pipeline import (
 
 __all__ = [
     "ALL_PIPELINES_ORDER",
+    "PIPELINES",
     "AnleDocumentDownloader",
     "AnleDocumentExtractor",
     "AnleDocumentIterator",
     "AnleURLGenerator",
-    "PIPELINES",
     "build_download_pipeline",
     "build_embed_pipeline",
     "build_extract_pipeline",

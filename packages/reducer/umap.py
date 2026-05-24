@@ -48,8 +48,8 @@ class UMAPReducer(ReducerAlgorithm):
         n_samples = len(matrix)
         n_neighbors = max(2, min(15, n_samples - 1))
         if prefer_gpu and have_cuml():
-            from cuml.manifold import UMAP as CumlUMAP
             import cupy as cp
+            from cuml.manifold import UMAP as CumlUMAP
 
             X = cp.asarray(matrix)
             out = CumlUMAP(

@@ -28,11 +28,11 @@ Site-specific normalizers register themselves on import — see
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable, Protocol, Sequence, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import pandas as pd
-
 from nemo_curator.backends.base import WorkerMetadata
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.stages.resources import Resources
@@ -164,7 +164,7 @@ def resolve_normalizer_names(cfg: Any) -> list[str]:
     return ["vietnamese_text"] if bool(legacy) else []
 
 
-def build_normalizer_chain(cfg: Any) -> "NormalizerChainStage | None":
+def build_normalizer_chain(cfg: Any) -> NormalizerChainStage | None:
     """Return a chain stage from ``cfg``, or ``None`` if the chain is empty.
 
     ``cfg.extractor.normalizer_fail_fast`` (optional, default False)
@@ -292,7 +292,7 @@ def _safe_attr(obj: Any, key: str) -> Any:
     if hasattr(obj, "get"):
         try:
             return obj.get(key)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     try:
         return getattr(obj, key)

@@ -25,7 +25,7 @@ import argparse
 import json
 import shutil
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 CACHE_DIR = Path("data/thuvienphapluat_vn_tnpl/translations")
@@ -45,7 +45,7 @@ def _next_batch_index(archive_dir: Path) -> int:
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
 def _load_existing(p: Path) -> dict[str, object]:

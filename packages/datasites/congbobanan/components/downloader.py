@@ -294,7 +294,7 @@ class CongbobananDocumentDownloader(DocumentDownloader):
                 logger.info("downloaded %s to %s", url, final_path)
             return str(final_path)
 
-        except Exception as exc:  # noqa: BLE001 - Curator boundary
+        except Exception as exc:
             logger.error("download failed for %s: %s", url, exc)
             return None
 
@@ -342,7 +342,7 @@ class CongbobananDocumentDownloader(DocumentDownloader):
         assert self.session is not None
         try:
             resp = self.session.get(url)
-        except Exception as exc:  # noqa: BLE001 - tolerate transient fails
+        except Exception as exc:
             logger.warning("detail fetch failed for %s: %s", url, exc)
             return ""
         if resp.status_code != 200:

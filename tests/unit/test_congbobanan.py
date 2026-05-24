@@ -16,9 +16,9 @@ from packages.datasites.congbobanan.components import (
     doc_id_from_url,
 )
 from packages.datasites.congbobanan.components.downloader import (
+    _MIN_VALID_PDF_BYTES,
     ACCEPTED_BODY_EXTENSIONS,
     CongbobananDocumentDownloader,
-    _MIN_VALID_PDF_BYTES,
     _is_valid_pdf,
     _sniff_body_ext,
     page_has_metadata,
@@ -316,7 +316,7 @@ def test_extractor_on_empty_html_returns_blank_row(tmp_path: Any) -> None:
 
 def test_pipeline_registry_shape() -> None:
     assert list(PIPELINES.keys()) == ["download", "parse", "extract", "embed", "reduce"]
-    assert ALL_PIPELINES_ORDER == list(PIPELINES.keys())
+    assert list(PIPELINES.keys()) == ALL_PIPELINES_ORDER
 
 
 def test_every_pipeline_builds(tmp_path: Any) -> None:

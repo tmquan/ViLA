@@ -74,7 +74,7 @@ class HybridParser(ParserAlgorithm):
             nim_result = self.nim.parse(
                 pdf_bytes, preserve_tables=preserve_tables
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.error(
                 "HybridParser: NIM fallback failed (%s: %s); "
                 "keeping local's %d-char output",

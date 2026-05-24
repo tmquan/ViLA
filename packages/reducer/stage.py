@@ -220,8 +220,8 @@ def _cluster(
         extra_kwargs["min_samples"] = min_samples_cfg
     if prefer_gpu and have_cuml():
         try:
-            from cuml.cluster import HDBSCAN as CumlHDBSCAN
             import cupy as cp
+            from cuml.cluster import HDBSCAN as CumlHDBSCAN
 
             X = cp.asarray(matrix)
             labels = CumlHDBSCAN(

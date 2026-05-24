@@ -14,7 +14,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -206,7 +206,7 @@ class PhapdienCrawler:
             md_path.write_text(html_to_markdown_text(content_html), encoding="utf-8")
             articles = parse_articles(content_html, subject, view_url, scraped_at)
             return base_meta, articles
-        except Exception as exc:  # noqa: BLE001 - preserve row-level failures
+        except Exception as exc:
             logger.exception("subject failed: %s", subject.subject_id)
             base_meta["fetch_status"] = f"error:{type(exc).__name__}"
             base_meta["fetch_error"] = str(exc)
@@ -461,7 +461,7 @@ def _clean_text(value: Any) -> str:
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
 __all__ = [

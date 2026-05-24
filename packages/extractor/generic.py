@@ -12,7 +12,7 @@ lives in :mod:`packages.extractor.precedent` and is gated by
 
 from __future__ import annotations
 
-from typing import Iterator
+from collections.abc import Iterator
 
 from packages.extractor.base import (
     ARTICLE_RE,

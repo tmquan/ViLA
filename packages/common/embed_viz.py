@@ -37,7 +37,6 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import matplotlib.figure
-    import matplotlib.pyplot as plt
 
 #: Canvas size in **inches** (matplotlib) -- 1100 x 780 px @ dpi=100.
 EMBED_FIG_W: float = 11.0
@@ -87,7 +86,7 @@ EMBED_SIDEBAR_X: float = 0.72
 EMBED_LEGEND_TOP: float = EMBED_PLOT_YDOMAIN[1]
 
 
-def pinned_subplots() -> tuple["matplotlib.figure.Figure", Any]:
+def pinned_subplots() -> tuple[matplotlib.figure.Figure, Any]:
     """Return a ``(fig, ax)`` at the canonical canvas size with axes pinned.
 
     Use this instead of ``plt.subplots()`` for any embedding /
@@ -104,7 +103,7 @@ def pinned_subplots() -> tuple["matplotlib.figure.Figure", Any]:
 
 
 def save_pinned(
-    fig: "matplotlib.figure.Figure", out_path: Any,
+    fig: matplotlib.figure.Figure, out_path: Any,
 ) -> Any:
     """Save ``fig`` at its canonical canvas size, preserving the pinning.
 

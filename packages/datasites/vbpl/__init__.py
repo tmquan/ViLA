@@ -31,6 +31,10 @@ Run via::
     python -m packages.datasites.vbpl --pipeline all
 """
 
+# Eager import so the vbpl-specific normalizer registry entries are
+# populated for any consumer of the package (the Curator extract
+# pipeline resolves them via packages.extractor.normalizers).
+from packages.datasites.vbpl import normalizers as _vbpl_normalizers  # noqa: F401
 from packages.datasites.vbpl.components import (
     DEFAULT_API_URL_SUBSTR,
     DEFAULT_SITEMAP_URL,
@@ -47,10 +51,6 @@ from packages.datasites.vbpl.components import (
 )
 from packages.datasites.vbpl.embed import build_embed_pipeline
 from packages.datasites.vbpl.extract import build_extract_pipeline
-# Eager import so the vbpl-specific normalizer registry entries are
-# populated for any consumer of the package (the Curator extract
-# pipeline resolves them via packages.extractor.normalizers).
-from packages.datasites.vbpl import normalizers as _vbpl_normalizers  # noqa: F401
 from packages.datasites.vbpl.reduce import build_reduce_pipeline
 from packages.datasites.vbpl.scraper import (
     ALL_PIPELINES_ORDER,
@@ -69,8 +69,8 @@ __all__ = [
     "DEFAULT_API_URL_SUBSTR",
     "DEFAULT_SITEMAP_URL",
     "DEFAULT_WARMUP_URL",
-    "DetailRecord",
     "PIPELINES",
+    "DetailRecord",
     "SitemapEntry",
     "VbplDetailDownloader",
     "VbplDocumentParser",

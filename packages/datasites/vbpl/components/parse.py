@@ -39,7 +39,7 @@ import logging
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -133,7 +133,7 @@ class VbplDocumentParser:
             for i, fut in enumerate(as_completed(futures), 1):
                 try:
                     success = fut.result()
-                except Exception:  # noqa: BLE001 - logged, counted
+                except Exception:
                     logger.exception("parse worker crashed")
                     err += 1
                     continue
@@ -256,7 +256,7 @@ class VbplDocumentParser:
         try:
             with self._algo_lock:
                 result = self._algo.parse(data)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("parse failed for %s: %s", path, exc)
             return "", "", None, None
         md = str(result.get("markdown") or "").strip()
@@ -272,7 +272,7 @@ class VbplDocumentParser:
         if self._runtime in ("nim", "hybrid"):
             try:
                 from packages.parser.nemotron import NemoretrieverParser
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     "NIM parser unavailable (%s); downgrading to local",
                     exc,
@@ -407,7 +407,7 @@ def _html_to_markdown(html: str) -> str:
             heading_style="ATX",
             strip=["script", "style"],
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("markdownify failed: %s", exc)
         try:
             from bs4 import BeautifulSoup
@@ -463,11 +463,11 @@ def _iter_jsonl(path: Path):
 
 
 def _make_run_id() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
 __all__ = ["VbplDocumentParser"]

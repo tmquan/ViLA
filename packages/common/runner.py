@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import argparse
 import logging
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any
 
 from packages.common.cli import (
     apply_log_level,
@@ -89,7 +90,7 @@ def _resolve_cfg(
         overrides.append(f"limit={args.limit}")
     if args.output:
         overrides.append(
-            f"output_dir={str(Path(args.output).expanduser().resolve())}"
+            f"output_dir={Path(args.output).expanduser().resolve()!s}"
         )
 
     return load_and_override(

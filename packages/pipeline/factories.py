@@ -26,7 +26,8 @@ classes that don't fit a uniform signature.
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from nemo_curator.pipeline import Pipeline
 from nemo_curator.stages.text.io.reader import JsonlReader, ParquetReader
@@ -41,7 +42,6 @@ from packages.pipeline.io import (
     ParquetPerDocWriter,
 )
 from packages.reducer.stage import ReducerStage
-
 
 # Default ``files_per_partition`` for each stage. Sites with smaller
 # corpora typically lower these; sites with larger corpora raise them.

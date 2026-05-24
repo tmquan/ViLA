@@ -18,7 +18,6 @@ from packages.visualizer.base import (
     load_pipeline_output,
 )
 
-
 try:
     import plotly  # noqa: F401
 

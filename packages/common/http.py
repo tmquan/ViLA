@@ -410,7 +410,7 @@ class PoliteSession:
     def close(self) -> None:
         self._session.close()
 
-    def __enter__(self) -> "PoliteSession":
+    def __enter__(self) -> PoliteSession:
         return self
 
     def __exit__(self, *exc: object) -> None:

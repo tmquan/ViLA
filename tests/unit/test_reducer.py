@@ -20,7 +20,6 @@ except Exception:
 from packages.common.schemas import PipelineCfg
 from packages.reducer.stage import ReducerStage
 
-
 pytestmark = pytest.mark.skipif(not HAVE_SKLEARN, reason="sklearn not installed")
 
 
@@ -40,7 +39,7 @@ def _batch(n: int = 8, dim: int = 16) -> DocumentBatch:
     df = pd.DataFrame(
         {
             "doc_name": [f"D{i:03d}" for i in range(n)],
-            "model_id": [f"fake/emb"] * n,
+            "model_id": ["fake/emb"] * n,
             "embedding": embeddings,
         }
     )

@@ -36,9 +36,9 @@ import pandas as pd
 
 from packages.datasites.vbpl.components.parser import (
     clean_title,
+    normalise_doc_number_list,
     normalise_issuing_authority,
     normalise_label,
-    normalise_doc_number_list,
     normalise_text,
     normalise_title,
     strip_markdown_junk,
@@ -91,7 +91,7 @@ class CleanTitle:
             sh = doc_numbers.iat[i] if doc_numbers is not None else None
             try:
                 out.append(clean_title(_str_or_none(t), _str_or_none(lt), sh))
-            except Exception:  # noqa: BLE001
+            except Exception:
                 out.append(_str_or_none(t))
         df["title"] = out
         return df

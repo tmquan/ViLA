@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from packages.common import SiteLayout, build_layout as _build_layout_common
-
+from packages.common import SiteLayout
+from packages.common import build_layout as _build_layout_common
 
 TREE_NODE_FIELDS: list[str] = [
     "node_id",

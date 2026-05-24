@@ -27,7 +27,6 @@ from pathlib import Path
 
 import pandas as pd
 from nemo_curator.tasks import DocumentBatch
-from omegaconf import OmegaConf
 
 from packages.common import build_layout, find_site_config, load_and_override
 from packages.common.hf import strip_fields

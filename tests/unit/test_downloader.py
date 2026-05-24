@@ -16,7 +16,6 @@ from omegaconf import OmegaConf
 from packages.common.schemas import PipelineCfg
 from packages.datasites.anle.components import AnleDocumentDownloader
 
-
 URL = (
     "https://anle.toaan.gov.vn/webcenter/portal/anle/chitietanle"
     "?dDocName=TAND370414"

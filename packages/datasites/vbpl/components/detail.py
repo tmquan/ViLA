@@ -36,7 +36,7 @@ import json
 import logging
 import time
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
@@ -296,11 +296,11 @@ class VbplDetailDownloader:
         browser: Any,
         wid: int,
         queue: asyncio.Queue[dict[str, Any]],
-        bucket: "_AsyncTokenBucket",
+        bucket: _AsyncTokenBucket,
         out_f: Any,
         write_lock: asyncio.Lock,
-        tally: "_Tally",
-    ) -> "_Tally":
+        tally: _Tally,
+    ) -> _Tally:
         """One worker: warm up Bearer once, then drain the queue."""
         ctx_kwargs: dict[str, Any] = {
             "user_agent": self._user_agent,
@@ -334,7 +334,7 @@ class VbplDetailDownloader:
                         bearer_box=bearer_box,
                     )
                     tally.ok += 1
-                except Exception as exc:  # noqa: BLE001 - surface in JSONL
+                except Exception as exc:
                     tally.err += 1
                     logger.exception(
                         "worker=%d item=%s crashed", wid, row.get("item_id"),
@@ -391,7 +391,7 @@ class VbplDetailDownloader:
                     pass
             finally:
                 await page.close()
-        except Exception as exc:  # noqa: BLE001 - warm-up is best-effort
+        except Exception as exc:
             logger.warning("warmup failed (continuing): %s", exc)
 
     async def _process_one(
@@ -429,7 +429,7 @@ class VbplDetailDownloader:
                     timeout=self._nav_timeout_ms,
                     wait_until="domcontentloaded",
                 )
-            except Exception as exc:  # noqa: BLE001 - log + record
+            except Exception as exc:
                 await self._write_failed(
                     row=row, status="nav_failed", error=repr(exc),
                     out_f=out_f, write_lock=write_lock,
@@ -556,7 +556,7 @@ class VbplDetailDownloader:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(body)
                 fp.local_path = str(dest.resolve())
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     "file fetch crash on %s (item=%d): %s",
                     full_url, rec.item_id, exc,
@@ -622,7 +622,7 @@ class VbplDetailDownloader:
 
 
 class _Tally:
-    __slots__ = ("ok", "err")
+    __slots__ = ("err", "ok")
 
     def __init__(self) -> None:
         self.ok = 0
@@ -665,7 +665,7 @@ def _make_response_listener(
     async def _listener(resp: Any) -> None:
         try:
             url = str(resp.url)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return
         if api_substr not in url:
             return
@@ -674,15 +674,15 @@ def _make_response_listener(
             auth = None
             try:
                 auth = await req.header_value("authorization")
-            except Exception:  # noqa: BLE001
+            except Exception:
                 auth = None
             if auth:
                 bearer_box["value"] = auth
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         try:
             payload = await resp.json()
-        except Exception:  # noqa: BLE001
+        except Exception:
             return
         captured.append((url, payload))
 
@@ -839,11 +839,11 @@ def _sha256(s: str) -> str:
 
 
 def _make_run_id() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
 def _json_default(o: Any) -> Any:

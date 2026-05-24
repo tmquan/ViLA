@@ -36,8 +36,8 @@ def __getattr__(name: str):
 
 
 __all__ = [
-    "PCAReducer",
     "REDUCER_REGISTRY",
+    "PCAReducer",
     "ReducerAlgorithm",
     "ReducerStage",
     "TSNEReducer",

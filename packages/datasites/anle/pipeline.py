@@ -16,7 +16,8 @@ them from one place.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from nemo_curator.pipeline import Pipeline
 
@@ -31,7 +32,6 @@ from packages.datasites.anle.embed import build_embed_pipeline
 from packages.datasites.anle.extract import build_extract_pipeline
 from packages.datasites.anle.parse import build_parse_pipeline
 from packages.datasites.anle.reduce import build_reduce_pipeline
-
 
 #: Pipeline name -> factory. Keys double as ``--pipeline`` CLI choices.
 PIPELINES: dict[str, Callable[[Any], Pipeline]] = {

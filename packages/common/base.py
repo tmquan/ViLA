@@ -24,9 +24,10 @@ Anything outside the named profiles can still be added per-site via
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 
 @dataclass
@@ -43,7 +44,7 @@ class SiteLayout:
     host: str
 
     @classmethod
-    def from_cfg(cls, cfg: Any) -> "SiteLayout":
+    def from_cfg(cls, cfg: Any) -> SiteLayout:
         """Build a layout from a ``cfg`` exposing ``output_dir`` + ``host``."""
         output_root = Path(str(cfg.output_dir)).expanduser().resolve()
         return cls(output_root=output_root, host=str(cfg.host))

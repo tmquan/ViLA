@@ -340,7 +340,7 @@ class NimEmbedderStage(ProcessingStage[DocumentBatch, DocumentBatch]):
         payload = [texts[i] for i in non_empty_idx]
         try:
             vectors = self._backend.embed_batch(payload)
-        except Exception as exc:  # noqa: BLE001 - caller's scope guard
+        except Exception as exc:
             if not _is_oversize_error(exc):
                 raise
             logger.warning(
@@ -364,7 +364,7 @@ class NimEmbedderStage(ProcessingStage[DocumentBatch, DocumentBatch]):
             return []
         try:
             return self._backend.embed_batch([text])[0]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             if (
                 not _is_oversize_error(exc)
                 or len(text) < self._MIN_SPLIT_CHARS

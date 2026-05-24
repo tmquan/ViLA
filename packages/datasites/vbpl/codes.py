@@ -35,7 +35,8 @@ so the table can be extended additively without dropping rows.
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 #: Map of *raw* ``docType.code`` -> canonical short code. Built from
 #: a full audit of the corpus. Codes already in canonical form

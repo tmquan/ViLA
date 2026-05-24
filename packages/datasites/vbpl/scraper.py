@@ -47,8 +47,9 @@ single ``--pipeline all`` run shares one Ray cluster.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from packages.common.io import (
     coalesce_jsonl_to_parquet_shards,
@@ -312,8 +313,8 @@ __all__ = [
     "run_extract",
     "run_harvest",
     "run_parse",
-    "run_rebuild_docs",
     "run_pipeline",
+    "run_rebuild_docs",
     "run_rechunk",
     "run_reduce",
 ]

@@ -15,7 +15,11 @@ from packages.common.schemas import PipelineCfg
 from packages.embedder.base import ModelEntry, load_registry, model_slug
 from packages.embedder.chunking import (
     chunk_sentence as _chunk_sentence,
+)
+from packages.embedder.chunking import (
     chunk_sliding as _chunk_sliding,
+)
+from packages.embedder.chunking import (
     mean_pool as _mean_pool,
 )
 from packages.embedder.stage import NimEmbedderStage

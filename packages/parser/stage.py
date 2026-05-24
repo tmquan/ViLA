@@ -17,10 +17,9 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
-import pandas as pd
 from nemo_curator.backends.base import WorkerMetadata
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.stages.resources import Resources
@@ -30,7 +29,11 @@ from packages.parser.base import ParserAlgorithm
 from packages.parser.hybrid import HybridParser
 from packages.parser.nemotron import (
     DEFAULT_BASE_URL as _NIM_DEFAULT_BASE_URL,
+)
+from packages.parser.nemotron import (
     DEFAULT_DPI as _NIM_DEFAULT_DPI,
+)
+from packages.parser.nemotron import (
     NemoretrieverParser,
 )
 from packages.parser.pypdf import PypdfParser
@@ -152,7 +155,7 @@ class PdfParseStage(ProcessingStage[DocumentBatch, DocumentBatch]):
         df["confidence"] = confidences
         df["num_pages"] = num_pages_col
         df["parser_model"] = str(self.cfg.parser.model_id)
-        df["parsed_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        df["parsed_at"] = datetime.now(UTC).isoformat(timespec="seconds")
         # Keep the dataframe lightweight for the next stage: the raw
         # bytes are no longer needed once the markdown + layout exist.
         if "pdf_bytes" in df.columns:

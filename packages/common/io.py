@@ -25,8 +25,9 @@ from __future__ import annotations
 import gc
 import json
 import logging
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 import pandas as pd
 import pyarrow as pa
@@ -511,7 +512,7 @@ def _safe_get(obj: Any, key: str) -> Any:
     if hasattr(obj, "get"):
         try:
             return obj.get(key)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     try:
         return getattr(obj, key)

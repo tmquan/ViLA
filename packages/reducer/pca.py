@@ -20,8 +20,8 @@ class PCAReducer(ReducerAlgorithm):
         prefer_gpu: bool,
     ) -> np.ndarray:
         if prefer_gpu and have_cuml():
-            from cuml.decomposition import PCA as CumlPCA
             import cupy as cp
+            from cuml.decomposition import PCA as CumlPCA
 
             X = cp.asarray(matrix)
             out = CumlPCA(n_components=n_components).fit_transform(X)

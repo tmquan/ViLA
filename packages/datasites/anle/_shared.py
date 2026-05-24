@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from packages.common import SiteLayout, build_layout as _build_layout_common
-
+from packages.common import SiteLayout
+from packages.common import build_layout as _build_layout_common
 
 #: JSONL columns written by the Extractor pipeline.
 EXTRACTOR_JSONL_FIELDS: list[str] = [

@@ -101,7 +101,7 @@ def analyze(
     if reduced_path and reduced_path.exists():
         try:
             out["embedding"] = _embedding_stats(reduced_path)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("embedding stats failed: %s", exc)
 
     return out
@@ -487,7 +487,7 @@ def _embedding_stats(reduced_path: Path) -> dict[str, Any]:
     df = pd.read_parquet(reduced_path)
     out: dict[str, Any] = {
         "parquet_path":     str(reduced_path),
-        "row_count":        int(len(df)),
+        "row_count":        len(df),
         "model_id":         str(df["embedding_model_id"].iloc[0]) if "embedding_model_id" in df else None,
         "embedding_dim":    int(df["embedding_dim"].iloc[0]) if "embedding_dim" in df else None,
     }
@@ -563,7 +563,7 @@ def _embedding_stats(reduced_path: Path) -> dict[str, Any]:
             sim_to_centroid = unit @ centroid
             rows_out.append({
                 "legal_domain":               d,
-                "count":                      int(len(sub)),
+                "count":                      len(sub),
                 "mean_cosine_to_centroid":    round(float(sim_to_centroid.mean()), 4),
                 "p10_cosine_to_centroid":     round(float(np.percentile(sim_to_centroid, 10)), 4),
                 "p90_cosine_to_centroid":     round(float(np.percentile(sim_to_centroid, 90)), 4),

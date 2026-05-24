@@ -677,7 +677,7 @@ def render_sunburst(analytics: dict[str, Any], out_path: Path) -> Path:
                 center=(0, 0),
                 r=r1,
                 theta1=theta1,
-                theta2=theta0 + 360 if theta0 > theta1 else theta1,  # noqa: E501  (mpl wants theta1 > theta2; we pass already-sorted)
+                theta2=theta0 + 360 if theta0 > theta1 else theta1,
                 width=r1 - r0,
                 facecolor=color,
                 edgecolor="white",

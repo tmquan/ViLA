@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from packages.common import SiteLayout, build_layout as _build_layout_common
-
+from packages.common import SiteLayout
+from packages.common import build_layout as _build_layout_common
 
 #: JSONL columns written by the Extractor pipeline. The first block is
 #: shared with anle (doc_name + parsed markdown + generic legal-extract

@@ -36,7 +36,6 @@ from urllib.parse import unquote
 
 from nemo_curator.stages.text.download.base import DocumentExtractor
 
-
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 _HEADING_RE = re.compile(

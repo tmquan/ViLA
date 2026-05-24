@@ -26,7 +26,7 @@ import logging
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -91,7 +91,7 @@ class PbgdplDetailDownloader:
         def _process(row: dict[str, Any]) -> dict[str, Any] | None:
             try:
                 return self._fetch_and_parse(row)
-            except Exception as exc:  # noqa: BLE001 - surface in JSONL
+            except Exception as exc:
                 logger.exception(
                     "detail processing crashed: item_id=%s",
                     row.get("item_id"),
@@ -308,11 +308,11 @@ def _sha256(s: str) -> str:
 
 
 def _make_run_id() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
 __all__ = ["PbgdplDetailDownloader"]

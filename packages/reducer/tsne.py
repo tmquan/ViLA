@@ -32,8 +32,8 @@ class TSNEReducer(ReducerAlgorithm):
         perplexity = min(perplexity, float(n_samples - 1))
 
         if prefer_gpu and have_cuml():
-            from cuml.manifold import TSNE as CumlTSNE
             import cupy as cp
+            from cuml.manifold import TSNE as CumlTSNE
 
             X = cp.asarray(matrix)
             out = CumlTSNE(
