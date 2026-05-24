@@ -56,13 +56,44 @@ from pydantic import BaseModel, ConfigDict, Field
 #:   split** (procedural ``meta`` vs substantive ``main``) that
 #:   mirrors the NER ``METADATA_TYPES`` / ``MAINDATA_TYPES`` partition
 #:   in ``packages/extractor/ner/schema.py``.
-BUILDER_VERSION = "v1"
+#: * ``v2`` — add **relative temporal resolution** *and* **time-of-day
+#:   resolution**: a regex pre-pass that scavenges ``Trước đó X
+#:   ngày``, ``X phút sau``, ``Cùng ngày``, ``Hôm qua``, etc. from
+#:   the source markdown, resolves each against the most-recent
+#:   preceding absolute date anchor, and re-emits the resolved span
+#:   as a synthetic ``date`` member of the located-entity stream.
+#:   The absolute date parser is renamed ``datetimes.py`` and is
+#:   extended to recognise Vietnamese clock-time surface forms
+#:   (``"22 giờ 30 phút ngày 14/3/2023"``, ``"khoảng 22 giờ ngày
+#:   14/3/2023"``, ``"lúc 14:25"``); :class:`WhenAnchor` gains
+#:   ``iso_time`` / ``iso_datetime`` fields plus
+#:   ``is_relative`` / ``anchor_event_id`` / ``magnitude`` /
+#:   ``unit`` / ``direction`` / ``iso_max`` provenance fields; the
+#:   :class:`TimelineStats` gains the ``n_relative_*`` counters. See
+#:   ``wiki/TIMELINE.md § 3a`` for the full spec.
+BUILDER_VERSION = "v2"
 
 
 #: Stable schema_version stamped into the on-disk JSON for downstream
 #: consumers that want to gate on shape changes without inspecting
 #: the builder version.
-SCHEMA_VERSION = "v1"
+#:
+#: * ``v1`` — initial dual-track schema (``meta`` / ``main`` lanes,
+#:   one ``WhenAnchor`` per event with absolute-date provenance
+#:   only).
+#: * ``v2`` — :class:`WhenAnchor` extended with **time-of-day** and
+#:   **relative-temporal** provenance: ``iso_time`` (``HH:MM[:SS]``
+#:   when the surface form carried a clock), ``iso_datetime``
+#:   (convenience ``YYYY-MM-DDTHH:MM[:SS]`` when both halves are
+#:   populated), ``is_relative`` / ``anchor_event_id`` /
+#:   ``magnitude`` / ``unit`` / ``direction`` / ``iso_max`` for
+#:   resolved relative spans. ``sort_key`` is widened from
+#:   ``"YYYY-MM-DD"`` to ``"YYYY-MM-DDTHH:MM:SS"`` so timed events
+#:   sort before untimed events on the same day. :class:`TimelineStats`
+#:   gains ``n_relative_total`` / ``n_relative_resolved`` /
+#:   ``n_relative_unresolved``. All new fields are nullable /
+#:   default-zero so v1 readers degrade gracefully.
+SCHEMA_VERSION = "v2"
 
 
 # --------------------------------------------------------------------- types
@@ -131,30 +162,89 @@ PartyRole = Literal[
 # --------------------------------------------------------------------- models
 
 
+#: Direction tag for relative temporal expressions. ``"before"`` for
+#: backward-relative (``Trước đó 3 ngày``), ``"after"`` for
+#: forward-relative (``05 phút sau``), ``"same"`` for same-time
+#: deixis (``Cùng ngày``).
+RelativeDirection = Literal["before", "after", "same"]
+
+
+#: Closed unit vocabulary for relative deltas. Mirrors the units the
+#: regex scanner in :mod:`packages.extractor.timeline.datetimes`
+#: accepts. ``None`` for entries the parser could not pin to a
+#: specific unit (rare; e.g. ``Hôm sau`` resolves with implicit
+#: unit ``ngày``).
+RelativeUnit = Literal["giây", "phút", "giờ", "ngày", "tuần", "tháng", "năm"]
+
+
 class WhenAnchor(BaseModel):
     """Resolved time anchor for an event.
 
     * ``iso`` — full ISO date ``YYYY-MM-DD`` if the surface form
-      yields a complete date.
+      yields a complete date. For *resolved relative anchors* this
+      is the absolute date computed from the anchor + delta — the
+      relative provenance is preserved in :attr:`is_relative` and
+      friends so consumers can render the original phrasing
+      alongside the resolved point.
     * ``iso_partial`` — partial ISO ``YYYY-MM`` or ``YYYY`` when the
       day or both the day and month are missing.
+    * ``iso_time`` — clock time as ``HH:MM:SS`` (``v2``+) when the
+      surface form carried a clock — e.g. ``"22 giờ 30 phút ngày
+      14/3/2023"`` populates both ``iso`` and ``iso_time``,
+      ``"khoảng 22 giờ ngày 14/3/2023"`` populates ``iso_time =
+      "22:00:00"``, ``"14 giờ 25 phút"`` (no date) populates only
+      ``iso_time = "14:25:00"``. The relative resolver also writes
+      this field when a sub-day delta (``X phút sau`` /
+      ``X giờ sau``) is added to a dated + timed anchor.
+    * ``iso_datetime`` — convenience full ISO
+      ``YYYY-MM-DDTHH:MM:SS`` when both ``iso`` and ``iso_time``
+      are populated; ``None`` otherwise. Computed at construction.
     * ``raw`` — the original surface text from the entity.
     * ``page`` — 1-based page number from the entity (may be null
       when the LLM omitted it).
     * ``sort_key`` — lexicographically sortable key used by the
-      builder to order events. Built so that better-resolved dates
-      sort before partially-resolved ones; see
-      :func:`packages.extractor.timeline.dates.parse_date_to_anchor`
+      builder to order events. In ``v2`` the shape is
+      ``"YYYY-MM-DDTHH:MM:SS"``: timed events on the same calendar
+      day sort before untimed events (which use ``T99:99:99``),
+      and partial / unresolved dates sort to the end of the
+      track. See
+      :func:`packages.extractor.timeline.datetimes.parse_date_to_anchor`
       for the construction.
+
+    Relative-temporal provenance (added in :data:`SCHEMA_VERSION`
+    ``v2``; absent on absolute anchors):
+
+    * ``is_relative`` — ``True`` iff this anchor was synthesised by
+      resolving a relative expression against a preceding absolute
+      date. Renderers can use the flag to draw the marker
+      differently (dashed line, lighter colour, …).
+    * ``anchor_event_id`` — id of the event whose ``when`` was used
+      as the anchor for resolution. ``None`` for absolute anchors.
+    * ``magnitude`` / ``unit`` / ``direction`` — the parsed delta
+      that produced the resolved date. ``magnitude`` is a float to
+      accommodate decimal-comma OCR forms (``"1,2 phút sau"``).
+    * ``iso_max`` — upper-bound ISO date for vague magnitudes
+      (``"vài ngày sau"``, ``"khoảng 5 tuần sau"``); ``iso`` then
+      carries the lower bound and ``iso_max`` carries the upper.
+      Single-point resolutions leave ``iso_max`` ``None``.
     """
 
     model_config = ConfigDict(extra="ignore")
 
     iso: str | None = None
     iso_partial: str | None = None
+    iso_time: str | None = None
+    iso_datetime: str | None = None
     raw: str
     page: int | None = Field(default=None, ge=1)
     sort_key: str
+
+    is_relative: bool = False
+    anchor_event_id: str | None = None
+    magnitude: float | None = None
+    unit: RelativeUnit | None = None
+    direction: RelativeDirection | None = None
+    iso_max: str | None = None
 
 
 class Actor(BaseModel):
@@ -350,6 +440,20 @@ class TimelineStats(BaseModel):
     n_sentences: int = 0
     n_unlocated_entities: int = 0
 
+    #: Total number of relative temporal expressions detected in
+    #: the source (regex scan + any ``date_relative`` entities the
+    #: NER model emitted). Counted before resolution.
+    n_relative_total: int = 0
+    #: Of :attr:`n_relative_total`, how many were successfully
+    #: anchored to a preceding absolute date and resolved into a
+    #: concrete :class:`WhenAnchor`.
+    n_relative_resolved: int = 0
+    #: Of :attr:`n_relative_total`, how many were left unresolved
+    #: (no preceding anchor, ambiguous magnitude, or unparseable
+    #: surface form). Unresolved expressions are routed to the
+    #: substantive ambient bucket so consumers still see the text.
+    n_relative_unresolved: int = 0
+
 
 class CaseTimeline(BaseModel):
     """Top-level on-disk record per doc.
@@ -404,6 +508,8 @@ __all__ = [
     "PartyRole",
     "PartySummary",
     "Place",
+    "RelativeDirection",
+    "RelativeUnit",
     "SentenceRef",
     "StatuteRef",
     "TermRef",

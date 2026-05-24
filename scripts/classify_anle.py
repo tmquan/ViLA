@@ -34,10 +34,10 @@ At the **document** level:
   L2 ``court_level``      — passthrough (4-class).
   L2 ``jurisdiction``     — passthrough (23-class).
   L2 ``issue_date/year/issuing_authority`` — passthrough.
-  L3 ``tnpl_broad_domain`` — 6-class via cosine-weighted vote over the
+  L3 ``legal_term_broad_domain`` — 6-class via cosine-weighted vote over the
        top-K nearest tnpl terms. Bilingual labels.
-  L4 ``tnpl_linhvuc_top_k`` — top-K 47-class LinhVuc with vote counts.
-  L4 ``tnpl_term_top_k``   — top-K nearest tnpl terms.
+  L4 ``legal_term_linhvuc_top_k`` — top-K 47-class LinhVuc with vote counts.
+  L4 ``legal_term_term_top_k``   — top-K nearest tnpl terms.
 
 At the **entity** level (one row per ``extracted.entities[i]``):
   ``DATE``       — ISO-parsed date, year, decade.
@@ -276,7 +276,7 @@ def parse_precedent_entity(text: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # I/O helpers.
 # --------------------------------------------------------------------------- #
-def load_tnpl_terms() -> list[dict[str, Any]]:
+def load_legal_term_terms() -> list[dict[str, Any]]:
     """Load ok-status bilingual rows from the tnpl jsonl shards."""
     rows: list[dict[str, Any]] = []
     for p in sorted((TNPL / "data").glob("terms_translated-*.jsonl")):
@@ -354,20 +354,20 @@ def main() -> int:
     (OUT / "by-doc").mkdir(parents=True, exist_ok=True)
 
     print("[1/6] loading tnpl terms ...")
-    tnpl = load_tnpl_terms()
+    tnpl = load_legal_term_terms()
     print(f"      tnpl ok rows = {len(tnpl):,}")
 
     # Each tnpl row contributes one (term_name_vi: definition_vi) embed text.
-    tnpl_texts: list[str] = [
+    legal_term_texts: list[str] = [
         _strip_for_embed(f"{r.get('term_name_vi') or ''}: {r.get('definition_vi') or ''}")
         for r in tnpl
     ]
-    tnpl_area_id = np.asarray([r.get("area_id") or 0 for r in tnpl], dtype=np.int32)
-    tnpl_area_vi = [r.get("area_name_vi") for r in tnpl]
-    tnpl_area_en = [r.get("area_name_en") for r in tnpl]
-    tnpl_term_id = np.asarray([r["term_id"] for r in tnpl], dtype=np.int32)
-    tnpl_term_vi = [r.get("term_name_vi") for r in tnpl]
-    tnpl_term_en = [r.get("term_name_en") for r in tnpl]
+    legal_term_area_id = np.asarray([r.get("area_id") or 0 for r in tnpl], dtype=np.int32)
+    legal_term_area_vi = [r.get("area_name_vi") for r in tnpl]
+    legal_term_area_en = [r.get("area_name_en") for r in tnpl]
+    legal_term_term_id = np.asarray([r["term_id"] for r in tnpl], dtype=np.int32)
+    legal_term_term_vi = [r.get("term_name_vi") for r in tnpl]
+    legal_term_term_en = [r.get("term_name_en") for r in tnpl]
 
     print(f"[2/6] loading anle docs + first {DOC_SENTENCE_BUDGET} sentences ...")
     docs_tbl, md_map = load_anle_docs()
@@ -379,10 +379,10 @@ def main() -> int:
     encoder = SentenceTransformer(MODEL_ID)
     print(f"      dim={encoder.get_embedding_dimension()}  max_seq={encoder.max_seq_length}")
 
-    print(f"[4/6] encoding {len(tnpl_texts):,} tnpl terms ...")
+    print(f"[4/6] encoding {len(legal_term_texts):,} tnpl terms ...")
     t = time.time()
-    tnpl_emb = encode_corpus(tnpl_texts, encoder)  # (N_tnpl, 768)
-    print(f"      tnpl encoded in {time.time()-t:.1f}s  shape={tnpl_emb.shape}")
+    legal_term_emb = encode_corpus(legal_term_texts, encoder)  # (N_tnpl, 768)
+    print(f"      tnpl encoded in {time.time()-t:.1f}s  shape={legal_term_emb.shape}")
 
     # Build per-doc representation: title + ". " + subject + ". " + sentences[0:K]
     doc_texts: list[str] = []
@@ -401,9 +401,9 @@ def main() -> int:
 
     print("[6/6] scoring + writing outputs ...")
 
-    # Cosine = doc_emb @ tnpl_emb.T  (both already unit-normalised).
+    # Cosine = doc_emb @ legal_term_emb.T  (both already unit-normalised).
     # 1963 x 16247 x 768 floats = 24 MB, comfortably in RAM.
-    sims = doc_emb @ tnpl_emb.T  # (N_docs, N_tnpl)
+    sims = doc_emb @ legal_term_emb.T  # (N_docs, N_tnpl)
 
     # Doc-level classification rows.
     doc_rows: list[dict[str, Any]] = []
@@ -413,12 +413,12 @@ def main() -> int:
         top_idx = top_idx[np.argsort(-row_sims[top_idx])]
         top_terms = [
             {
-                "term_id": int(tnpl_term_id[j]),
-                "term_name_vi": tnpl_term_vi[j],
-                "term_name_en": tnpl_term_en[j],
-                "area_id": int(tnpl_area_id[j]),
-                "area_name_vi": tnpl_area_vi[j],
-                "area_name_en": tnpl_area_en[j],
+                "term_id": int(legal_term_term_id[j]),
+                "term_name_vi": legal_term_term_vi[j],
+                "term_name_en": legal_term_term_en[j],
+                "area_id": int(legal_term_area_id[j]),
+                "area_name_vi": legal_term_area_vi[j],
+                "area_name_en": legal_term_area_en[j],
                 "cos": float(row_sims[j]),
             }
             for j in top_idx
@@ -471,13 +471,13 @@ def main() -> int:
             "title": docs_tbl.column("title")[i].as_py(),
             "subject": docs_tbl.column("subject")[i].as_py(),
             # L3 broad domain (tnpl-driven).
-            "tnpl_broad_domain_vi": top_bvi,
-            "tnpl_broad_domain_en": top_ben,
-            "tnpl_broad_domain_score": float(top_score),
-            "tnpl_broad_domain_margin": float(margin),
+            "legal_term_broad_domain_vi": top_bvi,
+            "legal_term_broad_domain_en": top_ben,
+            "legal_term_broad_domain_score": float(top_score),
+            "legal_term_broad_domain_margin": float(margin),
             # L4 fine breakdown.
-            "tnpl_linhvuc_top_k": json.dumps(linhvuc_top_k, ensure_ascii=False),
-            "tnpl_term_top_k": json.dumps(top_terms, ensure_ascii=False),
+            "legal_term_linhvuc_top_k": json.dumps(linhvuc_top_k, ensure_ascii=False),
+            "legal_term_term_top_k": json.dumps(top_terms, ensure_ascii=False),
         })
 
     # Entity-level classification rows.
@@ -573,14 +573,14 @@ def main() -> int:
     manifest = {
         "captured_at": datetime.utcnow().isoformat() + "Z",
         "encoder_model_id": MODEL_ID,
-        "encoder_dim": int(tnpl_emb.shape[1]),
-        "tnpl_repo": "tmquan/thuvienphapluat-vn-tnpl",
-        "tnpl_taxonomy_path": str((TNPL / "taxonomy.json").relative_to(REPO_ROOT)),
+        "encoder_dim": int(legal_term_emb.shape[1]),
+        "legal_term_repo": "tmquan/thuvienphapluat-vn-tnpl",
+        "legal_term_taxonomy_path": str((TNPL / "taxonomy.json").relative_to(REPO_ROOT)),
         "broad_domain_source": "packages/datasites/thuvienphapluat_tnpl/viz.py::_TOPIC_CATEGORY",
         "broad_domains": sorted({tuple(v) for v in AREA_TO_BROAD.values()} |
                                  {(FALLBACK_BROAD_VI, FALLBACK_BROAD_EN)}),
         "anle_docs": int(docs_tbl.num_rows),
-        "tnpl_terms": len(tnpl),
+        "legal_term_terms": len(tnpl),
         "n_entities_total": len(ent_rows),
         "top_k_terms_per_doc": TOP_K_TERMS,
         "top_k_linhvuc_per_doc": TOP_K_LINHVUC,

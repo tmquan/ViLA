@@ -124,7 +124,7 @@ thinking toggles applied automatically by
 
 ## 4. Entity schema
 
-Output is a Pydantic model serialised to JSON. The 26 entity types
+Output is a Pydantic model serialised to JSON. The 27 entity types
 (`packages/extractor/ner/schema.py: EntityType`) are split into two
 top-level lists, **`metadata`** and **`maindata`**, that the LLM is
 asked to emit directly. The partition is content-driven, not
@@ -179,7 +179,7 @@ in `dân sự` and `thương mại` matters.
 | Org | `org_court` | toà án | Court name (`TAND huyện X`, `TANDTC`, …). |
 | Org | `org_agency` | cơ quan | Investigating agency, prosecution office, ministry, etc. |
 
-### 4.2 `maindata` (19 types — case substance)
+### 4.2 `maindata` (20 types — case substance)
 
 | Class | Type id | Vietnamese label | Notes |
 |---|---|---|---|
@@ -193,7 +193,8 @@ in `dân sự` and `thương mại` matters.
 | Loc | `loc_district` | quận / huyện / thị xã | District-level admin unit. |
 | Loc | `loc_commune` | xã / phường / thị trấn | Commune-level admin unit. |
 | Loc | `loc_address` | địa chỉ chi tiết | Free-form street address. |
-| Time | `date` | ngày | ISO `YYYY-MM-DD` when resolvable; raw text otherwise. |
+| Time | `date` | ngày | Absolute calendar date — ISO `YYYY-MM-DD` (+ optional `iso_time` when the surface form carried a clock, e.g. `"22 giờ 30 phút ngày 14/3/2023"`) when resolvable; raw text otherwise. |
+| Time | `date_relative` | thời điểm tương đối | Relative temporal expression (`Trước đó 3 ngày`, `05 phút sau`, `Cùng ngày`, `Hôm qua`). Resolved against the most recent absolute `date` by the timeline builder; see `TIMELINE.md § 3a`. |
 | Quantity | `money` | số tiền | Monetary amount (currency normalised to VND if shown in đồng). |
 | Identifier | `id_number` | CMND / CCCD / hộ chiếu | National-ID-like identifier. |
 | Identifier | `plate_number` | biển số xe | Vehicle plate. |
@@ -302,7 +303,20 @@ cache_key = sha256(
 - `doc_name`: filename stem under `md/`.
 - `model_id`: full NIM model id from `wiki/MODELS.md`.
 - `prompt_version`: `PROMPT_VERSION` constant in
-  `packages/extractor/ner/prompts.py` (bumped on any prompt change).
+  `packages/extractor/ner/prompts.py` (bumped on any prompt
+  change). Versions in this repo so far:
+  - `v1` — initial single-list output.
+  - `v2` — split entity output into `metadata` / `maindata`.
+  - `v3` — rename `person_*` → `per_*` and add the three `org_*`
+    party variants for corporate parties.
+  - `v4` — add `date_relative` to the maindata catalogue and a
+    new date-discipline rule directing relative temporal
+    expressions (`Trước đó X ngày`, `X phút sau`, `Cùng ngày`,
+    `Hôm qua`) into that bucket. The 27-entity taxonomy in
+    `wiki/EXTRACTION.md § 4` reflects this addition; the
+    downstream resolver in
+    `packages/extractor/timeline/datetimes.py` consumes the new
+    type (see `wiki/TIMELINE.md § 3a`).
 - `kb_version`: see §2.3 above.
 - `input_text_hash`: `sha256(nfc(markdown_body))[:32]`.
 

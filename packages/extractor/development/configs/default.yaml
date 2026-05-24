@@ -1,0 +1,22 @@
+# Default configuration for the case-development builder.
+#
+# Override individual fields from the CLI (see ``__main__.py``) or
+# pass an alternative file via ``--config``. The wiki/DEVELOPMENT.md
+# § 6 documents the pipeline shape.
+
+input:
+  # Directory of canonical NER per-doc records (symlinks created by
+  # the NER pipeline's ``link_canonical`` step). One file per doc:
+  # ``<canonical_dir>/<doc_name>.json``.
+  canonical_dir: data/samplebanan.toaan.gov.vn/entities/canonical
+
+  # Directory of source markdown files (must be the same one the
+  # NER pipeline ran on; the input_text_hash on the cache record
+  # must match the file in this directory).
+  md_dir: data/samplebanan.toaan.gov.vn/md
+
+output:
+  # Output root; the builder writes:
+  #   <root>/development/<doc_name>.json
+  #   <root>/developments.jsonl
+  root: data/samplebanan.toaan.gov.vn

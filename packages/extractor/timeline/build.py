@@ -28,8 +28,13 @@ from packages.extractor.timeline.cluster import (
     Cluster,
     cluster_by_date_proximity,
 )
-from packages.extractor.timeline.dates import parse_date_to_anchor
+from packages.extractor.timeline.datetimes import (
+    find_relative_expressions,
+    parse_date_to_anchor,
+    parse_relative_to_anchor,
+)
 from packages.extractor.timeline.locator import (
+    LocatedEntity,
     locate_entities,
     location_stats,
 )
@@ -48,6 +53,7 @@ from packages.extractor.timeline.schema import (
     TimelineStats,
     TimelineTrack,
     Track,
+    WhenAnchor,
     track_for_kind,
 )
 
@@ -275,8 +281,15 @@ def _build_event(
     char_end = cluster.char_end
 
     if not is_ambient and cluster.anchor is not None:
-        anchor_ent = cluster.anchor.entity
-        when = parse_date_to_anchor(anchor_ent.text, page=anchor_ent.page)
+        anchor_le = cluster.anchor
+        anchor_ent = anchor_le.entity
+        if anchor_le.pre_resolved is not None:
+            # Relative span that was already resolved into a
+            # full WhenAnchor by the pre-pass — use it verbatim
+            # so we don't lose the relative-provenance fields.
+            when = anchor_le.pre_resolved
+        else:
+            when = parse_date_to_anchor(anchor_ent.text, page=anchor_ent.page)
         kind = classify_event_kind(cluster, source_text=source_text)
         if char_start is not None and char_end is not None:
             # 240-char neighbourhood for UI tooltips.
@@ -330,6 +343,9 @@ def _split_ambient_by_section(
     return meta, main
 
 
+_UNRESOLVED_SORT_KEY = "9999-99-99T99:99:99"
+
+
 def _finalise_track(
     *,
     track: Track,
@@ -340,7 +356,7 @@ def _finalise_track(
 ) -> TimelineTrack:
     """Sort, re-id, and box up one track's events + ambient."""
     dated_events.sort(key=lambda e: (
-        e.when.sort_key if e.when else "9999-99-99",
+        e.when.sort_key if e.when else _UNRESOLVED_SORT_KEY,
         e.char_start if e.char_start is not None else 1 << 30,
     ))
     prefix = "M" if track == "meta" else "X"
@@ -368,6 +384,223 @@ def _finalise_track(
     )
 
 
+#: Placeholder anchor-event-id used in pass 1 of the cross-link.
+#: After ``_finalise_track`` assigns final event ids, we walk all
+#: events and patch ``__src_anchor_<idx>__`` markers to the actual
+#: anchor event id. The marker is unambiguous (the absolute-anchor
+#: index is a stable per-doc integer counter) and never escapes the
+#: builder — `_patch_anchor_event_ids` always rewrites or clears
+#: it before the timeline is returned.
+_ANCHOR_PLACEHOLDER_PREFIX = "__src_anchor_"
+_ANCHOR_PLACEHOLDER_SUFFIX = "__"
+
+
+def _make_anchor_placeholder(idx: int) -> str:
+    return f"{_ANCHOR_PLACEHOLDER_PREFIX}{idx}{_ANCHOR_PLACEHOLDER_SUFFIX}"
+
+
+def _resolve_relatives(
+    *,
+    located: list[LocatedEntity],
+    nfc_source: str,
+) -> tuple[list[LocatedEntity], int, int, int]:
+    """Walk located entities in source order and resolve relative spans.
+
+    Inputs:
+        ``located`` — the NER-emitted entities after location.
+        ``nfc_source`` — the NFC-normalised source text for the regex pre-pass.
+
+    Returns a 4-tuple:
+        ``merged`` — the located stream with regex-discovered relative
+            spans merged in (in source order). Each absolute ``date``
+            entity is tagged with a synthetic anchor-id via the
+            ``pre_resolved`` field's ``anchor_event_id`` placeholder
+            (so we can patch it later) — wait, that's only for
+            relatives. Absolute anchors keep ``pre_resolved=None``;
+            their position is recorded in ``abs_anchor_starts``.
+        ``n_total`` / ``n_resolved`` / ``n_unresolved`` — counts of
+            relative expressions encountered (NER-emitted plus
+            regex-discovered, after dedupe).
+
+    Algorithm:
+
+    1. Synthesise :class:`LocatedEntity` records for every regex
+       hit not already present in the NER stream (dedupe by exact
+       ``(start, end)`` match).
+    2. Sort the combined stream by ``start`` (unlocated entities
+       — ``start is None`` — drop to the end and keep their original
+       relative order).
+    3. Walk in source order. For each absolute ``date`` entity:
+       record its (start, anchor_idx) and update ``current_anchor``.
+       For each ``date_relative`` entity (NER-emitted or synthetic):
+       call :func:`parse_relative_to_anchor` and, on success,
+       promote the entity to type ``"date"`` carrying the resolved
+       :class:`WhenAnchor` in ``pre_resolved``. On failure, keep the
+       entity as ``date_relative`` (the clusterer ignores it for
+       anchor purposes; it flows into the ambient bucket).
+    """
+    # 1. Build the regex-discovered relative entries.
+    existing_spans = {
+        (le.start, le.end)
+        for le in located
+        if le.start is not None and le.end is not None
+    }
+    regex_spans = find_relative_expressions(nfc_source)
+    synthetic: list[LocatedEntity] = []
+    for s, e, _ in regex_spans:
+        if (s, e) in existing_spans:
+            continue
+        # Use the exact source slice as the entity text so the
+        # raw surface is preserved (the locator would re-find this
+        # span anyway).
+        raw = nfc_source[s:e]
+        ent = ExtractedEntity(type="date_relative", text=raw)
+        synthetic.append(LocatedEntity(entity=ent, start=s, end=e))
+
+    # 2. Merge and order by source position.
+    combined = list(located) + synthetic
+    combined.sort(key=lambda le: (
+        le.start if le.start is not None else 1 << 30,
+        # Tiebreaker: NER entities (no pre_resolved) before synthetic.
+        0 if le.pre_resolved is None else 1,
+    ))
+
+    # 3. Walk in order to resolve relatives.
+    merged: list[LocatedEntity] = []
+    current_anchor: WhenAnchor | None = None
+    current_anchor_idx: int | None = None
+    abs_anchor_counter = 0
+    n_total = 0
+    n_resolved = 0
+    n_unresolved = 0
+
+    for le in combined:
+        ent = le.entity
+        if ent.type == "date":
+            current_anchor = parse_date_to_anchor(ent.text, page=ent.page)
+            current_anchor_idx = abs_anchor_counter
+            abs_anchor_counter += 1
+            # Stash the source-anchor-id on a dedicated marker
+            # WhenAnchor so we can map cluster → anchor_idx later.
+            # We keep the anchor's own ``anchor_event_id`` empty;
+            # the patcher uses (start, end) → event_id mapping
+            # instead. The counter is only needed to disambiguate
+            # the anchor when patching the relatives below.
+            merged.append(le)
+            continue
+
+        if ent.type == "date_relative":
+            n_total += 1
+            placeholder = (
+                _make_anchor_placeholder(current_anchor_idx)
+                if current_anchor_idx is not None
+                else None
+            )
+            resolved = parse_relative_to_anchor(
+                ent.text,
+                anchor=current_anchor,
+                anchor_event_id=placeholder,
+                page=ent.page,
+            )
+            if resolved is not None and resolved.iso is not None:
+                n_resolved += 1
+                # Promote to type=date so the clusterer opens an
+                # event for it. The original entity.type is
+                # preserved on the inner ExtractedEntity via a new
+                # copy (so the section_for() lookup in ambient-
+                # split logic still sees date_relative if we ever
+                # leak one out).
+                promoted = ExtractedEntity(
+                    type="date",
+                    text=ent.text,
+                    page=ent.page,
+                    attributes=ent.attributes,
+                )
+                merged.append(LocatedEntity(
+                    entity=promoted,
+                    start=le.start,
+                    end=le.end,
+                    pre_resolved=resolved,
+                ))
+            else:
+                n_unresolved += 1
+                # Keep as date_relative — flows into ambient.
+                merged.append(le)
+            continue
+
+        merged.append(le)
+
+    return merged, n_total, n_resolved, n_unresolved
+
+
+def _patch_anchor_event_ids(
+    *,
+    located: list[LocatedEntity],
+    meta_track: TimelineTrack,
+    main_track: TimelineTrack,
+) -> None:
+    """Replace ``__src_anchor_<idx>__`` placeholders with real event ids.
+
+    Walks every dated event on both tracks. For absolute anchors
+    (``when.is_relative=False``), records the mapping
+    ``(char_start of anchor_entity) → event_id``. Then on a second
+    pass, for every relative event, finds its anchor's char_start
+    by re-walking ``located`` to recover the (anchor_idx → start)
+    map, and rewrites ``when.anchor_event_id`` from the placeholder
+    to the real id. Placeholders that fail to resolve (e.g. the
+    anchor event was clustered into ambient) are cleared to
+    ``None`` so on-disk readers don't see internal sentinels.
+    """
+    # anchor_idx -> char_start of the absolute date entity
+    anchor_idx_to_start: dict[int, int] = {}
+    abs_counter = 0
+    for le in located:
+        if le.entity.type != "date":
+            continue
+        # Skip promoted relatives (they have pre_resolved set);
+        # those are NOT absolute anchors, they are themselves
+        # being patched.
+        if le.pre_resolved is not None:
+            continue
+        if le.start is not None:
+            anchor_idx_to_start[abs_counter] = le.start
+        abs_counter += 1
+
+    # char_start -> event_id (for absolute anchors only).
+    start_to_event_id: dict[int, str] = {}
+    for track in (meta_track, main_track):
+        for ev in track.events:
+            if (
+                ev.when is not None
+                and not ev.when.is_relative
+                and ev.char_start is not None
+            ):
+                start_to_event_id[ev.char_start] = ev.event_id
+
+    for track in (meta_track, main_track):
+        for ev in track.events:
+            if ev.when is None or not ev.when.is_relative:
+                continue
+            placeholder = ev.when.anchor_event_id
+            if placeholder is None or not placeholder.startswith(
+                _ANCHOR_PLACEHOLDER_PREFIX,
+            ):
+                continue
+            try:
+                idx = int(
+                    placeholder[len(_ANCHOR_PLACEHOLDER_PREFIX):
+                                -len(_ANCHOR_PLACEHOLDER_SUFFIX)],
+                )
+            except ValueError:
+                ev.when.anchor_event_id = None
+                continue
+            anchor_start = anchor_idx_to_start.get(idx)
+            if anchor_start is None:
+                ev.when.anchor_event_id = None
+                continue
+            ev.when.anchor_event_id = start_to_event_id.get(anchor_start)
+
+
 def build_timeline(
     *,
     record: PersistedExtraction,
@@ -385,18 +618,29 @@ def build_timeline(
 
     Algorithm overview (see ``wiki/TIMELINE.md § 6``):
 
-    1. Re-localise every NER entity in the source markdown (NFC,
-       greedy left-to-right) so each gets a char-offset.
-    2. Cluster located entities by date proximity within
+    1. NFC-normalise the source markdown.
+    2. Re-localise every NER entity in the source (NFC, greedy
+       left-to-right) so each gets a char-offset.
+    3. Pre-pass — scan the source for relative temporal expressions
+       (regex), synthesise ``date_relative`` entities for hits the
+       NER missed, then walk the merged stream in source order to
+       resolve each ``date_relative`` against the most-recent
+       preceding absolute ``date``. Resolved relatives are promoted
+       to type ``"date"`` carrying their pre-computed
+       :class:`WhenAnchor`; unresolved ones stay as
+       ``date_relative`` and flow into the ambient bucket.
+    4. Cluster located entities by date proximity within
        ``cluster_window_chars``.
-    3. For each dated cluster: classify the event kind, then route
+    5. For each dated cluster: classify the event kind, then route
        to the procedural ``meta`` track or the substantive ``main``
        track via :func:`track_for_kind`.
-    4. Split the ambient cluster (un-anchored entities) by NER
+    6. Split the ambient cluster (un-anchored entities) by NER
        section (``METADATA_TYPES`` vs ``MAINDATA_TYPES``) into per-
        track ambient buckets.
-    5. Stamp stable, sortable event ids per track and emit the
-       :class:`CaseTimeline` record.
+    7. Stamp stable, sortable event ids per track and patch each
+       resolved relative event's ``anchor_event_id`` to its
+       absolute-anchor event id.
+    8. Emit the :class:`CaseTimeline` record.
     """
     nfc_source = unicodedata.normalize("NFC", source_text)
 
@@ -408,6 +652,12 @@ def build_timeline(
     # independently.
     all_entities = list(record.all_entities)
     located = locate_entities(source_text=nfc_source, entities=all_entities)
+
+    # Relative pre-pass: regex scan + per-entity anchor resolution.
+    located, n_rel_total, n_rel_resolved, n_rel_unresolved = _resolve_relatives(
+        located=located,
+        nfc_source=nfc_source,
+    )
 
     dated_clusters, ambient = cluster_by_date_proximity(
         located,
@@ -451,6 +701,14 @@ def build_timeline(
         doc_name=record.doc_name,
     )
 
+    # Cross-link resolved relatives to their absolute anchor's
+    # final event id (now that the ids are stable).
+    _patch_anchor_event_ids(
+        located=located,
+        meta_track=meta_track,
+        main_track=main_track,
+    )
+
     case_header = _build_case_header(record)
     outcome = _build_outcome(record)
 
@@ -482,6 +740,9 @@ def build_timeline(
         n_crimes=sum(len(e.crimes) for e in all_events),
         n_sentences=sum(len(e.sentences) for e in all_events),
         n_unlocated_entities=n_unloc,
+        n_relative_total=n_rel_total,
+        n_relative_resolved=n_rel_resolved,
+        n_relative_unresolved=n_rel_unresolved,
     )
 
     return CaseTimeline(

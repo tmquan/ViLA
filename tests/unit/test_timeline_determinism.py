@@ -42,8 +42,9 @@ from packages.extractor.timeline import (
     SCHEMA_VERSION,
     build_timeline,
     parse_date_to_anchor,
+    parse_relative_to_anchor,
 )
-from packages.extractor.timeline.dates import _UNRESOLVED_SORT_KEY
+from packages.extractor.timeline.datetimes import _UNRESOLVED_SORT_KEY
 from packages.extractor.timeline.schema import (
     MAIN_KINDS,
     META_KINDS,
@@ -60,12 +61,14 @@ class TestDateParser:
         a = parse_date_to_anchor("21/01/2022")
         assert a.iso == "2022-01-21"
         assert a.iso_partial is None
-        assert a.sort_key == "2022-01-21"
+        assert a.iso_time is None
+        assert a.iso_datetime is None
+        assert a.sort_key == "2022-01-21T99:99:99"
 
     def test_numeric_full_dash(self) -> None:
         a = parse_date_to_anchor("21-3-2018")
         assert a.iso == "2018-03-21"
-        assert a.sort_key == "2018-03-21"
+        assert a.sort_key == "2018-03-21T99:99:99"
 
     def test_numeric_full_dot(self) -> None:
         a = parse_date_to_anchor("21.3.2018")
@@ -74,7 +77,7 @@ class TestDateParser:
     def test_vn_long_form(self) -> None:
         a = parse_date_to_anchor("13 tháng 10 năm 2021")
         assert a.iso == "2021-10-13"
-        assert a.sort_key == "2021-10-13"
+        assert a.sort_key == "2021-10-13T99:99:99"
 
     def test_vn_long_form_with_ngay_capitalised(self) -> None:
         a = parse_date_to_anchor("Ngày 18 tháng 4 năm 2023")
@@ -88,25 +91,63 @@ class TestDateParser:
         a = parse_date_to_anchor("tháng 5 năm 2021")
         assert a.iso is None
         assert a.iso_partial == "2021-05"
-        assert a.sort_key == "2021-05-99"
+        assert a.sort_key == "2021-05-99T99:99:99"
 
     def test_partial_month_year_numeric(self) -> None:
         a = parse_date_to_anchor("5/2021")
         assert a.iso is None
         assert a.iso_partial == "2021-05"
-        assert a.sort_key == "2021-05-99"
+        assert a.sort_key == "2021-05-99T99:99:99"
 
     def test_partial_year_vn(self) -> None:
         a = parse_date_to_anchor("năm 2018")
         assert a.iso is None
         assert a.iso_partial == "2018"
-        assert a.sort_key == "2018-99-99"
+        assert a.sort_key == "2018-99-99T99:99:99"
 
     def test_partial_bare_year(self) -> None:
         a = parse_date_to_anchor("2017")
         assert a.iso is None
         assert a.iso_partial == "2017"
-        assert a.sort_key == "2017-99-99"
+        assert a.sort_key == "2017-99-99T99:99:99"
+
+    # --- v2: clock-time recognition ---
+
+    def test_clock_plus_date_vn(self) -> None:
+        a = parse_date_to_anchor("22 giờ 30 phút ngày 14/3/2023")
+        assert a.iso == "2023-03-14"
+        assert a.iso_time == "22:30:00"
+        assert a.iso_datetime == "2023-03-14T22:30:00"
+        assert a.sort_key == "2023-03-14T22:30:00"
+
+    def test_clock_hour_only_plus_date(self) -> None:
+        a = parse_date_to_anchor("khoảng 22 giờ ngày 14/3/2023")
+        assert a.iso == "2023-03-14"
+        assert a.iso_time == "22:00:00"
+        assert a.sort_key == "2023-03-14T22:00:00"
+
+    def test_time_only(self) -> None:
+        a = parse_date_to_anchor("14 giờ 25 phút")
+        assert a.iso is None
+        assert a.iso_partial is None
+        assert a.iso_time == "14:25:00"
+        assert a.iso_datetime is None
+        assert a.sort_key == "9999-99-99T14:25:00"
+
+    def test_time_only_colon_form(self) -> None:
+        a = parse_date_to_anchor("lúc 14:25")
+        assert a.iso is None
+        assert a.iso_time == "14:25:00"
+
+    def test_date_then_time_colon(self) -> None:
+        a = parse_date_to_anchor("14/3/2023 22:30")
+        assert a.iso == "2023-03-14"
+        assert a.iso_time == "22:30:00"
+
+    def test_sort_key_timed_before_untimed_same_day(self) -> None:
+        timed = parse_date_to_anchor("22 giờ 30 phút ngày 14/3/2023").sort_key
+        untimed = parse_date_to_anchor("14/3/2023").sort_key
+        assert timed < untimed
 
     def test_unparseable_phrase(self) -> None:
         a = parse_date_to_anchor("từ thán 6/2012 đến thán 4/2015")
@@ -144,6 +185,198 @@ class TestDateParser:
         # Full date in May sorts before "2021-05-99" sorts before
         # "2021-99-99" sorts before the unresolved sentinel.
         assert full < partial_m < partial_y < unresolved
+
+
+# --------------------------------------------------------------------- 1b. relative
+
+
+class TestRelativeParser:
+    """Vietnamese relative-temporal surface-form → resolved WhenAnchor."""
+
+    def test_f1_sub_day_minutes_against_timed_anchor(self) -> None:
+        anchor = parse_date_to_anchor("22 giờ 30 phút ngày 14/3/2023")
+        r = parse_relative_to_anchor("05 phút sau", anchor=anchor)
+        assert r is not None
+        assert r.is_relative is True
+        assert r.iso == "2023-03-14"
+        assert r.iso_time == "22:35:00"
+        assert r.direction == "after"
+        assert r.unit == "phút"
+        assert r.magnitude == 5.0
+        assert r.sort_key == "2023-03-14T22:35:00"
+
+    def test_f1_hours_rolls_over_midnight(self) -> None:
+        anchor = parse_date_to_anchor("22 giờ 30 phút ngày 14/3/2023")
+        r = parse_relative_to_anchor("3 giờ sau", anchor=anchor)
+        assert r is not None
+        assert r.iso == "2023-03-15"
+        assert r.iso_time == "01:30:00"
+
+    def test_f1_days_preserves_anchor_time(self) -> None:
+        anchor = parse_date_to_anchor("22 giờ 30 phút ngày 14/3/2023")
+        r = parse_relative_to_anchor("5 ngày sau", anchor=anchor)
+        assert r is not None
+        assert r.iso == "2023-03-19"
+        # Day-or-larger arithmetic preserves the anchor clock.
+        assert r.iso_time == "22:30:00"
+
+    def test_f1_days_against_date_only_anchor(self) -> None:
+        anchor = parse_date_to_anchor("14/3/2023")
+        r = parse_relative_to_anchor("02 ngày sau", anchor=anchor)
+        assert r is not None
+        assert r.iso == "2023-03-16"
+        assert r.iso_time is None
+
+    def test_f1_vague_carries_iso_max(self) -> None:
+        anchor = parse_date_to_anchor("14/3/2023")
+        r = parse_relative_to_anchor("vài ngày sau", anchor=anchor)
+        assert r is not None
+        assert r.iso == "2023-03-15"
+        assert r.iso_max == "2023-03-19"
+        assert r.magnitude == 1.0
+        assert r.unit == "ngày"
+
+    def test_f2_truoc_do_days(self) -> None:
+        anchor = parse_date_to_anchor("14/3/2023")
+        r = parse_relative_to_anchor("Trước đó 3 ngày", anchor=anchor)
+        assert r is not None
+        assert r.iso == "2023-03-11"
+        assert r.direction == "before"
+
+    def test_f2_years_clamp_feb_29(self) -> None:
+        # 2024-02-29 minus 5 years → 2019-02-28 (Feb-29 clamp).
+        anchor = parse_date_to_anchor("29/02/2024")
+        r = parse_relative_to_anchor("5 năm trước", anchor=anchor)
+        assert r is not None
+        assert r.iso == "2019-02-28"
+        assert r.direction == "before"
+        assert r.unit == "năm"
+
+    def test_f3_same_day_preserves_anchor(self) -> None:
+        anchor = parse_date_to_anchor("22 giờ 30 phút ngày 14/3/2023")
+        r = parse_relative_to_anchor("Cùng ngày", anchor=anchor)
+        assert r is not None
+        assert r.iso == "2023-03-14"
+        # "same" preserves both date and the anchor's clock time.
+        assert r.iso_time == "22:30:00"
+        assert r.direction == "same"
+
+    def test_f4_hom_qua(self) -> None:
+        anchor = parse_date_to_anchor("14/3/2023")
+        r = parse_relative_to_anchor("Hôm qua", anchor=anchor)
+        assert r is not None
+        assert r.iso == "2023-03-13"
+        assert r.unit == "ngày"
+        assert r.direction == "before"
+
+    def test_f4_ngay_hom_sau(self) -> None:
+        anchor = parse_date_to_anchor("14/3/2023")
+        r = parse_relative_to_anchor("Ngày hôm sau", anchor=anchor)
+        assert r is not None
+        assert r.iso == "2023-03-15"
+
+    def test_f4_nam_ngoai(self) -> None:
+        anchor = parse_date_to_anchor("14/3/2023")
+        r = parse_relative_to_anchor("Năm ngoái", anchor=anchor)
+        assert r is not None
+        assert r.iso == "2022-03-14"
+
+    def test_f4_nam_sau(self) -> None:
+        anchor = parse_date_to_anchor("14/3/2023")
+        r = parse_relative_to_anchor("Năm sau", anchor=anchor)
+        assert r is not None
+        assert r.iso == "2024-03-14"
+
+    def test_f5_khoang_weeks(self) -> None:
+        # "khoảng 5 tuần sau" against 2023-03-14 → iso = 2023-04-18
+        # (+ 35 days), iso_max = +25% spread → ~ +44 days = 2023-04-27.
+        anchor = parse_date_to_anchor("14/3/2023")
+        r = parse_relative_to_anchor("khoảng 5 tuần sau", anchor=anchor)
+        assert r is not None
+        assert r.iso == "2023-04-18"
+        # iso_max with magnitude*1.25 ≈ 6.25 weeks ≈ +43.75 days ≈ 2023-04-26
+        # (rounded to int days through the timedelta path).
+        assert r.iso_max is not None
+        # Bracketed sanity: somewhere in late April.
+        assert r.iso_max.startswith("2023-04-2")
+
+    def test_decimal_comma_minutes(self) -> None:
+        # "1,2 phút sau" = 72 seconds. 22:30:00 + 72s = 22:31:12.
+        anchor = parse_date_to_anchor("22 giờ 30 phút ngày 14/3/2023")
+        r = parse_relative_to_anchor("1,2 phút sau", anchor=anchor)
+        assert r is not None
+        assert r.iso_time == "22:31:12"
+        assert r.magnitude == 1.2
+
+    def test_unparseable_returns_none(self) -> None:
+        anchor = parse_date_to_anchor("14/3/2023")
+        assert parse_relative_to_anchor("không có gì", anchor=anchor) is None
+
+    def test_relative_without_anchor(self) -> None:
+        r = parse_relative_to_anchor("05 phút sau", anchor=None)
+        assert r is not None
+        assert r.iso is None
+        assert r.iso_time is None
+        assert r.is_relative is True
+        assert r.magnitude == 5.0
+        assert r.unit == "phút"
+        assert r.direction == "after"
+
+
+# --------------------------------------------------------------------- 1c. scanner
+
+
+class TestSourceScanner:
+    """Source-text scanner for relative temporal expressions."""
+
+    def test_synthetic_snippet_spans_left_to_right(self) -> None:
+        from packages.extractor.timeline.datetimes import (
+            find_relative_expressions,
+        )
+        snippet = (
+            "Vào ngày 14/3/2023 sự việc xảy ra. "       # F0 absolute
+            "Khoảng 05 phút sau, bị cáo ra khỏi nhà. "  # F1
+            "Trước đó 3 ngày bị cáo đã chuẩn bị. "      # F2
+            "Cùng ngày, công an có mặt. "               # F3
+            "Hôm sau, gia đình trình báo. "             # F4
+            "Vài tuần sau, vụ án được khởi tố."         # F5
+        )
+        spans = find_relative_expressions(snippet)
+        # All five families should match at least once.
+        raws = [r for _, _, r in spans]
+        assert any("05 phút sau" in r.lower() for r in raws)
+        assert any("trước đó 3 ngày" in r.lower() for r in raws)
+        assert any("cùng ngày" in r.lower() for r in raws)
+        assert any("hôm sau" in r.lower() for r in raws)
+        assert any("vài tuần sau" in r.lower() for r in raws)
+        # Left-to-right document order.
+        starts = [s for s, _, _ in spans]
+        assert starts == sorted(starts)
+        # No two spans overlap.
+        for i in range(1, len(spans)):
+            assert spans[i][0] >= spans[i - 1][1]
+
+    def test_real_corpus_doc_1334774(self) -> None:
+        """Verify the scanner hits at least three relative spans in the doc."""
+        from pathlib import Path
+
+        from packages.extractor.timeline.datetimes import (
+            find_relative_expressions,
+        )
+        md = Path(
+            "data/samplebanan.toaan.gov.vn/md/1334774.md",
+        )
+        if not md.exists():
+            import pytest
+            pytest.skip(f"corpus file {md} missing")
+        body = md.read_text(encoding="utf-8")
+        spans = find_relative_expressions(body)
+        # 1334774 contains "Khoảng 05 phút sau" and "Khoảng 20 phút
+        # sau" in the narrative — verify the scanner hits both.
+        raws = " | ".join(r for _, _, r in spans).lower()
+        assert "05 phút sau" in raws
+        assert "20 phút sau" in raws
+        assert len(spans) >= 2
 
 
 # --------------------------------------------------------------------- 2. build
@@ -450,6 +683,122 @@ class TestTrackForKind:
 
     def test_meta_main_kinds_are_disjoint(self) -> None:
         assert not (META_KINDS & MAIN_KINDS)
+
+
+# --------------------------------------------------------------------- 3b. relatives in build
+
+
+@pytest.fixture()
+def fake_record_with_relatives() -> PersistedExtraction:
+    """NER record with absolute + relative date entities for the resolver."""
+    metadata = [
+        _make_entity("case_number", "07/2023/HS-ST", page=1),
+    ]
+    maindata = [
+        _make_entity("date", "14/3/2023", page=1),
+        _make_entity("per_defendant", "Nguyễn Văn A", page=1),
+        # Relative spans — the locator will find them in the source.
+        _make_entity("date_relative", "05 phút sau", page=1),
+        _make_entity("date_relative", "02 ngày sau", page=1),
+    ]
+    return PersistedExtraction(
+        doc_name="doc_rel",
+        model_id="stub/test",
+        prompt_version="v4",
+        kb_version="kb-fake-hash",
+        input_text_hash="ihash-rel",
+        cache_key="ckey-rel",
+        run_id="2026-05-25T00:00:00Z",
+        cached_at="2026-05-25T00:00:00Z",
+        metadata=metadata,
+        maindata=maindata,
+        summary=CaseSummary(
+            case_type="Hình sự",
+            primary_offence=None,
+            applied_statutes=[],
+            outcome=None,
+        ),
+        stats=ExtractionStats(
+            n_entities=4, n_metadata=1, n_maindata=3,
+            legal_dict=KbCoverage(),
+            legal_term=KbCoverage(),
+        ),
+    )
+
+
+@pytest.fixture()
+def fake_source_with_relatives() -> str:
+    """Source narrative wiring two relative spans against an absolute anchor."""
+    return (
+        "Bản án số 07/2023/HS-ST.\n"
+        "Vào ngày 14/3/2023, bị cáo Nguyễn Văn A đã có mặt tại địa điểm. "
+        "Khoảng 05 phút sau, bị cáo rời khỏi hiện trường mang theo tài sản. "
+        "02 ngày sau, công an mời bị cáo lên làm việc.\n"
+    )
+
+
+class TestBuildWithRelatives:
+    """End-to-end: build_timeline must resolve and link relative spans."""
+
+    def test_relative_stats_populated(
+        self,
+        fake_record_with_relatives: PersistedExtraction,
+        fake_source_with_relatives: str,
+    ) -> None:
+        tl = build_timeline(
+            record=fake_record_with_relatives,
+            source_text=fake_source_with_relatives,
+            built_at="2026-05-25T00:00:00Z",
+        )
+        assert tl.stats.n_relative_total >= 2
+        assert tl.stats.n_relative_resolved >= 2
+        assert tl.stats.n_relative_unresolved == 0
+
+    def test_resolved_events_carry_anchor_id(
+        self,
+        fake_record_with_relatives: PersistedExtraction,
+        fake_source_with_relatives: str,
+    ) -> None:
+        tl = build_timeline(
+            record=fake_record_with_relatives,
+            source_text=fake_source_with_relatives,
+            built_at="2026-05-25T00:00:00Z",
+        )
+        all_events = [*tl.meta.events, *tl.main.events]
+        absolute_event_ids = {
+            e.event_id for e in all_events
+            if e.when is not None and not e.when.is_relative
+        }
+        relative_events = [
+            e for e in all_events
+            if e.when is not None and e.when.is_relative
+        ]
+        assert len(relative_events) >= 2
+        for ev in relative_events:
+            assert ev.when is not None
+            assert ev.when.anchor_event_id in absolute_event_ids
+
+    def test_relative_events_sort_after_anchor_same_day(
+        self,
+        fake_record_with_relatives: PersistedExtraction,
+        fake_source_with_relatives: str,
+    ) -> None:
+        tl = build_timeline(
+            record=fake_record_with_relatives,
+            source_text=fake_source_with_relatives,
+            built_at="2026-05-25T00:00:00Z",
+        )
+        all_events = [*tl.meta.events, *tl.main.events]
+        # Find the "05 phút sau" event — same date as the 14/3 anchor.
+        same_day = [
+            e for e in all_events
+            if e.when is not None and e.when.iso == "2023-03-14"
+        ]
+        # At least one absolute + one relative on 14/3.
+        assert any(e.when is not None and e.when.is_relative for e in same_day)
+        assert any(
+            e.when is not None and not e.when.is_relative for e in same_day
+        )
 
 
 # --------------------------------------------------------------------- 4. render

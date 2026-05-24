@@ -63,13 +63,13 @@ This keeps the partition disjoint and exhaustive. The unit test
 
 ```jsonc
 {
-  "schema_version":   "v1",          // shape contract
-  "builder_version":  "v1",          // algorithm contract
+  "schema_version":   "v2",          // shape contract — v2 adds time-of-day + relative-temporal
+  "builder_version":  "v2",          // algorithm contract — v2 adds the relative pre-pass
 
   "doc_name":              "1030573",
   "source_cache_key":      "22ec260f07dbf65a02348bb6b5fa16f4",
   "source_kb_version":     "627eb8a2bf7bf755",
-  "source_prompt_version": "v3",
+  "source_prompt_version": "v4",
   "source_input_text_hash":"88f59dd37bf4812a9539a929c8f966cf",
   "built_at":              "2026-05-25T00:00:00Z",
 
@@ -122,11 +122,20 @@ that don't change across events:
   "event_id":   "1030573:M002",      // <doc>:<M|X>NNN ; M=meta, X=main, A=ambient
   "track":      "meta",              // mirror of parent track for flat exports
   "when": {
-    "iso":         "2018-06-01",     // YYYY-MM-DD when fully resolved
-    "iso_partial": null,             // YYYY-MM or YYYY when partial
-    "raw":         "01/06/2018",     // verbatim source surface form
-    "page":        1,
-    "sort_key":    "2018-06-01"      // see § 5.2
+    "iso":          "2018-06-01",          // YYYY-MM-DD when fully resolved
+    "iso_partial":  null,                  // YYYY-MM or YYYY when partial
+    "iso_time":     "10:30:00",            // v2; HH:MM:SS when a clock was extractable
+    "iso_datetime": "2018-06-01T10:30:00", // v2; convenience full datetime
+    "raw":          "10 giờ 30 phút ngày 01/06/2018",
+    "page":         1,
+    "sort_key":     "2018-06-01T10:30:00", // v2 shape — see § 5.2
+    // v2 relative-temporal provenance (null on absolute anchors):
+    "is_relative":      false,
+    "anchor_event_id":  null,
+    "magnitude":        null,
+    "unit":             null,
+    "direction":        null,
+    "iso_max":          null
   },
   "kind":       "filing",            // EventKind literal
 
@@ -195,9 +204,143 @@ TimelineStats = {
   "n_terms":             <int>,
   "n_crimes":            <int>,
   "n_sentences":         <int>,
-  "n_unlocated_entities":<int>    // entities the locator could not place
+  "n_unlocated_entities":<int>,   // entities the locator could not place
+
+  // v2 — relative-temporal counters (§ 3a)
+  "n_relative_total":      <int>, // relative spans found (NER + regex scan, deduped)
+  "n_relative_resolved":   <int>, // of which were anchored + resolved to a concrete iso
+  "n_relative_unresolved": <int>  // of which were left as raw text in the ambient bucket
 }
 ```
+
+## 3a. Relative temporal expressions and time-of-day resolution
+
+Vietnamese court judgments often anchor sub-events relative to a
+previously mentioned absolute date (``"Khoảng 05 phút sau"``,
+``"Trước đó 3 ngày"``, ``"Cùng ngày"``, ``"Hôm qua"``), and many
+incident reports embed a clock time inside the date phrase
+(``"Khoảng 22 giờ 30 phút ngày 14/3/2023"``). The ``v2`` builder
+captures both, in three coordinated layers:
+
+1. The NER prompt (``v4``, ``packages/extractor/ner/prompts.py``)
+   adds a ``date_relative`` entity type and a date-discipline
+   rule so the LLM emits relative spans alongside absolute dates.
+2. The date+time parser
+   (``packages/extractor/timeline/datetimes.py``, renamed from
+   ``dates.py``) recognises Vietnamese clock surface forms and
+   resolves relative phrases against an anchor.
+3. The builder pre-pass (``packages/extractor/timeline/build.py``)
+   scans the source markdown with a regex for relative spans the
+   LLM missed, walks every dated entity in source order, and
+   promotes each resolved relative span into a synthetic ``date``
+   entity carrying its pre-computed
+   :class:`~packages.extractor.timeline.schema.WhenAnchor`.
+
+### 3a.1 The five families of relative expressions
+
+| ID | Direction | Cue family | Examples | Magnitude |
+|---|---|---|---|---|
+| F1 | forward | ``X <đv> sau`` / ``Sau X <đv>`` / ``Sau đó X <đv>`` | ``5 phút sau``, ``Sau 3 ngày``, ``Sau đó 1 tuần`` | numeric |
+| F2 | backward | ``Trước đó X <đv>`` / ``X <đv> trước`` / ``Cách đó X <đv>`` | ``Trước đó 3 ngày``, ``5 năm trước``, ``Cách đó 2 tuần`` | numeric |
+| F3 | same | ``Cùng ngày`` / ``Cùng lúc`` / ``Hôm đó`` / ``Lúc đó`` | ``Cùng ngày``, ``Cùng thời điểm``, ``Ngay sau đó`` | 0 |
+| F4 | deixis | calendar deixis (closed set) | ``Hôm qua`` (-1d), ``Ngày hôm sau`` (+1d), ``Tuần trước`` (-1w), ``Năm ngoái`` (-1y), ``Năm sau`` (+1y) | implicit 1 unit |
+| F5 | vague | ``Vài <đv> sau`` / ``Khoảng X <đv> sau`` / ``Mấy <đv> sau`` | ``Vài ngày sau``, ``Khoảng 5 tuần sau`` | range — stamps ``iso`` (low) + ``iso_max`` (high) |
+
+The closed unit vocabulary is
+``giây`` / ``phút`` / ``giờ`` / ``ngày`` / ``tuần`` / ``tháng`` / ``năm``.
+Magnitudes accept decimal-comma OCR variants (``"1,2 phút sau"`` →
+72 seconds). F5-vague forms stamp the lower bound on ``iso`` and a
+broadened upper bound on ``iso_max`` (``"vài ngày"`` → 1..5 days,
+``"khoảng X"`` → ±25%).
+
+### 3a.2 Clock-time recognition in the absolute parser
+
+``parse_date_to_anchor`` now accepts these clock + date surface
+forms in addition to the date-only patterns from § 5:
+
+| Surface form | Resolution |
+|---|---|
+| ``22 giờ 30 phút ngày 14/3/2023`` | ``iso=2023-03-14``, ``iso_time=22:30:00`` |
+| ``22 giờ 30 phút 15 giây ngày 14/3/2023`` | ``iso=2023-03-14``, ``iso_time=22:30:15`` |
+| ``22 giờ ngày 14/3/2023`` | ``iso=2023-03-14``, ``iso_time=22:00:00`` |
+| ``Khoảng 22 giờ 30 phút ngày 14/3/2023`` | strips ``Khoảng``, same as above |
+| ``14/3/2023 22:30`` / ``14/3/2023 22:30:15`` | ``iso=2023-03-14``, ``iso_time=22:30:00`` |
+| ``14 giờ 25 phút`` (no date) | ``iso=None``, ``iso_time=14:25:00`` |
+| ``Lúc 14:25`` | strips ``Lúc``, same as ``14:25`` |
+
+When both halves are populated the convenience
+``iso_datetime`` field is computed as
+``f"{iso}T{iso_time}"``. The ``sort_key`` becomes the canonical
+``YYYY-MM-DDTHH:MM:SS`` ASCII-sortable form (timed events sort
+before untimed events on the same calendar day — the latter use
+``T99:99:99``).
+
+### 3a.3 Anchor selection rule
+
+The resolver uses the simplest rule that demonstrably works on the
+sample: **the most recent absolute date in source order** is the
+anchor for the next relative span. The builder walks the merged
+located stream sorted by char-start; every absolute ``date`` entity
+updates the running anchor, every ``date_relative`` entity resolves
+against the current anchor. Same-paragraph / same-sentence
+restrictions were considered but deferred — they hurt recall on
+the sample without improving precision (the corpus tends to
+introduce a new absolute date right before each cluster of
+relatives).
+
+### 3a.4 Resolved `WhenAnchor` shape
+
+A successfully resolved relative span produces a
+:class:`WhenAnchor` like this (concrete example: ``"05 phút sau"``
+against the anchor ``"22 giờ 30 phút ngày 14/3/2023"``):
+
+```jsonc
+{
+  "iso":          "2023-03-14",        // anchor date (delta < 1 day)
+  "iso_partial":  null,
+  "iso_time":     "22:35:00",          // anchor 22:30 + 5 minutes
+  "iso_datetime": "2023-03-14T22:35:00",
+  "raw":          "05 phút sau",
+  "page":         null,
+  "sort_key":     "2023-03-14T22:35:00",
+  "is_relative":      true,
+  "anchor_event_id":  "<doc>:M001",    // event id of the absolute anchor
+  "magnitude":        5.0,             // float (decimal-comma OK)
+  "unit":             "phút",          // closed RelativeUnit vocab
+  "direction":        "after",         // before | after | same
+  "iso_max":          null             // populated only for F5-vague
+}
+```
+
+For a day-or-larger unit the resolver preserves the anchor's
+``iso_time`` unchanged (so ``"5 ngày sau"`` against the same
+anchor lands at ``2023-03-19T22:30:00``). For a sub-day unit
+applied to a date-only anchor (no ``iso_time``), the date is left
+unchanged and ``iso_time`` stays ``null`` — best we can do without
+inventing precision.
+
+### 3a.5 Edge cases
+
+* **Vague magnitudes (F5)** — ``iso`` holds the lower bound,
+  ``iso_max`` the upper. Single-point relatives leave ``iso_max``
+  ``null``.
+* **Missing anchor** — if no absolute date has been seen when a
+  relative span is encountered, the resolver returns a
+  :class:`WhenAnchor` with ``iso=None``, ``is_relative=true``, and
+  the magnitude / unit / direction fields populated. The builder
+  routes such entries to the substantive ambient bucket and
+  increments ``n_relative_unresolved``.
+* **Sub-day delta on date-only anchor** — ``iso`` stays at the
+  anchor's date, ``iso_time`` stays ``null``. The relative-
+  provenance fields are still stamped so the UI can render the
+  surface form ("Khoảng 05 phút sau") as a tooltip.
+* **Cross-midnight rollover** — ``parse_relative_to_anchor`` uses
+  ``datetime.datetime`` arithmetic for sub-day units, so
+  ``"3 giờ sau"`` against ``"22 giờ 30 phút ngày 14/3/2023"``
+  resolves to ``2023-03-15T01:30:00``.
+* **Leap-year clamp** — month/year arithmetic clamps Feb-29 to
+  Feb-28 in non-leap target years (``"5 năm trước"`` against
+  ``29/02/2024`` → ``2019-02-28``).
 
 ## 4. Determinism contract
 
@@ -224,12 +367,15 @@ output. Pinned by:
 
 | Form | Resolution | Sort key |
 |---|---|---|
-| `21/01/2022`, `21-01-2022`, `21.01.2022` | full `2022-01-21` | `2022-01-21` |
-| `13 tháng 10 năm 2021` (any case, optional `Ngày`/`Ngày:` prefix) | full `2021-10-13` | `2021-10-13` |
-| `tháng 5 năm 2021` | partial `2021-05` | `2021-05-99` |
-| `5/2021` | partial `2021-05` | `2021-05-99` |
-| `năm 2018`, bare `2018` | partial `2018` | `2018-99-99` |
-| anything else (`từ thán 6/2012 đến thán 4/2015`, etc.) | unresolved | `9999-99-99` |
+| `21/01/2022`, `21-01-2022`, `21.01.2022` | full `2022-01-21` | `2022-01-21T99:99:99` |
+| `13 tháng 10 năm 2021` (any case, optional `Ngày`/`Ngày:` prefix) | full `2021-10-13` | `2021-10-13T99:99:99` |
+| `22 giờ 30 phút ngày 14/3/2023` | full `2023-03-14` + `22:30:00` | `2023-03-14T22:30:00` |
+| `Khoảng 22 giờ ngày 14/3/2023` | full `2023-03-14` + `22:00:00` | `2023-03-14T22:00:00` |
+| `14 giờ 25 phút` (no date) | time-only `14:25:00` | `9999-99-99T14:25:00` |
+| `tháng 5 năm 2021` | partial `2021-05` | `2021-05-99T99:99:99` |
+| `5/2021` | partial `2021-05` | `2021-05-99T99:99:99` |
+| `năm 2018`, bare `2018` | partial `2018` | `2018-99-99T99:99:99` |
+| anything else (`từ thán 6/2012 đến thán 4/2015`, etc.) | unresolved | `9999-99-99T99:99:99` |
 
 OCR robustness is built into the regex set — `30 -12-2016`,
 `12/1 2/2022`, and similar internal-whitespace variants resolve
@@ -239,11 +385,13 @@ correctly. Two-digit years follow a sliding pivot at 70:
 
 ### 5.2 Sort-key construction
 
-Sort keys are ASCII so they compare lexicographically. Fully
-resolved dates sort before partial ones at the same year/month
-because `99` is the maximum two-digit value. Within the same key,
-events are tie-broken by document char offset (which is also the
-event id ordering).
+Sort keys are ASCII so they compare lexicographically. The ``v2``
+shape is ``YYYY-MM-DDTHH:MM:SS``: fully resolved dates sort before
+partial ones at the same year/month because `99` is the maximum
+two-digit value, and timed events on the same date sort before
+untimed events (which use the ``T99:99:99`` time placeholder).
+Within the same key, events are tie-broken by document char
+offset (which is also the event id ordering).
 
 ### 5.3 Coverage on the 140-doc sample
 
@@ -275,6 +423,16 @@ locate every NER entity by greedy left-to-right
 substring search → char_start / char_end
             │
             ▼
+relative pre-pass (v2):                           (build.py + datetimes.py)
+  regex-scan source for relative spans the LLM    
+  missed, dedupe against existing entities,       
+  walk merged stream in source order, resolve     
+  every date_relative against the most-recent     
+  absolute date anchor, promote resolved          
+  relatives to type=date with pre_resolved        
+  WhenAnchor; unresolved → date_relative          
+            │
+            ▼
 cluster by date proximity                         (cluster.py)
 window = cluster.window_chars (default 1500)
             │
@@ -290,6 +448,9 @@ split ambient cluster into                        (build.py)
             ▼
 build TimelineTrack(meta) + TimelineTrack(main)
 stamp event ids: <doc>:M### / <doc>:X### / <doc>:[MX]A00
+            │
+            ▼
+patch anchor_event_id placeholders → final ids    (build.py)
             │
             ▼
 write timelines/<doc>.json (sorted-keys JSON)
@@ -378,20 +539,32 @@ CLI flags (`python -m packages.extractor.timeline --help`):
 
 ## 8. Determinism tests
 
-`tests/unit/test_timeline_determinism.py` (38 tests, no network):
+`tests/unit/test_timeline_determinism.py` (65 tests, no network):
 
 1. **Date parser** — every surface form in `§ 5.1` plus OCR-noise
-   variants and the two-digit-year pivot.
-2. **Byte-stable build** — `build_timeline` twice on the same
+   variants, two-digit-year pivot, and the `v2` clock+date forms
+   (``"22 giờ 30 phút ngày 14/3/2023"``, ``"khoảng 22 giờ ngày
+   14/3/2023"``, ``"14 giờ 25 phút"``).
+2. **Relative parser** — every family F1..F5 of `§ 3a`,
+   decimal-comma magnitudes, leap-year clamp, cross-midnight
+   rollover, and the no-anchor fallback.
+3. **Source scanner** — synthetic snippet covering all five
+   families plus a real-corpus probe on `1334774` (must hit
+   ``"Khoảng 05 phút sau"`` and ``"Khoảng 20 phút sau"``).
+4. **Byte-stable build** — `build_timeline` twice on the same
    `(record, source_text, cluster_window, built_at)` produces
    identical JSON serialisations.
-3. **Track partition** — meta-kind events land on the meta track,
+5. **Track partition** — meta-kind events land on the meta track,
    main-kind events on the main track; `n_meta_* + n_main_*`
    round-trips through totals; ambient is split by NER section.
-4. **Track-for-kind contract** — `track_for_kind` covers
+6. **Track-for-kind contract** — `track_for_kind` covers
    `META_KINDS` and `MAIN_KINDS` exhaustively and rejects
    `ambient` (which is split by composition, not kind).
-5. **Mermaid renderer** — vertical Mermaid output is byte-stable;
+7. **Relative pre-pass integration** — a synthetic doc with two
+   `X phút sau` / `X ngày sau` spans must produce
+   `n_relative_total ≥ 2`, `n_relative_resolved ≥ 2`, and
+   patched-up `anchor_event_id` references to the absolute event.
+8. **Mermaid renderer** — vertical Mermaid output is byte-stable;
    special characters (`:`, `#`, newlines) are escaped; the
    chained-callout shape carries each event's kind plus its
    highest-priority entity bullet on the same date row.
@@ -497,51 +670,80 @@ for line in pathlib.Path("data/samplebanan.toaan.gov.vn/timelines.jsonl").read_t
 df = pd.DataFrame(rows)
 ```
 
-## 10. Build results — first canonical pass
+## 10. Build results — `v2` canonical pass
 
-First end-to-end build over the 140-doc `samplebanan` corpus,
-`builder_version = v1`, `cluster.window_chars = 1500`, against the
-NER canonical pass at `prompt_version = v3`,
-`kb_version = 627eb8a2bf7bf755`.
+End-to-end build over the 140-doc `samplebanan` corpus with
+`builder_version = v2`, `cluster.window_chars = 1500`, against the
+NER canonical pass (re-run on the `v4` prompt for the relative
+pre-pass; the regex post-processor in `build.py` still catches the
+remainder).
 
 ### 10.1 Headline numbers
 
 | Metric | Value |
 |---|---|
 | Documents processed | 140 / 140 |
-| Wall-clock | < 1 second total |
-| Total events | 1 741 (1 461 dated + 280 ambient) |
-| Mean dated events / doc | 10.4 (meta 5.9 + main 4.6) |
-| p50 / p95 dated events / doc | 9 / 21 |
-| Docs with empty `meta` track (no dated procedural event) | 3 |
-| Docs with empty `main` track (no dated substantive event) | 19 |
-| `n_unlocated_entities` (entities with `start = None`, totalled) | ≈ 1 911 |
-| Output size | 3.2 MiB per-doc; 2.5 MiB aggregate JSONL |
+| Wall-clock | < 1 second total (timeline pass only; NER pass is the slow stage at ~19 min for 140 docs) |
+| Total events | 1 983 (1 703 dated + 280 ambient) |
+| Mean dated events / doc | 12.2 (up from 10.4 in `v1`) |
+| Docs with at least one relative-temporal span | 66 / 140 |
+| `date_relative` entities emitted by the v4 LLM | 8 (the regex pre-pass catches the remainder) |
+| `n_relative_total` | 136 |
+| `n_relative_resolved` | 113 (83.1% resolution rate) |
+| `n_relative_unresolved` | 23 (no preceding absolute anchor, ambiguous magnitude, or partial-only anchor) |
+| Events carrying `iso_time` | 4 |
+| Output size | ~3.7 MiB per-doc directory; 2.9 MiB aggregate JSONL |
 
-### 10.2 Event-kind tally
+### 10.2 Top relative cue phrases (from the resolved set)
 
-| Kind | Count | Track |
+| Count | Cue | Family |
 |---|---|---|
-| `unknown` | 624 | main |
-| `hearing` | 499 | meta |
+| 49 | `hôm nay` | F4 (same-day deixis) |
+| 48 | `cùng ngày` | F3 (same-time deixis) |
+| 2 | `khoảng 20 phút sau` | F1 forward |
+| 2 | `ngay sau đó` | F3 immediate |
+| 2 | `hôm sau` | F4 (+1 day) |
+| 1 | `1,2 phút sau` | F1 forward, decimal-comma OCR |
+| 1 | `02 ngày sau` | F1 forward |
+| 1 | `vài ngày sau` / `mấy ngày sau` | F5 vague |
+| 1 | `ngày hôm sau` | F4 (+1 day) |
+| 1 | `15 phút sau` | F1 forward |
+
+`hôm nay` and `cùng ngày` dominate because the resolver treats
+both as zero-delta deixis relative to the most recent absolute
+anchor — they are the common shorthand for "same date as the
+previous sentence" in Vietnamese narrative.
+
+### 10.3 Event-kind tally
+
+The exact mix varies as the `v4` LLM and regex pre-pass shift
+slightly per cache, but the dominant shape is:
+
+| Kind | Approx. count | Track |
+|---|---|---|
+| `unknown` | ~870 | main |
+| `hearing` | ~500 | meta |
 | `ambient` | 280 | both (split by section) |
-| `filing`  | 212 | meta |
-| `verdict` | 61  | meta |
-| `sentence`| 50  | meta |
-| `fact`    | 15  | main |
+| `filing`  | ~210 | meta |
+| `verdict` | ~60  | meta |
+| `sentence`| ~50  | meta |
+| `fact`    | ~15  | main |
 
-The high `unknown` count on the main track is expected: many
-substantive dates (`hợp đồng ngày X`, `chuyển khoản ngày X`,
-contract / payment / incident dates) carry no procedural cue, so
-they land on the substantive track without a more specific label.
-The classifier is deliberately conservative — `fact` is reserved
-for clusters with an explicit `crime` mention.
+The `unknown` jump from 624 (`v1`) to ~870 (`v2`) is the resolved-
+relative effect: every `X phút sau` / `Cùng ngày` lands on a
+fresh `unknown` cluster on the substantive track (it carries no
+procedural cue), but is still queryable via
+`when.is_relative=true` + `anchor_event_id`. UI consumers should
+treat relative events as inheriting the kind / context of their
+anchor unless the cluster otherwise classifies.
 
-### 10.3 Date-parser coverage
+### 10.4 Date-parser coverage
 
-97.1% of dated events resolve to full `YYYY-MM-DD`. The 1.7%
-unresolvable tail is preserved as raw surface text and sorted to
-the bottom of its track via `sort_key = "9999-99-99"`.
+> 97% of dated events still resolve to full `YYYY-MM-DD`. Roughly
+1.7% of the absolute tail remains unresolvable OCR noise,
+preserved as raw surface text and sorted to the bottom of its
+track via `sort_key = "9999-99-99T99:99:99"` (note the `v2` ISO-
+datetime shape).
 
 ### 10.4 Known limitations
 
@@ -651,7 +853,46 @@ timeline
         main : 2 actors, 7 places, 5 money, 8 statutes, 9 terms, 2 sentences
 ```
 
-### 11.4 How to read
+### 11.4 Sub-day events on the same date (`1334774`)
+
+A criminal "providing for prostitution" case where the narrative
+stacks two `"Khoảng X phút sau"` events on top of the 22 giờ
+absolute anchor on 2022-12-21. The two substantive-lane rows on
+that date are the resolved relatives — their `when.is_relative=
+true` carries the original Vietnamese surface form, and their
+`when.anchor_event_id` points back to the meta-track absolute
+event on the same date (the regex pre-pass found both spans even
+though the LLM did not).
+
+```mermaid
+timeline
+    title 1334774 — Hình sự / Chứa mại dâm — Tòa án nhân dân tỉnh Cao Bằng
+    section Procedural (meta)
+        2022-12-21 : hearing : victim - Hoàng Thị P : victim - Lê Thị H2 : 900.000đ
+        2022-12-22 : hearing
+        2022-12-31 : hearing
+        2023-04-25 : sentence : Chứa mại dâm : sentence - 12 (mười hai) tháng tù : court - Tòa án nhân dân thành phố Cao Bằng : Điều 327 : Khoản 1 Điều 327
+        2023-06-16 : hearing : Điều 355 : Điều 357
+        2023-08-24 : hearing : judge - Bà Lê Na : judge - Bà Nông Biên Hòa : judge - Ông Hoàng Văn Thụ : agency - Viện kiểm sát nhân dân tỉnh Cao Bằng
+        2023-08-24 : hearing : defendant - Đường Thị Hồng C : kháng cáo : bản án : tạm giữ
+    section Substantive (main)
+        2022-12-21 : unknown : 200.000đ
+        2022-12-21 : unknown
+    section Ambient (no date)
+        meta : 4 actors
+        main : 3 places, 6 statutes, 1 terms
+```
+
+The Mermaid view collapses both relative events to the same
+calendar day because the anchor was a date-only entity (the
+NER `v3` cache did not extract `"22 giờ ngày 21/12/2022"` as a
+single date+time). Once the `v4` NER pass also captures the clock
+prefix on absolute dates, the two rows will instead read
+`2022-12-21T22:05 : unknown` and `2022-12-21T22:20 : unknown`,
+and the dual-axis renderers (vis-timeline, ECharts) will pick up
+the `iso_datetime` field automatically.
+
+### 11.5 How to read
 
 * Top-to-bottom flow within each `section` — earliest date at the
   top, latest at the bottom. Mermaid renders both sections side by

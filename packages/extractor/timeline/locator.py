@@ -36,6 +36,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from packages.extractor.ner.schema import ExtractedEntity
+from packages.extractor.timeline.schema import WhenAnchor
 
 
 @dataclass(frozen=True)
@@ -45,11 +46,21 @@ class LocatedEntity:
     ``start`` / ``end`` are ``None`` when the surface text could not
     be located; the entity is still preserved for case-level
     aggregation.
+
+    ``pre_resolved`` (added in :data:`SCHEMA_VERSION` ``v2``) carries
+    a :class:`WhenAnchor` that the timeline builder pre-computed via
+    :func:`packages.extractor.timeline.datetimes.parse_relative_to_anchor`
+    — used to forward a resolved relative span ("05 phút sau"
+    against the most-recent absolute anchor) through the clusterer
+    without re-parsing the surface text in :func:`_build_event`. The
+    field is ``None`` for plain NER entities; only synthetic
+    "promoted-relative-to-date" entries set it.
     """
 
     entity: ExtractedEntity
     start: int | None
     end: int | None
+    pre_resolved: WhenAnchor | None = None
 
 
 def _nfc(s: str) -> str:

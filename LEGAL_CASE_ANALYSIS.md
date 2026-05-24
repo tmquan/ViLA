@@ -85,8 +85,8 @@ flowchart LR
     A --> C[Entity-level extractor]
     B -->|title + subject + first sentences| B1[MPNet embed]
     B1 --> B2{cosine top-K}
-    B2 --> P_subject[KB #1 phapdien<br/>202 subject titles encoded]
-    B2 --> T[KB #2 tnpl<br/>16,247 terms x 768-d]
+    B2 --> P_subject["KB #1 phapdien<br/>202 subject titles encoded"]
+    B2 --> T["KB #2 tnpl<br/>16,247 terms x 768-d"]
     P_subject --> Btop[Topic top-K<br/>42-class]
     P_subject --> Bsubject[Subject top-K<br/>202-class]
     T --> Barea[Area top-K<br/>47-class semantic]
@@ -95,10 +95,10 @@ flowchart LR
     C --> Ecourt[ORG-COURT -> level + juris]
     C --> Eart[ARTICLE]
     C --> Eprec[PRECEDENT]
-    Eart -->|article_no + statute_code| L[KB #1 phapdien<br/>structural lookup<br/>(code, N) -> article_anchor]
+    Eart -->|article_no + statute_code| L["KB #1 phapdien<br/>structural lookup<br/>(code, N) -> article_anchor"]
     L --> L2[topic + subject<br/>via article row]
-    Eart --> G[KB #1 phapdien glossary<br/>instrument VI -> EN]
-    Eart --> Tlk[KB #2 tnpl<br/>statute -> broad_domain<br/>fallback gloss]
+    Eart --> G["KB #1 phapdien glossary<br/>instrument VI -> EN"]
+    Eart --> Tlk["KB #2 tnpl<br/>statute -> broad_domain<br/>fallback gloss"]
     Btop --> O[(by-doc JSON bundle)]
     Bsubject --> O
     Bcat --> O
@@ -597,9 +597,9 @@ The exact `phapdien_article_anchor` value comes from looking up the
 sequenceDiagram
     participant User
     participant LLM as NAT Agent
-    participant P as KB #1 phapdien<br/>(article retrieval — primary)
-    participant T as KB #2 tnpl<br/>(synonym expansion — secondary)
-    participant G as Case KG<br/>(cuGraph)
+    participant P as "KB #1 phapdien<br/>(article retrieval — primary)"
+    participant T as "KB #2 tnpl<br/>(synonym expansion — secondary)"
+    participant G as "Case KG<br/>(cuGraph)"
     User->>LLM: "Bồi thường gấp đôi tiền đặt cọc khi bên bán huỷ là có cơ sở không?"
     LLM->>P: retrieve articles by topic ∈ {Dân sự},<br/>subject ∈ {Bộ luật dân sự}
     P-->>LLM: candidate anchors {#...BLDS.328, #...BLDS.357, #...BLDS.468}

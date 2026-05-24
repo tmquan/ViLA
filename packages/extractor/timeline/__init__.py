@@ -12,8 +12,10 @@ Sub-modules:
 
 * :mod:`packages.extractor.timeline.schema` — Pydantic models +
   :data:`SCHEMA_VERSION` and :data:`BUILDER_VERSION` constants.
-* :mod:`packages.extractor.timeline.dates` — Vietnamese date
-  surface-form → ISO + sortable key.
+* :mod:`packages.extractor.timeline.datetimes` — Vietnamese date
+  *and time* surface-form → ISO + sortable key. Also hosts the
+  relative-temporal parser (``X phút sau``, ``Cùng ngày``,
+  ``Hôm qua``, …) and the source-text scanner.
 * :mod:`packages.extractor.timeline.locator` — re-localise entity
   texts to char offsets in the source markdown (NFC, greedy left-
   to-right).
@@ -42,7 +44,11 @@ from packages.extractor.timeline.build import (
     read_source_text,
     write_timeline,
 )
-from packages.extractor.timeline.dates import parse_date_to_anchor
+from packages.extractor.timeline.datetimes import (
+    find_relative_expressions,
+    parse_date_to_anchor,
+    parse_relative_to_anchor,
+)
 from packages.extractor.timeline.schema import (
     BUILDER_VERSION,
     SCHEMA_VERSION,
@@ -84,8 +90,10 @@ __all__ = [
     "aggregate_timelines_jsonl",
     "build_one",
     "build_timeline",
+    "find_relative_expressions",
     "list_doc_names",
     "parse_date_to_anchor",
+    "parse_relative_to_anchor",
     "read_canonical_record",
     "read_source_text",
     "write_timeline",
