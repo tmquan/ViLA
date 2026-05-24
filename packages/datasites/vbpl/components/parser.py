@@ -222,7 +222,7 @@ class DetailRecord:
     legal_type: str | None = None
     legal_area: str | None = None
     issue_date: str | None = None
-    issuing_body: str | None = None
+    issuing_authority: str | None = None
     summary: str | None = None
     body_html: str = ""
     body_text: str = ""
@@ -341,8 +341,8 @@ def detail_record_from_api_json(
                     rec.legal_area = legal_area_label(raw_area)
             if rec.issue_date is None:
                 rec.issue_date = _iso_date(_first_nonempty(d, _ISSUE_DATE_KEYS))
-            if rec.issuing_body is None:
-                rec.issuing_body = _none_or_str(
+            if rec.issuing_authority is None:
+                rec.issuing_authority = _none_or_str(
                     _first_nonempty(d, _AGENCY_KEYS),
                 )
             if rec.summary is None:
@@ -1469,7 +1469,7 @@ def _try_strip_prefix(
 
 
 def normalise_label(raw: str | None) -> str | None:
-    """Normalise a short label (``legal_area``, ``issuing_body``).
+    """Normalise a short label (``legal_area``, ``issuing_authority``).
 
     Same baseline as :func:`normalise_text` plus stripping the
     trailing sentence punctuation that vbpl pastes into the
@@ -1505,28 +1505,28 @@ _AGENCY_LEAKED_CODE_RE = re.compile(
 )
 
 
-def normalise_issuing_body(raw: str | None) -> str | None:
+def normalise_issuing_authority(raw: str | None) -> str | None:
     """Normalise the issuing-agency name.
 
     Applies :func:`normalise_label` (text cleanup + trailing
     punctuation strip) then peels any leaked VBPL doc-type code
     prefix (e.g. ``"CT UBND ..."`` -> ``"UBND ..."``). Idempotent.
 
-    >>> normalise_issuing_body('CT UBND Tỉnh Thanh Hóa')
+    >>> normalise_issuing_authority('CT UBND Tỉnh Thanh Hóa')
     'UBND Tỉnh Thanh Hóa'
-    >>> normalise_issuing_body('UBND Tỉnh Thanh Hóa')
+    >>> normalise_issuing_authority('UBND Tỉnh Thanh Hóa')
     'UBND Tỉnh Thanh Hóa'
-    >>> normalise_issuing_body('QĐ Bộ Tài chính')
+    >>> normalise_issuing_authority('QĐ Bộ Tài chính')
     'Bộ Tài chính'
-    >>> normalise_issuing_body('Bộ Công an')
+    >>> normalise_issuing_authority('Bộ Công an')
     'Bộ Công an'
-    >>> normalise_issuing_body('CT')
+    >>> normalise_issuing_authority('CT')
     'CT'
-    >>> normalise_issuing_body('  CT  UBND Tỉnh Thanh Hóa  ')
+    >>> normalise_issuing_authority('  CT  UBND Tỉnh Thanh Hóa  ')
     'UBND Tỉnh Thanh Hóa'
-    >>> normalise_issuing_body(None) is None
+    >>> normalise_issuing_authority(None) is None
     True
-    >>> normalise_issuing_body('Hội đồng nhân dân tỉnh CT')
+    >>> normalise_issuing_authority('Hội đồng nhân dân tỉnh CT')
     'Hội đồng nhân dân tỉnh CT'
     """
     s = normalise_label(raw)
@@ -1958,7 +1958,7 @@ __all__ = [
     "clean_title",
     "detail_record_from_api_json",
     "item_id_from_detail_url",
-    "normalise_issuing_body",
+    "normalise_issuing_authority",
     "normalise_label",
     "normalise_doc_number",
     "normalise_doc_number_list",

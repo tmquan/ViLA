@@ -713,7 +713,7 @@ def _record_to_jsonl_dict(
         "legal_area": rec.legal_area,
         "doc_number": rec.doc_number,
         "issue_date": rec.issue_date,
-        "issuing_body": rec.issuing_body,
+        "issuing_authority": rec.issuing_authority,
         "summary": rec.summary,
         "title": rec.title or row.get("slug") or "",
         "body_html": rec.body_html,

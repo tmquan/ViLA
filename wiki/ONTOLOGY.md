@@ -430,82 +430,91 @@ Each vocabulary is a closed `vn-legal:Classifier`. New values are
 introduced by a versioned YAML under
 `packages/schemas/py/src/vila_schemas/vocabs/`.
 
+Bilingual presentation rule: every closed vocabulary below is rendered
+as an English-primary table. Where the literal stored in the data is a
+Vietnamese string (`vn-legal:LegalRelation`, `ProcedureType`, etc.) the
+table carries a `value` column (the canonical Vietnamese literal) and a
+`label_en` column (English gloss). For vocabularies whose canonical
+value is already English (`OutcomeCode`, `CasePhase`, `ExitCode`), the
+table has a single `value` column and any Vietnamese context appears
+in a `note_vi` column.
+
 ### 6.1 `vn-legal:LegalRelation` (subject matter / case_type)
 
-```
-Hình sự
-Dân sự
-Hôn nhân - Gia đình
-Hành chính
-Kinh doanh - Thương mại
-Lao động
-```
+| `value`                | `label_en`     |
+|------------------------|----------------|
+| Hình sự                | Criminal       |
+| Dân sự                 | Civil          |
+| Hôn nhân - Gia đình    | Family         |
+| Hành chính             | Administrative |
+| Kinh doanh - Thương mại| Commercial     |
+| Lao động               | Labor          |
 
 ### 6.2 `vn-legal:ProcedureType`
 
-```
-Sơ thẩm
-Phúc thẩm
-Giám đốc thẩm
-Tái thẩm
-```
+| `value`        | `label_en`     |
+|----------------|----------------|
+| Sơ thẩm        | First instance |
+| Phúc thẩm      | Appeal         |
+| Giám đốc thẩm  | Cassation      |
+| Tái thẩm       | Retrial        |
 
 ### 6.3 `vn-legal:OutcomeCode`
 
-```
-convicted
-acquitted
-dismissed
-remanded
-settled
-```
+| `value`     | `label_en`               |
+|-------------|--------------------------|
+| `convicted` | Convicted                |
+| `acquitted` | Acquitted                |
+| `dismissed` | Dismissed                |
+| `remanded`  | Remanded for retrial     |
+| `settled`   | Settled (out-of-court)   |
 
 ### 6.4 `vn-legal:ExitCode` (from Phase 7 §4)
 
-```
-EX-01  Không khởi tố vụ án
-EX-02  Đình chỉ điều tra
-EX-03  Đình chỉ truy tố (VKS)
-EX-04  Đình chỉ vụ án (Tòa án)
-EX-05  Tuyên không phạm tội
-EX-06  Miễn trách nhiệm hình sự
-EX-07  Miễn hình phạt
-EX-08  Thỏa thuận / hòa giải (non-criminal)
-EX-09  Trả hồ sơ điều tra bổ sung
-EX-10  Xử lý chuyển hướng (người dưới 18 tuổi)
-EX-11  Tạm đình chỉ điều tra / vụ án
-```
+| `value`  | `label_en`                                 | `note_vi`                                |
+|----------|--------------------------------------------|------------------------------------------|
+| `EX-01`  | No prosecution opened                      | Không khởi tố vụ án                      |
+| `EX-02`  | Investigation halted                       | Đình chỉ điều tra                        |
+| `EX-03`  | Prosecution halted (Procuracy)             | Đình chỉ truy tố (VKS)                   |
+| `EX-04`  | Case dismissed (Court)                     | Đình chỉ vụ án (Tòa án)                  |
+| `EX-05`  | Acquittal                                  | Tuyên không phạm tội                     |
+| `EX-06`  | Exemption from criminal liability          | Miễn trách nhiệm hình sự                 |
+| `EX-07`  | Exemption from penalty                     | Miễn hình phạt                           |
+| `EX-08`  | Settlement / mediation (non-criminal)      | Thỏa thuận / hòa giải                    |
+| `EX-09`  | Returned for additional investigation      | Trả hồ sơ điều tra bổ sung               |
+| `EX-10`  | Diversion (juvenile, under 18)             | Xử lý chuyển hướng (người dưới 18 tuổi)  |
+| `EX-11`  | Investigation / case suspended             | Tạm đình chỉ điều tra / vụ án            |
 
 ### 6.5 `vn-legal:InvestigationRecommendation`
 
-```
-đề nghị truy tố
-đình chỉ
-tạm đình chỉ
-```
+| `value`           | `label_en`                          |
+|-------------------|-------------------------------------|
+| đề nghị truy tố   | Recommend prosecution               |
+| đình chỉ          | Halt (drop the matter)              |
+| tạm đình chỉ      | Temporarily suspend                 |
 
 ### 6.6 `vn-legal:RulingKind`
 
-```
-đình chỉ
-tạm đình chỉ
-áp dụng biện pháp ngăn chặn
-thay đổi biện pháp ngăn chặn
-trả hồ sơ điều tra bổ sung
-đưa vụ án ra xét xử
-```
+| `value`                          | `label_en`                                 |
+|----------------------------------|--------------------------------------------|
+| đình chỉ                         | Halt (terminate proceedings)               |
+| tạm đình chỉ                     | Temporarily suspend                        |
+| áp dụng biện pháp ngăn chặn      | Impose precautionary measure               |
+| thay đổi biện pháp ngăn chặn     | Modify precautionary measure               |
+| trả hồ sơ điều tra bổ sung       | Return file for additional investigation   |
+| đưa vụ án ra xét xử              | Bring case to trial                        |
 
 ### 6.7 `vn-legal:PenaltyType`
 
-```
-Cảnh cáo
-Phạt tiền
-Cải tạo không giam giữ
-Tù có thời hạn
-Tù chung thân
-Tử hình
-Trục xuất
-```
+| `value`                  | `label_en`                  |
+|--------------------------|-----------------------------|
+| Cảnh cáo                 | Warning                     |
+| Phạt tiền                | Fine                        |
+| Cải tạo không giam giữ   | Non-custodial reform        |
+| Tù có thời hạn           | Fixed-term imprisonment     |
+| Tù chung thân            | Life imprisonment           |
+| Tử hình                  | Death penalty               |
+| Trục xuất                | Deportation                 |
 
 `suspended` (án treo) is a boolean on `Sentence`, not a
 `PenaltyType` value. The allowed combinations are constrained by
@@ -514,33 +523,33 @@ BLHS 2015 and encoded in a small lookup
 
 ### 6.8 `vn-legal:DetentionStatus`
 
-```
-Tạm giam
-Tạm giữ
-Bảo lĩnh
-Đặt tiền bảo đảm
-Cấm đi khỏi nơi cư trú
-Tại ngoại
-```
+| `value`                       | `label_en`                  |
+|-------------------------------|-----------------------------|
+| Tạm giam                      | Pre-trial detention         |
+| Tạm giữ                       | Custody                     |
+| Bảo lĩnh                      | Bail (third-party guarantee)|
+| Đặt tiền bảo đảm              | Bail (cash bond)            |
+| Cấm đi khỏi nơi cư trú        | Confined to place of residence |
+| Tại ngoại                     | At liberty (released)       |
 
 ### 6.9 `vn-legal:CourtLevel`
 
-```
-Tòa án nhân dân tối cao
-Tòa án nhân dân cấp cao
-Tòa án nhân dân tỉnh / thành phố
-Tòa án nhân dân huyện / quận
-Tòa án quân sự
-```
+| `value`                              | `label_en`                                |
+|--------------------------------------|-------------------------------------------|
+| Tòa án nhân dân tối cao              | Supreme People's Court                    |
+| Tòa án nhân dân cấp cao              | High People's Court                       |
+| Tòa án nhân dân tỉnh / thành phố     | Provincial / municipal People's Court     |
+| Tòa án nhân dân huyện / quận         | District People's Court                   |
+| Tòa án quân sự                       | Military Court                            |
 
 ### 6.10 `vn-legal:SeverityBand` (BLHS offense classification)
 
-```
-ít nghiêm trọng
-nghiêm trọng
-rất nghiêm trọng
-đặc biệt nghiêm trọng
-```
+| `value`                   | `label_en`         |
+|---------------------------|--------------------|
+| ít nghiêm trọng           | Less serious       |
+| nghiêm trọng              | Serious            |
+| rất nghiêm trọng          | Very serious       |
+| đặc biệt nghiêm trọng     | Especially serious |
 
 ### 6.11 `vn-legal:CasePhase` (five-phase frame; Phase 7)
 

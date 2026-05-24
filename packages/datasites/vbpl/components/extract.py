@@ -243,7 +243,7 @@ class VbplDocumentExtractor:
             "legal_area": meta.get("legal_area"),
             "doc_number": meta.get("doc_number"),
             "issue_date": meta.get("issue_date"),
-            "issuing_body": meta.get("issuing_body"),
+            "issuing_authority": meta.get("issuing_authority"),
             "summary": meta.get("summary"),
             "scrape_run_id": meta.get("scrape_run_id"),
             "parse_run_id": meta.get("parse_run_id"),
@@ -319,7 +319,7 @@ def _scraper_meta_from(meta: dict[str, Any]) -> dict[str, Any]:
         "legal_area",
         "doc_number",
         "issue_date",
-        "issuing_body",
+        "issuing_authority",
         "summary",
         "source_url",
     ):

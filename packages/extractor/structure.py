@@ -151,7 +151,7 @@ _ISSUE_DATE_RE = re.compile(
 
 # Issuing-body anchor: marks the line where the court name starts.
 # Continuation lines (e.g. "THÀNH PHỐ CẦN THƠ" beneath
-# "TÒA ÁN NHÂN DÂN") are reattached by :func:`_extract_issuing_body`
+# "TÒA ÁN NHÂN DÂN") are reattached by :func:`_extract_issuing_authority`
 # so two-column letterheads from PDF extraction round-trip cleanly.
 # Anchored at start-of-line (after optional whitespace) so inline
 # mentions later in the body ("tại trụ sở Tòa án nhân dân...") don't
@@ -234,7 +234,7 @@ class DocumentMeta:
     title: str | None = None            # raw title line ("Bản án số: 38/2021/DS-PT")
     subject: str | None = None          # V/v ... matter line
     issue_date: str | None = None       # ISO-8601 (YYYY-MM-DD)
-    issuing_body: str | None = None     # "Tòa án nhân dân thành phố Cần Thơ"
+    issuing_authority: str | None = None     # "Tòa án nhân dân thành phố Cần Thơ"
     court_level: str | None = None      # toi_cao | cap_cao | tinh | huyen
     jurisdiction: str | None = None     # province / city extracted from issuing body
     precedent_number: str | None = None # án lệ number, when applicable
@@ -468,11 +468,11 @@ def _build_meta(
     # Issuing body + court level. Two-column letterheads from PDF
     # text extraction force us to scan multiple consecutive lines and
     # stitch the court name back together.
-    body = _extract_issuing_body(head)
+    body = _extract_issuing_authority(head)
     if not body and scraper_metadata.get("court"):
         body = str(scraper_metadata["court"])
     if body:
-        meta.issuing_body = body
+        meta.issuing_authority = body
         body_lower = body.lower()
         # Priority: most-specific level wins. A district court inside
         # a province ("HUYỆN LỤC NGẠN TỈNH BẮC GIANG") is a district
@@ -842,7 +842,7 @@ def _normalise_inline(text: str) -> str:
     return _WS_RE.sub(" ", text).strip().strip(":\"“”")
 
 
-def _extract_issuing_body(head: str) -> str | None:
+def _extract_issuing_authority(head: str) -> str | None:
     """Stitch the multi-line court letterhead into a single string.
 
     The Vietnamese government letterhead places the court name on the

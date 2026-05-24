@@ -12,7 +12,7 @@ directly from the parquet consumption tier produced by the extract
 stage (``data/<host>/parquet/extract/extract-*.parquet``), not from
 JSONL. Avoids one serialisation hop and lets the embedder pull the
 sidebar metadata columns (``doc_number``, ``issue_date``,
-``issuing_body``, ``summary``, ``legal_type``, ``legal_area``,
+``issuing_authority``, ``summary``, ``legal_type``, ``legal_area``,
 ``doc_type``, ``scope``, ``source_url``, ``title``) through to the
 embed parquet shards so they're self-describing.
 """

@@ -31,6 +31,8 @@ from typing import Any
 from packages.common.taxonomy import (
     CODIFICATION_SUBJECTS,
     CODIFICATION_TOPICS,
+)
+from packages.common.taxonomy import (
     nfc as _nfc,
 )
 from packages.common.terminology import LEGAL_GLOSSARY as _COMMON_GLOSSARY

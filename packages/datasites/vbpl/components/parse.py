@@ -349,7 +349,7 @@ class VbplDocumentParser:
             "legal_area": row.get("legal_area"),
             "doc_number": row.get("doc_number"),
             "issue_date": row.get("issue_date"),
-            "issuing_body": row.get("issuing_body"),
+            "issuing_authority": row.get("issuing_authority"),
             "summary": row.get("summary"),
             "title": row.get("title"),
             "file_paths": row.get("file_paths") or [],

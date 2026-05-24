@@ -19,7 +19,7 @@ The recipe vbpl ships in ``configs/default.yaml`` is::
         - vbpl_strip_markdown_junk # Word/Ant Design CSS scaffolding (markdown)
         - vbpl_clean_title         # peel "<legal_type> số <doc_number>" + crossrefs (title)
         - vbpl_doc_number_list        # normalise + split CSV-like ``soHieu`` cells
-        - vbpl_issuing_body    # strip leaked doc-type code prefixes (agency)
+        - vbpl_issuing_authority    # strip leaked doc-type code prefixes (agency)
         - vbpl_legal_area          # baseline + trailing punctuation (legal_area)
         - vbpl_summary_text      # baseline NFC + smart quotes (summary)
 
@@ -36,7 +36,7 @@ import pandas as pd
 
 from packages.datasites.vbpl.components.parser import (
     clean_title,
-    normalise_issuing_body,
+    normalise_issuing_authority,
     normalise_label,
     normalise_doc_number_list,
     normalise_text,
@@ -117,18 +117,18 @@ class SoHieuList:
         return df
 
 
-@register_normalizer("vbpl_issuing_body")
+@register_normalizer("vbpl_issuing_authority")
 class CoQuanBanHanh:
     """Strip leaked VBPL doc-type code prefixes from the agency name."""
 
-    name: str = "vbpl_issuing_body"
-    columns: tuple[str, ...] = ("issuing_body",)
+    name: str = "vbpl_issuing_authority"
+    columns: tuple[str, ...] = ("issuing_authority",)
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        if "issuing_body" not in df.columns:
+        if "issuing_authority" not in df.columns:
             return df
-        df["issuing_body"] = df["issuing_body"].map(
-            lambda v: normalise_issuing_body(_str_or_none(v)),
+        df["issuing_authority"] = df["issuing_authority"].map(
+            lambda v: normalise_issuing_authority(_str_or_none(v)),
         )
         return df
 

@@ -102,7 +102,7 @@ def run_rebuild_docs(cfg: Any) -> Path:
     Offline equivalent of :func:`run_detail`: no Playwright, no network.
     Replays :func:`detail_record_from_api_json` over every cached API JSON
     capture so docs.jsonl reflects the *current* mapping (e.g. when new
-    metadata fields like ``issue_date`` / ``issuing_body`` are
+    metadata fields like ``issue_date`` / ``issuing_authority`` are
     added to the parser without re-running the slow browser fetch).
 
     The existing docs.jsonl is moved to ``docs.jsonl.bak-<timestamp>``

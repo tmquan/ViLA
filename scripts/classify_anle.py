@@ -33,7 +33,7 @@ At the **document** level:
   L2 ``doc_subtype``      — passthrough (4-class).
   L2 ``court_level``      — passthrough (4-class).
   L2 ``jurisdiction``     — passthrough (23-class).
-  L2 ``issue_date/year/issuing_body`` — passthrough.
+  L2 ``issue_date/year/issuing_authority`` — passthrough.
   L3 ``tnpl_broad_domain`` — 6-class via cosine-weighted vote over the
        top-K nearest tnpl terms. Bilingual labels.
   L4 ``tnpl_linhvuc_top_k`` — top-K 47-class LinhVuc with vote counts.
@@ -299,7 +299,7 @@ def load_anle_docs() -> tuple[pa.Table, dict[str, str]]:
         ANLE / "hf/documents-00000-of-00001.parquet",
         columns=[
             "doc_name", "doc_code", "doc_type", "case_type", "doc_subtype",
-            "year", "title", "subject", "issue_date", "issuing_body",
+            "year", "title", "subject", "issue_date", "issuing_authority",
             "court_level", "jurisdiction", "markdown", "extracted_json",
         ],
     )
@@ -467,7 +467,7 @@ def main() -> int:
             "jurisdiction": docs_tbl.column("jurisdiction")[i].as_py(),
             "year": docs_tbl.column("year")[i].as_py(),
             "issue_date": docs_tbl.column("issue_date")[i].as_py(),
-            "issuing_body": docs_tbl.column("issuing_body")[i].as_py(),
+            "issuing_authority": docs_tbl.column("issuing_authority")[i].as_py(),
             "doc_code": docs_tbl.column("doc_code")[i].as_py(),
             "title": docs_tbl.column("title")[i].as_py(),
             "subject": docs_tbl.column("subject")[i].as_py(),

@@ -31,7 +31,7 @@ Schema overview
 
     * Identification: doc_name, source, detail_url, pdf_url
     * Meta (promoted from structure.meta): doc_code, doc_type, case_type,
-      doc_subtype, year, title, subject, issue_date, issuing_body,
+      doc_subtype, year, title, subject, issue_date, issuing_authority,
       court_level, jurisdiction
     * Body: markdown (NFC-normalised, modern Vietnamese orthography)
     * Stats: num_pages, num_sections, num_paragraphs, num_sentences,
@@ -182,7 +182,7 @@ _DOCUMENT_SCHEMA = pa.schema([
     pa.field("title",               pa.string()),
     pa.field("subject",             pa.string()),
     pa.field("issue_date",          pa.string()),
-    pa.field("issuing_body",        pa.string()),
+    pa.field("issuing_authority",        pa.string()),
     pa.field("court_level",         pa.string()),
     pa.field("jurisdiction",        pa.string()),
 
@@ -315,7 +315,7 @@ def _project_document(rec: dict[str, Any]) -> dict[str, Any]:
         "title":         meta.get("title"),
         "subject":       meta.get("subject"),
         "issue_date":    meta.get("issue_date"),
-        "issuing_body":  meta.get("issuing_body"),
+        "issuing_authority":  meta.get("issuing_authority"),
         "court_level":   meta.get("court_level"),
         "jurisdiction":  meta.get("jurisdiction"),
 
@@ -1038,7 +1038,7 @@ of columns:
 | `title` | string | Header line as captured. |
 | `subject` | string | `V/v ...` matter line. |
 | `issue_date` | string | ISO 8601 issue date when discoverable. |
-| `issuing_body` | string | Full court name. |
+| `issuing_authority` | string | Full court name. |
 | `court_level` | string | `huyen` \| `tinh` \| `cap_cao` \| `toi_cao`. |
 | `jurisdiction` | string | Province / city qualifier extracted from the body. |
 

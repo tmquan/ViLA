@@ -121,7 +121,7 @@ def test_meta_extraction_pulls_doc_code_subject_court() -> None:
     assert out.meta.subject == "Tranh chấp hợp đồng đặt cọc"
     assert out.meta.issue_date == "2021-03-11"
     assert out.meta.court_level == "tinh"
-    assert "CẦN THƠ" in (out.meta.issuing_body or "")
+    assert "CẦN THƠ" in (out.meta.issuing_authority or "")
 
 
 def test_meta_falls_back_to_scraper_metadata() -> None:
@@ -201,8 +201,9 @@ def test_real_anle_doc_with_old_orthography() -> None:
     """TAND192022 uses the pre-1984 orthography 'TOÀ ÁN NHÂN DÂN'.
 
     After upstream normalization the heading should canonicalize to
-    'TÒA ÁN NHÂN DÂN' so the issuing-body extractor latches on to the
-    letterhead and not the secretary's affiliation later in the doc.
+    'TÒA ÁN NHÂN DÂN' so the issuing-authority extractor latches on
+    to the letterhead and not the secretary's affiliation later in
+    the doc.
     """
     sample = _MD_DIR / "TAND192022.md"
     if not sample.exists():
@@ -210,7 +211,7 @@ def test_real_anle_doc_with_old_orthography() -> None:
     md = normalize_text(sample.read_text(encoding="utf-8"))
     out = _ext().extract(doc_id="TAND192022", markdown=md)
     assert out.meta is not None
-    body = out.meta.issuing_body or ""
+    body = out.meta.issuing_authority or ""
     # First match is the letterhead, with full multi-line qualifier.
     assert "TÒA ÁN NHÂN DÂN" in body
     assert "QUẬN" in body

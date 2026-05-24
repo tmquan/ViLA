@@ -25,7 +25,6 @@ import yaml
 
 from packages.common.taxonomy import LEGAL_TYPE_TREE
 
-
 # ----------------------------------------------------------------- class tree
 
 

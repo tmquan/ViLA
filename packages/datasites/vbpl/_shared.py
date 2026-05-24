@@ -58,7 +58,7 @@ DETAIL_JSONL_FIELDS: list[str] = [
     "legal_area",     # first non-empty area label (e.g. "Đất đai")
     "doc_number",
     "issue_date",
-    "issuing_body",
+    "issuing_authority",
     "summary",
     "title",
     "body_html",
@@ -74,7 +74,7 @@ DETAIL_JSONL_FIELDS: list[str] = [
 
 #: Columns the Embedder pipeline reads from ``parquet/extract/``. We
 #: pass the sidebar metadata (``doc_number``, ``issue_date``,
-#: ``issuing_body``, ``summary``, ``legal_type``, ``legal_area``,
+#: ``issuing_authority``, ``summary``, ``legal_type``, ``legal_area``,
 #: ``doc_type``, ``scope``, ``source_url``, ``title``) through so the
 #: ``parquet/embed/`` consumption tier carries the full citation row
 #: alongside the vector. Consumers doing pure vector queries can ignore
@@ -93,7 +93,7 @@ EMBEDDER_PARQUET_READ_FIELDS: list[str] = [
     "legal_area",
     "doc_number",
     "issue_date",
-    "issuing_body",
+    "issuing_authority",
     "summary",
     "scope",
     "source_url",
@@ -125,7 +125,7 @@ EMBEDDER_PARQUET_FIELDS: list[str] = [
     "legal_area",
     "doc_number",
     "issue_date",
-    "issuing_body",
+    "issuing_authority",
     "summary",
     "scope",
     "source_url",
@@ -155,7 +155,7 @@ REDUCER_PARQUET_FIELDS: list[str] = [
 #: (HF dataset card, embedder JSONL reader, retrieval index loader)
 #: should see. Mirrors anle's :data:`EXTRACTOR_JSONL_FIELDS` shape so
 #: the same downstream tooling works on either corpus, plus vbpl-
-#: specific sidebar metadata (``doc_number``, ``issuing_body``, ...).
+#: specific sidebar metadata (``doc_number``, ``issuing_authority``, ...).
 EXTRACTOR_JSONL_FIELDS: list[str] = [
     # shared: source / IO bookkeeping
     "doc_name",
@@ -187,7 +187,7 @@ EXTRACTOR_JSONL_FIELDS: list[str] = [
     "legal_area",     # first non-empty area label (e.g. "Đất đai")
     "doc_number",
     "issue_date",
-    "issuing_body",
+    "issuing_authority",
     "summary",
     # provenance
     "scrape_run_id",

@@ -154,7 +154,7 @@ extractor:
     - vbpl_normalise_title
     - vbpl_doc_number_list
     - vbpl_clean_title
-    - vbpl_issuing_body
+    - vbpl_issuing_authority
     - vbpl_legal_area
     - vbpl_summary_text
   run_text_normalization: false

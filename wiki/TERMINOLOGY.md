@@ -2,23 +2,38 @@
 
 This is the canonical taxonomy that drives the decision tree (Phase 7/8),
 knowledge-graph ontology (Phase 6), relational schema (Phase 5), UI
-terminology, and i18n keys. Vietnamese terms are authoritative; English
-glosses are for planning and developer comprehension only. All code
-identifiers use the `snake_case` English forms in the rightmost column.
+terminology, and i18n keys.
 
-Legend: **[N]** = entity / node in the KG, **[R]** = relation, **[P]** =
-process / procedural stage, **[A]** = attribute.
+## Bilingual presentation rule
+
+Every bilingual table or tree in this document is **English-primary**:
+
+- The English `snake_case` identifier (or English label) is the canonical,
+  unsuffixed name. It matches the column / field / KG-node-type / i18n key
+  in code and is what every cross-document reference targets.
+- The Vietnamese term is the authoritative legal artifact and travels as a
+  `*_vi` companion field (or as a `label_vi` key inside JSON nodes,
+  mirroring the published-parquet convention `term` / `term_vi`,
+  `topic_title` / `topic_title_vi`).
+- Tables order columns `id`, `en`, `vi`. JSON objects place `id`,
+  `label`, `label_vi` in that order.
+
+The rule applies to every wiki document (`wiki/TERMINOLOGY.md`,
+`wiki/ONTOLOGY.md`, `wiki/DATASITES.md`); the Tree section below is the
+worked example.
 
 ## Design rule
 
-`Tình huống`, `Vụ án`, `Cáo trạng`, `Đơn khởi kiện`, `Bản án`, `Quyết
-định`, `Kết luận điều tra`, and `Án lệ` are **sibling `legal_type`
-artifacts**. They are independent procedural instruments that frequently
-overlap but do not strictly contain one another. A `tình huống` may
-mature into zero, one, or many `vụ án`. A criminal `vụ án` may exist
-without a `cáo trạng` (for example at investigation stage, or when the
-matter is đình chỉ before truy tố). A `bản án` refers back to a `vụ án`
-and (in criminal matters) to the `cáo trạng`, but is itself a distinct
+`legal_situation` (Tình huống), `case_file` (Vụ án), `indictment`
+(Cáo trạng), `lawsuit` (Đơn khởi kiện), `verdict` (Bản án), `ruling`
+(Quyết định), `investigation_conclusion` (Kết luận điều tra), and
+`precedent` (Án lệ) are **sibling `legal_type` artifacts**. They are
+independent procedural instruments that frequently overlap but do not
+strictly contain one another. A `legal_situation` may mature into zero,
+one, or many `case_file`. A criminal `case_file` may exist without an
+`indictment` (for example at investigation stage, or when the matter is
+đình chỉ before truy tố). A `verdict` refers back to a `case_file` and
+(in criminal matters) to the `indictment`, but is itself a distinct
 document with its own identifier and life-cycle.
 
 The schema (Phase 5) reflects this: each artifact gets its own table with
@@ -26,116 +41,209 @@ foreign keys to the others, never nested JSON.
 
 ## Tree
 
-```
-Pháp luật thông thường   (General body of law)                     [N] general_law
-|
-+- Tư pháp              (Judiciary)                                [N] judiciary
-    |
-    +- legal_type       (Procedural artifacts — siblings, may overlap)
-    |   |
-    |   +- Tình huống              (Legal situation; fact pattern
-    |   |                            with legal relevance; may or may
-    |   |                            not mature into a vụ án)       [N] legal_situation
-    |   |
-    |   +- Vụ án                   (Formal case / matter under
-    |   |                            judicial process)              [N] case_file
-    |   |
-    |   +- Cáo trạng               (Indictment; VKS prosecutorial
-    |   |                            instrument; criminal only)     [N] indictment
-    |   |
-    |   +- Đơn khởi kiện           (Petition / complaint;
-    |   |                            non-criminal initiating doc)   [N] lawsuit
-    |   |
-    |   +- Kết luận điều tra       (Investigation conclusion; CQĐT
-    |   |                            output; precedes cáo trạng)    [N] investigation_conclusion
-    |   |
-    |   +- Quyết định              (Ruling / order; interlocutory
-    |   |                            or final non-merits decision)  [N] ruling
-    |   |
-    |   +- Bản án                  (Verdict; court's merits-level
-    |   |                            adjudicative document; issued
-    |   |                            at each trial level)           [N] verdict
-    |   |
-    |   +- Án lệ                   (Formally adopted precedent;
-    |                                a bản án elevated by the
-    |                                Council of Judges)             [N] precedent
-    |
-    +- legal_relation              (Quan hệ pháp luật / subject
-    |   |                            matter; applies to any legal_type)
-    |   +- Hình sự                 (Criminal)
-    |   +- Dân sự                  (Civil)
-    |   +- Hôn nhân - Gia đình    (Family)
-    |   +- Hành chính              (Administrative)
-    |   +- Kinh doanh - Thương mại (Commercial)
-    |   +- Lao động                (Labor)
-    |
-    +- procedure_type              (Thủ tục tố tụng)               [N] procedure_type
-    |   +- Sơ thẩm                 (First instance)
-    |   +- Phúc thẩm               (Appeal)
-    |   +- Giám đốc thẩm           (Cassation)
-    |   +- Tái thẩm                (Retrial)
-    |
-    +- participant                 (Who appears in a legal_type artifact)
-    |   +- Bị can                  (Accused, pre-trial)            [N] defendant
-    |   +- Bị cáo                  (Defendant at trial)            [N] defendant
-    |   +- Nguyên đơn              (Plaintiff)                     [N] plaintiff
-    |   +- Bị đơn                  (Civil defendant)               [N] civil_defendant
-    |   +- Người bị hại            (Victim)                        [N] victim
-    |   +- Nhân chứng              (Witness)                       [N] witness
-    |   +- Cơ quan tiến hành tố tụng (Procedural authorities)
-    |       +- Tòa án              (Court)                         [N] court
-    |       +- Viện kiểm sát (VKS) (Procuracy)                     [N] procuracy
-    |       +- Cơ quan điều tra    (Investigation body)            [N] investigation_body
-    |
-    +- legal_source                (Normative materials)
-    |   +- Bộ luật                 (Code: BLHS, BLTTHS, BLDS, ...) [N] code
-    |   +- Điều luật               (Article of law)                [N] statute_article
-    |       +- Số điều             (Article number)                [A] article_number
-    |       +- Khoản, điểm         (Clause, point)                 [A] clause_point
-    |
-    +- constituent_attribute       (Descriptive fields attached to one
-        |                            or more legal_type artifacts; never
-        |                            standalone entities)
-        |
-        +- Thông tin chung         (General info; on vụ án)
-        |   +- Mã vụ án                                            [A] case_code
-        |   +- Tòa án               (attached court)               [R] tried_by -> court
-        |   +- Cấp xét xử                                          [A] trial_level
-        |   +- Ngày thụ lý                                         [A] acceptance_date
-        |   +- Loại vụ án           (criminal/civil/...)           [A] case_type
-        |
-        +- Tổng quan vụ việc       (Case overview; on vụ án)       [A] case_overview
-        +- Tóm tắt vụ việc         (Facts summary; on cáo trạng /
-        |                            bản án)                        [A] facts_summary
-        +- Diễn biến vụ việc       (Case timeline; on vụ án)       [N] case_event
-        +- Danh sách bị can        (Defendants; referenced by
-        |                            cáo trạng / bản án)            [R] has_defendant -> defendant
-        +- Tội danh                (Charges; on cáo trạng,
-        |                            adjudged in bản án)            [N] charge
-        +- Vật chứng               (Evidence items; on kết luận
-        |                            điều tra / cáo trạng / bản án) [N] evidence_item
-        +- Căn cứ pháp luật        (Legal basis; on cáo trạng /
-        |                            bản án, cites statutes)        [R] cites -> statute_article
-        +- Đoán định vụ việc       (Determination; on bản án)      [N] determination
-        |   +- Xác định tuổi bị cáo (Age determination)            [A] age_determined
-        |   +- Phân tích sức khỏe tâm thần (Mental health)         [A] mental_health_assessment
-        |   +- Tình tiết tăng nặng (Aggravating factors)           [A] aggravating_factors
-        |   +- Tình tiết giảm nhẹ  (Mitigating factors)            [A] mitigating_factors
-        +- Mức hình phạt           (Sentencing; on bản án)         [N] sentence
-        |   +- Loại hình phạt                                      [A] penalty_type
-        |   |   +- Tử hình          (Death penalty)
-        |   |   +- Tù chung thân    (Life imprisonment)
-        |   |   +- Tù có thời hạn   (Fixed-term imprisonment)
-        |   |   +- Cải tạo không giam giữ (Non-custodial reform)
-        |   |   +- Phạt tiền        (Fine)
-        |   |   +- Cảnh cáo         (Warning)
-        |   |   +- Trục xuất        (Deportation)
-        |   |   +- Án treo          (Suspended sentence)
-        |   +- Thời hạn                                            [A] sentence_term
-        |   +- Hình phạt bổ sung                                   [A] additional_penalty
-        |   +- Bồi thường                                          [A] compensation
-        +- Yêu cầu                 (Relief sought; on đơn khởi
-                                     kiện, civil only)              [A] relief_sought
+The taxonomy is a single English-primary JSON tree. The runtime mirror
+is `packages.common.taxonomy.LEGAL_TYPE_TREE`, which carries only the
+structural skeleton; the labels, notes, and sibling-relation
+explanations below live in this wiki only.
+
+### Schema
+
+Every node is a JSON object with these fields:
+
+| Field      | Required | Description                                                                                  |
+|------------|----------|----------------------------------------------------------------------------------------------|
+| `id`       | mostly   | Canonical `snake_case` English identifier. Matches the column / field / KG-node-type / i18n key in code. Omitted only for `enum_value` nodes whose canonical literal is the Vietnamese string itself. |
+| `label`    | yes      | English human label (sentence case).                                                         |
+| `label_vi` | optional | Vietnamese authoritative legal term (NFC). Omitted for purely structural categories with no single Vietnamese counterpart. |
+| `kind`     | yes      | One of `node`, `relation`, `attribute`, `category`, `enum_value` (see below).                |
+| `note`     | optional | Plain-English clarification (life-cycle, scope, edge cases).                                 |
+| `children` | optional | Recursive list of child nodes.                                                               |
+
+`kind` taxonomy:
+
+- `node` — entity / KG node (Postgres table, Pydantic / Zod model, KG node type).
+- `relation` — KG edge / FK between nodes.
+- `attribute` — column / field on a parent node.
+- `category` — structural grouping (no row-level identity).
+- `enum_value` — value of an enumerated classifier (the literal string emitted by the data; for closed Vietnamese enums the data carries `label_vi` verbatim, for English enums it carries `label`).
+
+### JSON
+
+```json
+{
+  "id": "general_law",
+  "label": "General body of law",
+  "label_vi": "Pháp luật thông thường",
+  "kind": "category",
+  "children": [
+    {
+      "id": "judiciary",
+      "label": "Judiciary",
+      "label_vi": "Tư pháp",
+      "kind": "category",
+      "children": [
+        {
+          "id": "legal_type",
+          "label": "Procedural artifacts",
+          "kind": "category",
+          "note": "Sibling artifacts — they may overlap but never strictly contain one another. Cross-type links live in the relations table below.",
+          "children": [
+            { "id": "legal_situation", "label": "Legal situation", "label_vi": "Tình huống", "kind": "node", "note": "Fact pattern with legal relevance; may or may not mature into a case_file." },
+            { "id": "case_file", "label": "Case file", "label_vi": "Vụ án", "kind": "node", "note": "Formal case / matter under judicial process." },
+            { "id": "indictment", "label": "Indictment", "label_vi": "Cáo trạng", "kind": "node", "note": "Procuracy (VKS) prosecutorial instrument; criminal only." },
+            { "id": "lawsuit", "label": "Lawsuit", "label_vi": "Đơn khởi kiện", "kind": "node", "note": "Petition / complaint; non-criminal initiating document." },
+            { "id": "investigation_conclusion", "label": "Investigation conclusion", "label_vi": "Kết luận điều tra", "kind": "node", "note": "Investigation body output; precedes the indictment." },
+            { "id": "ruling", "label": "Ruling", "label_vi": "Quyết định", "kind": "node", "note": "Interlocutory or final non-merits decision." },
+            { "id": "verdict", "label": "Verdict", "label_vi": "Bản án", "kind": "node", "note": "Court's merits-level adjudicative document; issued at each trial level." },
+            { "id": "precedent", "label": "Precedent", "label_vi": "Án lệ", "kind": "node", "note": "Formally adopted precedent; a verdict elevated by the Council of Judges." }
+          ]
+        },
+        {
+          "id": "legal_relation",
+          "label": "Legal relation",
+          "label_vi": "Quan hệ pháp luật",
+          "kind": "node",
+          "note": "Subject-matter classifier; applies to any legal_type artifact.",
+          "children": [
+            { "label": "Criminal", "label_vi": "Hình sự", "kind": "enum_value" },
+            { "label": "Civil", "label_vi": "Dân sự", "kind": "enum_value" },
+            { "label": "Family", "label_vi": "Hôn nhân - Gia đình", "kind": "enum_value" },
+            { "label": "Administrative", "label_vi": "Hành chính", "kind": "enum_value" },
+            { "label": "Commercial", "label_vi": "Kinh doanh - Thương mại", "kind": "enum_value" },
+            { "label": "Labor", "label_vi": "Lao động", "kind": "enum_value" }
+          ]
+        },
+        {
+          "id": "procedure_type",
+          "label": "Procedure type",
+          "label_vi": "Thủ tục tố tụng",
+          "kind": "node",
+          "note": "Procedural-track classifier; applies to any legal_type artifact.",
+          "children": [
+            { "label": "First instance", "label_vi": "Sơ thẩm", "kind": "enum_value" },
+            { "label": "Appeal", "label_vi": "Phúc thẩm", "kind": "enum_value" },
+            { "label": "Cassation", "label_vi": "Giám đốc thẩm", "kind": "enum_value" },
+            { "label": "Retrial", "label_vi": "Tái thẩm", "kind": "enum_value" }
+          ]
+        },
+        {
+          "id": "participant",
+          "label": "Participant",
+          "kind": "category",
+          "note": "Roles that appear in a legal_type artifact.",
+          "children": [
+            { "id": "defendant", "label": "Defendant", "label_vi": "Bị can / Bị cáo", "kind": "node", "note": "Bị can = accused (pre-trial); Bị cáo = defendant (at trial). Same role, distinct procedural stages." },
+            { "id": "plaintiff", "label": "Plaintiff", "label_vi": "Nguyên đơn", "kind": "node" },
+            { "id": "civil_defendant", "label": "Civil defendant", "label_vi": "Bị đơn", "kind": "node" },
+            { "id": "victim", "label": "Victim", "label_vi": "Người bị hại", "kind": "node" },
+            { "id": "witness", "label": "Witness", "label_vi": "Nhân chứng", "kind": "node" },
+            {
+              "id": "procedural_authority",
+              "label": "Procedural authority",
+              "label_vi": "Cơ quan tiến hành tố tụng",
+              "kind": "category",
+              "children": [
+                { "id": "court", "label": "Court", "label_vi": "Tòa án", "kind": "node" },
+                { "id": "procuracy", "label": "Procuracy (VKS)", "label_vi": "Viện kiểm sát", "kind": "node" },
+                { "id": "investigation_body", "label": "Investigation body", "label_vi": "Cơ quan điều tra", "kind": "node" }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "legal_source",
+          "label": "Legal source",
+          "kind": "category",
+          "note": "Normative materials.",
+          "children": [
+            { "id": "code", "label": "Code", "label_vi": "Bộ luật", "kind": "node", "note": "e.g. BLHS (Penal Code), BLTTHS (Criminal Procedure Code), BLDS (Civil Code)." },
+            {
+              "id": "statute_article",
+              "label": "Statute article",
+              "label_vi": "Điều luật",
+              "kind": "node",
+              "children": [
+                { "id": "article_number", "label": "Article number", "label_vi": "Số điều", "kind": "attribute" },
+                { "id": "clause_point", "label": "Clause / point", "label_vi": "Khoản, điểm", "kind": "attribute" }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "constituent_attribute",
+          "label": "Constituent attribute",
+          "kind": "category",
+          "note": "Descriptive fields attached to one or more legal_type artifacts; never standalone entities.",
+          "children": [
+            {
+              "id": "case_general_info",
+              "label": "General info",
+              "label_vi": "Thông tin chung",
+              "kind": "category",
+              "note": "Attached to case_file.",
+              "children": [
+                { "id": "case_code", "label": "Case code", "label_vi": "Mã vụ án", "kind": "attribute" },
+                { "id": "tried_by", "label": "Tried by → court", "label_vi": "Tòa án", "kind": "relation" },
+                { "id": "trial_level", "label": "Trial level", "label_vi": "Cấp xét xử", "kind": "attribute" },
+                { "id": "acceptance_date", "label": "Acceptance date", "label_vi": "Ngày thụ lý", "kind": "attribute" },
+                { "id": "case_type", "label": "Case type", "label_vi": "Loại vụ án", "kind": "attribute", "note": "criminal / civil / …" }
+              ]
+            },
+            { "id": "case_overview", "label": "Case overview", "label_vi": "Tổng quan vụ việc", "kind": "attribute", "note": "On case_file." },
+            { "id": "facts_summary", "label": "Facts summary", "label_vi": "Tóm tắt vụ việc", "kind": "attribute", "note": "On indictment / verdict." },
+            { "id": "case_event", "label": "Case event", "label_vi": "Diễn biến vụ việc", "kind": "node", "note": "Timeline entry on case_file." },
+            { "id": "has_defendant", "label": "Has defendant → defendant", "label_vi": "Danh sách bị can", "kind": "relation", "note": "Referenced by indictment / verdict." },
+            { "id": "charge", "label": "Charge", "label_vi": "Tội danh", "kind": "node", "note": "On indictment, adjudged in verdict." },
+            { "id": "evidence_item", "label": "Evidence item", "label_vi": "Vật chứng", "kind": "node", "note": "On investigation_conclusion / indictment / verdict." },
+            { "id": "cites", "label": "Cites → statute_article", "label_vi": "Căn cứ pháp luật", "kind": "relation", "note": "On indictment / verdict." },
+            {
+              "id": "determination",
+              "label": "Determination",
+              "label_vi": "Đoán định vụ việc",
+              "kind": "node",
+              "note": "On verdict.",
+              "children": [
+                { "id": "age_determined", "label": "Age determination", "label_vi": "Xác định tuổi bị cáo", "kind": "attribute" },
+                { "id": "mental_health_assessment", "label": "Mental health assessment", "label_vi": "Phân tích sức khỏe tâm thần", "kind": "attribute" },
+                { "id": "aggravating_factors", "label": "Aggravating factors", "label_vi": "Tình tiết tăng nặng", "kind": "attribute" },
+                { "id": "mitigating_factors", "label": "Mitigating factors", "label_vi": "Tình tiết giảm nhẹ", "kind": "attribute" }
+              ]
+            },
+            {
+              "id": "sentence",
+              "label": "Sentence",
+              "label_vi": "Mức hình phạt",
+              "kind": "node",
+              "note": "On verdict.",
+              "children": [
+                {
+                  "id": "penalty_type",
+                  "label": "Penalty type",
+                  "label_vi": "Loại hình phạt",
+                  "kind": "attribute",
+                  "children": [
+                    { "label": "Death penalty", "label_vi": "Tử hình", "kind": "enum_value" },
+                    { "label": "Life imprisonment", "label_vi": "Tù chung thân", "kind": "enum_value" },
+                    { "label": "Fixed-term imprisonment", "label_vi": "Tù có thời hạn", "kind": "enum_value" },
+                    { "label": "Non-custodial reform", "label_vi": "Cải tạo không giam giữ", "kind": "enum_value" },
+                    { "label": "Fine", "label_vi": "Phạt tiền", "kind": "enum_value" },
+                    { "label": "Warning", "label_vi": "Cảnh cáo", "kind": "enum_value" },
+                    { "label": "Deportation", "label_vi": "Trục xuất", "kind": "enum_value" },
+                    { "label": "Suspended sentence", "label_vi": "Án treo", "kind": "enum_value" }
+                  ]
+                },
+                { "id": "sentence_term", "label": "Sentence term", "label_vi": "Thời hạn", "kind": "attribute" },
+                { "id": "additional_penalty", "label": "Additional penalty", "label_vi": "Hình phạt bổ sung", "kind": "attribute" },
+                { "id": "compensation", "label": "Compensation", "label_vi": "Bồi thường", "kind": "attribute" }
+              ]
+            },
+            { "id": "relief_sought", "label": "Relief sought", "label_vi": "Yêu cầu", "kind": "attribute", "note": "On lawsuit, civil only." }
+          ]
+        }
+      ]
+    }
+  ]
+}
 ```
 
 ## Relations between legal_type artifacts (overlaps made explicit)
@@ -144,78 +252,84 @@ The sibling artifacts are linked by a small number of relations, not by
 containment. These are the authoritative cross-type edges; the KG
 (Phase 6) and Postgres FKs (Phase 5) implement them 1:1.
 
-| Source | Relation | Target | Cardinality | Notes |
-|---|---|---|---|---|
-| `Tình huống` | `may_spawn` | `Vụ án` | 0..N | A situation may yield zero or many cases |
-| `Vụ án` | `appeal_of` | `Vụ án` | 0..1 | Phúc thẩm / giám đốc thẩm / tái thẩm chain |
-| `Vụ án` | `initiated_by` | `Đơn khởi kiện` | 0..1 | Non-criminal matters only |
-| `Vụ án` | `indicted_by` | `Cáo trạng` | 0..1 per trial level | Criminal matters only; may be absent if đình chỉ before truy tố |
-| `Cáo trạng` | `preceded_by` | `Kết luận điều tra` | 0..1 | CQĐT output precedes VKS indictment |
-| `Vụ án` | `decided_by` | `Bản án` | 1..N | One per trial level (sơ thẩm, phúc thẩm, …) |
-| `Vụ án` | `ordered_by` | `Quyết định` | 0..N | Interlocutory / final non-merits rulings |
-| `Bản án` | `may_become` | `Án lệ` | 0..1 | Selected verdicts adopted as precedents |
-| Any legal_type | `classified_as` | `legal_relation` | 1..1 | Subject-matter tag |
-| Any legal_type | `follows` | `procedure_type` | 1..1 | Which procedural track |
+`Source`, `Target`, and `Relation` columns are English `snake_case`
+identifiers (the canonical names in code). The Vietnamese reference
+terms appear inline in the `Notes` column for cross-walking with the
+legal corpus.
+
+| Source                       | Relation         | Target                       | Cardinality          | Notes |
+|------------------------------|------------------|------------------------------|----------------------|-------|
+| `legal_situation`            | `may_spawn`      | `case_file`                  | 0..N                 | A Tình huống may yield zero or many Vụ án. |
+| `case_file`                  | `appeal_of`      | `case_file`                  | 0..1                 | Phúc thẩm / giám đốc thẩm / tái thẩm chain. |
+| `case_file`                  | `initiated_by`   | `lawsuit`                    | 0..1                 | Non-criminal matters only. |
+| `case_file`                  | `indicted_by`    | `indictment`                 | 0..1 per trial level | Criminal matters only; may be absent if đình chỉ before truy tố. |
+| `indictment`                 | `preceded_by`    | `investigation_conclusion`   | 0..1                 | Cơ quan điều tra (CQĐT) output precedes the VKS indictment. |
+| `case_file`                  | `decided_by`     | `verdict`                    | 1..N                 | One per trial level (sơ thẩm, phúc thẩm, …). |
+| `case_file`                  | `ordered_by`     | `ruling`                     | 0..N                 | Interlocutory / final non-merits rulings. |
+| `verdict`                    | `may_become`     | `precedent`                  | 0..1                 | Selected verdicts adopted as Án lệ. |
+| any `legal_type`             | `classified_as`  | `legal_relation`             | 1..1                 | Subject-matter tag. |
+| any `legal_type`             | `follows`        | `procedure_type`             | 1..1                 | Which procedural track. |
 
 Typical end-to-end linkage for a criminal matter:
 
 ```
-Tình huống (optional) ── may_spawn ──▶ Vụ án ── initiated/indicted ──▶ Cáo trạng
-                                         │                                 ▲
-                                         │                                 │
-                                         ├──── preceded_by ──── Kết luận điều tra
-                                         │
-                                         └── decided_by ──▶ Bản án (sơ thẩm) ── may_become ──▶ Án lệ
-                                                                │
-                                                                │ appealed
-                                                                ▼
-                                                          Vụ án (phúc thẩm)
-                                                                │
-                                                                ▼
-                                                          Bản án (phúc thẩm)
+legal_situation (optional) ── may_spawn ──▶ case_file ── indicted_by ──▶ indictment
+                                                │                              ▲
+                                                │                              │
+                                                ├──── preceded_by ──── investigation_conclusion
+                                                │
+                                                └── decided_by ──▶ verdict (first_instance) ── may_become ──▶ precedent
+                                                                       │
+                                                                       │ appealed
+                                                                       ▼
+                                                                  case_file (appeal)
+                                                                       │
+                                                                       ▼
+                                                                  verdict (appeal)
 ```
 
 Typical end-to-end linkage for a non-criminal matter:
 
 ```
-Tình huống (optional) ── may_spawn ──▶ Vụ án ── initiated_by ──▶ Đơn khởi kiện
-                                         │
-                                         └── decided_by ──▶ Bản án (sơ thẩm) ── appeal chain …
+legal_situation (optional) ── may_spawn ──▶ case_file ── initiated_by ──▶ lawsuit
+                                                │
+                                                └── decided_by ──▶ verdict (first_instance) ── appeal chain …
 ```
 
 ## Canonical code-identifier mapping
 
 The shared schema packages (`packages/schemas/py`, `packages/schemas/ts`)
 use the following field names. Both Pydantic and Zod use identical
-`snake_case`.
+`snake_case`. Columns are ordered `id`, `kind`, `label`, `label_vi` to
+mirror the JSON-row shape.
 
-| Vietnamese term | snake_case identifier | Kind |
-|-----------------|----------------------|------|
-| Tình huống | `legal_situation` | legal_type |
-| Vụ án | `case_file` | legal_type |
-| Cáo trạng | `indictment` | legal_type |
-| Đơn khởi kiện | `lawsuit` | legal_type |
-| Kết luận điều tra | `investigation_conclusion` | legal_type |
-| Quyết định | `ruling` | legal_type |
-| Bản án | `verdict` | legal_type |
-| Án lệ | `precedent` | legal_type |
-| Thủ tục tố tụng | `procedure_type` | classifier |
-| Quan hệ pháp luật | `legal_relation` | classifier |
-| Bị can / Bị cáo | `defendant` | participant |
-| Nguyên đơn | `plaintiff` | participant |
-| Bị đơn | `civil_defendant` | participant |
-| Người bị hại | `victim` | participant |
-| Nhân chứng | `witness` | participant |
-| Tòa án | `court` | participant |
-| Viện kiểm sát | `procuracy` | participant |
-| Cơ quan điều tra | `investigation_body` | participant |
-| Bộ luật | `code` | legal_source |
-| Điều luật | `statute_article` | legal_source |
-| Tội danh | `charge` | constituent_attribute |
-| Vật chứng | `evidence_item` | constituent_attribute |
-| Diễn biến | `case_event` | constituent_attribute |
-| Mức hình phạt | `sentence` | constituent_attribute |
-| Đoán định vụ việc | `determination` | constituent_attribute |
+| `id`                       | `kind`                  | `label`                | `label_vi`         |
+|----------------------------|-------------------------|------------------------|--------------------|
+| `legal_situation`          | `legal_type`            | Legal situation        | Tình huống         |
+| `case_file`                | `legal_type`            | Case file              | Vụ án              |
+| `indictment`               | `legal_type`            | Indictment             | Cáo trạng          |
+| `lawsuit`                  | `legal_type`            | Lawsuit                | Đơn khởi kiện      |
+| `investigation_conclusion` | `legal_type`            | Investigation conclusion | Kết luận điều tra |
+| `ruling`                   | `legal_type`            | Ruling                 | Quyết định         |
+| `verdict`                  | `legal_type`            | Verdict                | Bản án             |
+| `precedent`                | `legal_type`            | Precedent              | Án lệ              |
+| `procedure_type`           | `classifier`            | Procedure type         | Thủ tục tố tụng    |
+| `legal_relation`           | `classifier`            | Legal relation         | Quan hệ pháp luật  |
+| `defendant`                | `participant`           | Defendant              | Bị can / Bị cáo    |
+| `plaintiff`                | `participant`           | Plaintiff              | Nguyên đơn         |
+| `civil_defendant`          | `participant`           | Civil defendant        | Bị đơn             |
+| `victim`                   | `participant`           | Victim                 | Người bị hại       |
+| `witness`                  | `participant`           | Witness                | Nhân chứng         |
+| `court`                    | `participant`           | Court                  | Tòa án             |
+| `procuracy`                | `participant`           | Procuracy (VKS)        | Viện kiểm sát      |
+| `investigation_body`       | `participant`           | Investigation body     | Cơ quan điều tra   |
+| `code`                     | `legal_source`          | Code                   | Bộ luật            |
+| `statute_article`          | `legal_source`          | Statute article        | Điều luật          |
+| `charge`                   | `constituent_attribute` | Charge                 | Tội danh           |
+| `evidence_item`            | `constituent_attribute` | Evidence item          | Vật chứng          |
+| `case_event`               | `constituent_attribute` | Case event             | Diễn biến          |
+| `sentence`                 | `constituent_attribute` | Sentence               | Mức hình phạt      |
+| `determination`            | `constituent_attribute` | Determination          | Đoán định vụ việc  |
 
 The four identifiers called out in the project brief
 (`case_file`, `indictment`, `lawsuit`, `procedure_type`) are preserved
@@ -229,16 +343,18 @@ Additional classifications the system introduces for analytical
 purposes:
 
 - **`offense_severity_band`** — derived from the range of penalties
-  prescribed in BLHS (`ít nghiêm trọng`, `nghiêm trọng`, `rất nghiêm
-  trọng`, `đặc biệt nghiêm trọng`).
-- **`disposition_outcome`** — normalized verdict outcome across case
-  types: `convicted`, `acquitted`, `dismissed`, `remanded`, `settled`.
+  prescribed in BLHS. Values: `less_serious` (ít nghiêm trọng),
+  `serious` (nghiêm trọng), `very_serious` (rất nghiêm trọng),
+  `especially_serious` (đặc biệt nghiêm trọng).
+- **`disposition_outcome`** — normalised verdict outcome across case
+  types. Values: `convicted`, `acquitted`, `dismissed`, `remanded`,
+  `settled`.
 - **`case_phase`** — the five-phase flow used by the decision tree in
-  Phase 7: `entry`, `prosecution_pretrial`, `adjudication`,
+  Phase 7. Values: `entry`, `prosecution_pretrial`, `adjudication`,
   `sentencing`, `corrections`.
 - **`diversion_reason`** — when a case exits the main flow before
-  adjudication (for example `đình chỉ điều tra` / investigation halted,
-  `miễn truy cứu trách nhiệm hình sự` / exemption from prosecution).
+  adjudication. Examples: `investigation_halted` (đình chỉ điều tra),
+  `prosecution_exemption` (miễn truy cứu trách nhiệm hình sự).
 
 These extensions are used by the decision tree (Phase 7/8) and are
 populated by the extractor (Phase 3) and parsers (Phase 4).
@@ -248,17 +364,18 @@ populated by the extractor (Phase 3) and parsers (Phase 4).
 Three frequently-seen errors that a nested representation would encode,
 but a sibling representation does not:
 
-1. **Existence mismatch.** A `vụ án` exists from the moment the court
-   accepts (thụ lý) it, regardless of whether any `cáo trạng` was ever
-   produced. Nesting `cáo trạng` under `vụ án` suggests every case must
-   have one.
-2. **Multiplicity mismatch.** A criminal `vụ án` that goes to phúc thẩm
-   has **two** `bản án` (sơ thẩm and phúc thẩm). Nesting `bản án` under
-   `vụ án` as a singular child mis-models cardinality.
-3. **Document-vs-matter confusion.** A `cáo trạng` is a document with
+1. **Existence mismatch.** A `case_file` (Vụ án) exists from the moment
+   the court accepts (thụ lý) it, regardless of whether any `indictment`
+   (Cáo trạng) was ever produced. Nesting `indictment` under `case_file`
+   suggests every case must have one.
+2. **Multiplicity mismatch.** A criminal `case_file` that goes to
+   appeal has **two** `verdict` (Bản án) — first instance and appeal.
+   Nesting `verdict` under `case_file` as a singular child mis-models
+   cardinality.
+3. **Document-vs-matter confusion.** An `indictment` is a document with
    its own ID, issue date, issuing authority, and life-cycle (it may be
-   withdrawn or replaced). Flattening it inside a `vụ án` blob hides the
-   life-cycle.
+   withdrawn or replaced). Flattening it inside a `case_file` blob hides
+   the life-cycle.
 
 Treating them as siblings under `legal_type` with explicit relations
 lets the schema, KG, and agent correctly express the many real cases
@@ -272,8 +389,8 @@ are realised as two canonical Python modules under `packages/common/`:
 - **`packages.common.taxonomy`** — closed, hierarchical
   classifications. Single source of truth for every datasite + the
   visualizer + the relational schema.
-  - `LEGAL_TYPE_TREE` — the `Tư pháp` class hierarchy described
-    above (this section's subject).
+  - `LEGAL_TYPE_TREE` — the Judiciary (`Tư pháp`) class hierarchy
+    described above (this section's subject).
   - `CODIFICATION_TOPICS` — 42 `chủ đề` (top-level codification
     topics) sourced from the `phapdien` (Bộ Pháp Điển) corpus.
   - `CODIFICATION_SUBJECTS` — 202 `đề mục` (second-level codification
@@ -315,16 +432,19 @@ ship a curated `note` field for entries with non-obvious translations
 (`Pháp lệnh` between Law and Decree, `Bộ luật` as a consolidated
 code, `Đề mục` as a codification subject under a topic).
 
-Selected examples (full data in `packages.common.taxonomy`):
+Selected examples (full data in `packages.common.taxonomy`). Column
+order is `topic_number`, `topic_title` (English-primary, unsuffixed),
+`topic_title_vi` (Vietnamese companion) — mirrors the published parquet
+schema.
 
-| `topic_number` | `vi`                          | `en`                                           |
-|----------------|-------------------------------|------------------------------------------------|
-| 9              | Dân sự                        | Civil law                                      |
-| 16             | Hình sự                       | Criminal law                                   |
-| 30             | Thi hành án                   | Judgment enforcement                           |
-| 35             | Tổ chức bộ máy nhà nước       | Organisation of the state apparatus            |
-| 37             | Tố tụng và các phương thức    | Litigation and dispute-resolution procedures   |
-| 44             | Xây dựng pháp luật và thi hành| Lawmaking and law enforcement                  |
+| `topic_number` | `topic_title`                                | `topic_title_vi`                                    |
+|----------------|----------------------------------------------|-----------------------------------------------------|
+| 9              | Civil law                                    | Dân sự                                              |
+| 16             | Criminal law                                 | Hình sự                                             |
+| 30             | Judgment enforcement                         | Thi hành án                                         |
+| 35             | Organisation of the state apparatus          | Tổ chức bộ máy nhà nước                             |
+| 37             | Litigation and dispute-resolution procedures | Tố tụng và các phương thức giải quyết tranh chấp    |
+| 44             | Lawmaking and law enforcement                | Xây dựng pháp luật và thi hành pháp luật            |
 
 ## Legal areas (47 `lĩnh vực`)
 
@@ -334,17 +454,18 @@ dropdown taxonomy keyed by exact Vietnamese name. Names sometimes use
 the en-dash `–` instead of the hyphen `-`; the data preserves the
 source spelling verbatim and lookup is NFC-normalised.
 
-Sample entries (full data in `LEGAL_AREAS`):
+Sample entries (full data in `LEGAL_AREAS`). Column order is
+`area_name` (English-primary), `area_name_vi` (Vietnamese companion).
 
-| `vi`                       | `en`                              |
-|----------------------------|-----------------------------------|
-| Dân sự                     | Civil                             |
-| Trách nhiệm hình sự        | Criminal liability                |
-| Hôn nhân – Gia đình – Thừa kế | Marriage, family and inheritance |
-| Lao động – Tiền lương      | Labor and wages                   |
-| Sở hữu trí tuệ             | Intellectual property             |
-| Vi phạm hành chính         | Administrative violations         |
-| Lĩnh vực khác              | Other                             |
+| `area_name`                       | `area_name_vi`                |
+|-----------------------------------|-------------------------------|
+| Civil                             | Dân sự                        |
+| Criminal liability                | Trách nhiệm hình sự           |
+| Marriage, family and inheritance  | Hôn nhân – Gia đình – Thừa kế |
+| Labor and wages                   | Lao động – Tiền lương         |
+| Intellectual property             | Sở hữu trí tuệ                |
+| Administrative violations         | Vi phạm hành chính            |
+| Other                             | Lĩnh vực khác                 |
 
 The `LEGAL_AREAS` taxonomy is independent from the 42-topic
 `CODIFICATION_TOPICS` taxonomy: the two portals classify Vietnamese
@@ -359,39 +480,67 @@ The `phapdien` glossary collects 116 of the most-cited legal terms
 across the corpus, bucketed into 13 categories so a downstream UI or
 NER component can scope its lookup:
 
-| Category        | Examples                                                      |
-|-----------------|---------------------------------------------------------------|
-| `instrument`    | Hiến pháp, Bộ luật, Luật, Pháp lệnh, Nghị định, Thông tư      |
-| `structure`     | Phần, Chương, Mục, Điều, Khoản, Điểm                          |
-| `codification`  | Pháp điển, Bộ Pháp Điển, Chủ đề, Đề mục                       |
-| `court`         | Tòa án nhân dân tối cao, Tòa án quân sự, Bị cáo, Bản án, Án lệ|
-| `agency`        | Quốc hội, Chính phủ, Thủ tướng, Bộ Tư pháp, Mặt trận Tổ quốc  |
-| `procedure`     | Tố tụng dân sự, Khởi kiện, Xét xử sơ thẩm, Giám đốc thẩm      |
-| `civil`         | Hợp đồng, Quyền sở hữu, Quyền sử dụng đất, Thừa kế, Hôn nhân  |
-| `criminal`      | Tội phạm, Hình phạt, Án treo, Tù chung thân, Tử hình          |
-| `admin`         | Vi phạm hành chính, Khiếu nại, Thanh tra, Giấy phép           |
-| `status`        | Hộ tịch, Hộ khẩu, Cư trú, Quốc tịch, Lý lịch tư pháp          |
-| `finance`       | Thuế GTGT, Thuế TNDN, Thuế TNCN, Hóa đơn, Ngân sách nhà nước  |
-| `labour`        | Hợp đồng lao động, Tiền lương, Bảo hiểm xã hội, Đình công     |
-| `police`        | Công an, Cảnh sát, Tạm giữ, Tạm giam, Truy nã                 |
+Each row of `LEGAL_GLOSSARY` is a `GlossaryEntry(category, vi, en, note)`
+which the published parquet flattens to columns
+`category`, `term` (English, unsuffixed), `term_vi` (Vietnamese
+companion), `note`. The samples below preview each category in the same
+English-primary `term (term_vi)` shape:
 
-Lookup is NFC-normalised on both sides via
+| `category`     | Sample `term (term_vi)`                                                                                                                            |
+|----------------|----------------------------------------------------------------------------------------------------------------------------------------------------|
+| `instrument`   | Constitution (Hiến pháp), Code (Bộ luật), Law (Luật), Ordinance (Pháp lệnh), Decree (Nghị định), Circular (Thông tư)                               |
+| `structure`    | Part (Phần), Chapter (Chương), Section (Mục), Article (Điều), Clause (Khoản), Point (Điểm)                                                         |
+| `codification` | Codification (Pháp điển), Codified Law Compendium (Bộ Pháp Điển), Topic (Chủ đề), Subject (Đề mục)                                                 |
+| `court`        | Supreme People's Court (Tòa án nhân dân tối cao), Military Court (Tòa án quân sự), Defendant (Bị cáo), Judgment (Bản án), Precedent (Án lệ)        |
+| `agency`       | National Assembly (Quốc hội), Government (Chính phủ), Prime Minister (Thủ tướng Chính phủ), Ministry of Justice (Bộ Tư pháp), Vietnam Fatherland Front (Mặt trận Tổ quốc Việt Nam) |
+| `procedure`    | Civil procedure (Tố tụng dân sự), Filing a lawsuit (Khởi kiện), First-instance trial (Xét xử sơ thẩm), Cassation (Giám đốc thẩm)                   |
+| `civil`        | Contract (Hợp đồng), Ownership right (Quyền sở hữu), Land-use right (Quyền sử dụng đất), Inheritance (Thừa kế), Marriage (Hôn nhân)                |
+| `criminal`     | Crime / offence (Tội phạm), Penalty (Hình phạt), Suspended sentence (Án treo), Life imprisonment (Tù chung thân), Death penalty (Tử hình)          |
+| `admin`        | Administrative violation (Vi phạm hành chính), Complaint (Khiếu nại), Inspection (Thanh tra), Permit / licence (Giấy phép)                         |
+| `status`       | Civil status (Hộ tịch), Household registration (Hộ khẩu), Residence registration (Cư trú), Nationality (Quốc tịch), Criminal-record certificate (Lý lịch tư pháp) |
+| `finance`      | Value-added tax / VAT (Thuế giá trị gia tăng), Corporate income tax (Thuế thu nhập doanh nghiệp), Personal income tax (Thuế thu nhập cá nhân), Invoice (Hóa đơn), State budget (Ngân sách nhà nước) |
+| `labour`       | Labour contract (Hợp đồng lao động), Wages (Tiền lương), Social insurance (Bảo hiểm xã hội), Strike (Đình công)                                    |
+| `police`       | Public security / police (Công an), Police (Cảnh sát), Custody (Tạm giữ), Pre-trial detention (Tạm giam), Wanted notice (Truy nã)                  |
+
+Lookup is NFC-normalised via
 `packages.common.terminology.lookup_term(term_vi, category=...)`. The
-optional `category` argument scopes the lookup so the same Vietnamese
-word resolves correctly across categories (e.g. `Bị cáo` /defendant
-under `court` carries the criminal-context note, while `Bị đơn`
-/defendant under `court` carries the civil-context note — both are
-distinct entries and `lookup_term` returns whichever matches).
+optional `category` argument scopes the lookup to a single bucket;
+this is forward-defensive (no Vietnamese term currently collides
+across categories, but future additions might). The shipping data
+disambiguates same-English-translation entries by carrying distinct
+Vietnamese forms — for example both `Bị cáo` and `Bị đơn` translate
+to "Defendant" but live as separate entries under `court` with notes
+`(criminal)` and `(civil)` respectively, so a lookup keyed by `vi`
+already resolves them correctly without the `category` filter.
 
 ## Document status (`DOCUMENT_STATUS`)
 
 A four-value closed enum sourced from `thuvienphapluat_tnpl`'s
 `Tình trạng` field. Unknown values are passed through verbatim with
 a warning so future portal additions are never silently dropped.
+Column order is `status` (English-primary), `status_vi` (Vietnamese
+companion).
 
-| `vi`                    | `en`              |
-|-------------------------|-------------------|
-| Còn hiệu lực            | Effective         |
-| Hết hiệu lực            | Expired           |
-| Hết hiệu lực một phần   | Partially expired |
-| Chưa có hiệu lực        | Not yet effective |
+| `status`          | `status_vi`           |
+|-------------------|-----------------------|
+| Effective         | Còn hiệu lực          |
+| Expired           | Hết hiệu lực          |
+| Partially expired | Hết hiệu lực một phần |
+| Not yet effective | Chưa có hiệu lực      |
+
+## Updated-by passthrough (`UPDATED_BY_PASSTHROUGH`)
+
+The `cập nhật bởi` (updated-by) line on each `thuvienphapluat_tnpl`
+term page is normally a proper name — copied verbatim, never
+translated. The single exception is the well-known anonymous-editor
+placeholder, which is mapped to a stable English label so downstream
+analytics can count anonymous-vs-named edits without false
+divergence on diacritic form:
+
+| `updated_by`         | `updated_by_vi`             |
+|----------------------|-----------------------------|
+| Unauthenticated user | Người dùng không đăng nhập  |
+
+`packages.common.terminology.lookup_updated_by(name_vi)` returns the
+English label for a placeholder match and `None` for anything else.
+The caller treats `None` as "this is a real name, copy verbatim".

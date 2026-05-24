@@ -680,7 +680,7 @@ def render_agency_bars(
     """Top-K issuing-agency horizontal bars.
 
     Now meaningful since the doc_number/date/agency backfill restored
-    ``issuing_body`` across the corpus (was 0% populated in the
+    ``issuing_authority`` across the corpus (was 0% populated in the
     legacy parquet). Provincial People's Councils tend to share the
     space with Quốc hội, Chính phủ, and the larger ministries.
     """

@@ -23,8 +23,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from packages.common import SiteLayout, build_layout as _build_layout_common
-
+from packages.common import SiteLayout
+from packages.common import build_layout as _build_layout_common
+from packages.common.taxonomy import LEGAL_AREAS as _LEGAL_AREAS
+from packages.common.terminology import (
+    DOCUMENT_STATUS as _DOCUMENT_STATUS,
+)
+from packages.common.terminology import (
+    UPDATED_BY_PASSTHROUGH as _UPDATED_BY_PASSTHROUGH,
+)
 
 # -----------------------------------------------------------------------
 # JSONL column schemas. Order is canonical for downstream consumers
@@ -112,13 +119,6 @@ VI_TO_EN_COLUMN_MAP: dict[str, str] = {
 # LLM cost on them and the same legal-domain name is rendered
 # identically across every row + every datasite.
 # -----------------------------------------------------------------------
-
-from packages.common.taxonomy import LEGAL_AREAS as _LEGAL_AREAS
-from packages.common.terminology import (
-    DOCUMENT_STATUS as _DOCUMENT_STATUS,
-    UPDATED_BY_PASSTHROUGH as _UPDATED_BY_PASSTHROUGH,
-)
-
 
 #: LinhVuc Vietnamese name → concise English translation. Pulled
 #: verbatim from the ``<select name="ctl00$Content$SearchTNPL$ddlField">``

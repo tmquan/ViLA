@@ -31,7 +31,6 @@ from dataclasses import dataclass
 
 from packages.common.taxonomy import nfc
 
-
 # --------------------------------------------------------------------- entry
 
 @dataclass(frozen=True)
@@ -800,28 +799,48 @@ UPDATED_BY_PASSTHROUGH: dict[str, str] = {
 }
 
 
-
 # --------------------------------------------------------------------- lookups
+
+#: Module-load NFC index over :data:`LEGAL_GLOSSARY`, keyed by
+#: ``(category, vi_nfc)``. The compound key lets :func:`lookup_term`
+#: optionally scope the lookup to a category in O(1) and also resolve
+#: a category-agnostic lookup via :data:`_GLOSSARY_BY_VI`.
+_GLOSSARY_BY_CAT_VI: dict[tuple[str, str], GlossaryEntry] = {
+    (e.category, nfc(e.vi)): e for e in LEGAL_GLOSSARY
+}
+
+#: Module-load NFC index over :data:`LEGAL_GLOSSARY`, keyed by
+#: ``vi_nfc`` only. When two entries share the same ``vi`` across
+#: categories the *first* one wins (matches the prior linear-scan
+#: semantics); use :func:`lookup_term` with an explicit ``category``
+#: argument to disambiguate.
+_GLOSSARY_BY_VI: dict[str, GlossaryEntry] = {}
+for _e in LEGAL_GLOSSARY:
+    _GLOSSARY_BY_VI.setdefault(nfc(_e.vi), _e)
+del _e
+
+#: Module-load NFC view of :data:`DOCUMENT_STATUS`.
+_STATUS_NFC: dict[str, str] = {nfc(k): v for k, v in DOCUMENT_STATUS.items()}
+
+#: Module-load NFC view of :data:`UPDATED_BY_PASSTHROUGH`.
+_UPDATED_BY_NFC: dict[str, str] = {nfc(k): v for k, v in UPDATED_BY_PASSTHROUGH.items()}
+
 
 def lookup_term(term_vi: str, *, category: str | None = None) -> GlossaryEntry | None:
     """Find the glossary entry for a Vietnamese term.
 
-    NFC-normalises both sides of the comparison. When ``category`` is
-    given, restricts the search to that bucket so the same Vietnamese
-    word can resolve differently across categories (``Bị cáo``
-    /defendant in criminal context vs ``Bị đơn`` /defendant in civil
-    context, for example, both have ``en="Defendant"`` but distinct
-    ``category`` and ``note``).
+    NFC-normalises the lookup. When ``category`` is given the search
+    is scoped to that bucket; this is forward-defensive (no Vietnamese
+    string currently collides across categories, but future additions
+    might). Without ``category`` the first entry whose ``vi`` matches
+    is returned (categories are walked in declaration order).
     """
     if not term_vi:
         return None
     needle = nfc(term_vi)
-    for entry in LEGAL_GLOSSARY:
-        if category is not None and entry.category != category:
-            continue
-        if nfc(entry.vi) == needle:
-            return entry
-    return None
+    if category is not None:
+        return _GLOSSARY_BY_CAT_VI.get((category, needle))
+    return _GLOSSARY_BY_VI.get(needle)
 
 
 def lookup_status(status_vi: str) -> str | None:
@@ -832,8 +851,7 @@ def lookup_status(status_vi: str) -> str | None:
     """
     if not status_vi:
         return None
-    table = {nfc(k): v for k, v in DOCUMENT_STATUS.items()}
-    return table.get(nfc(status_vi))
+    return _STATUS_NFC.get(nfc(status_vi))
 
 
 def lookup_updated_by(name_vi: str) -> str | None:
@@ -843,15 +861,14 @@ def lookup_updated_by(name_vi: str) -> str | None:
     """
     if not name_vi:
         return None
-    table = {nfc(k): v for k, v in UPDATED_BY_PASSTHROUGH.items()}
-    return table.get(nfc(name_vi))
+    return _UPDATED_BY_NFC.get(nfc(name_vi))
 
 
 __all__ = [
     "DOCUMENT_STATUS",
-    "GlossaryEntry",
     "LEGAL_GLOSSARY",
     "UPDATED_BY_PASSTHROUGH",
+    "GlossaryEntry",
     "lookup_status",
     "lookup_term",
     "lookup_updated_by",

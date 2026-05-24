@@ -38,7 +38,6 @@ from __future__ import annotations
 import unicodedata
 from typing import Any
 
-
 # --------------------------------------------------------------------- nfc
 
 def nfc(s: str) -> str:
@@ -634,8 +633,16 @@ LEGAL_AREAS: dict[str, str] = {
 }
 
 
-
 # --------------------------------------------------------------------- lookups
+
+#: Module-load NFC view of :data:`CODIFICATION_SUBJECTS`. Values
+#: identical, keys NFC-normalised so :func:`lookup_subject` is O(1)
+#: per call instead of rebuilding the table on every invocation.
+_SUBJECTS_NFC: dict[str, str] = {nfc(k): v for k, v in CODIFICATION_SUBJECTS.items()}
+
+#: Module-load NFC view of :data:`LEGAL_AREAS`.
+_AREAS_NFC: dict[str, str] = {nfc(k): v for k, v in LEGAL_AREAS.items()}
+
 
 def lookup_topic(topic_number: str | int) -> dict[str, str | None] | None:
     """Return the curated ``{vi, en, note}`` triple for a ``chủ đề``.
@@ -649,23 +656,22 @@ def lookup_topic(topic_number: str | int) -> dict[str, str | None] | None:
 
 def lookup_subject(title_vi: str) -> str | None:
     """Return the curated English title for an ``đề mục`` Vietnamese
-    title. NFC-normalises both sides of the comparison so callers can
-    pass either composed or decomposed Vietnamese forms.
+    title. NFC-normalises the lookup so callers can pass either
+    composed or decomposed Vietnamese forms.
     """
     if not title_vi:
         return None
-    table = {nfc(k): v for k, v in CODIFICATION_SUBJECTS.items()}
-    return table.get(nfc(title_vi))
+    return _SUBJECTS_NFC.get(nfc(title_vi))
 
 
 def lookup_area(name_vi: str) -> str | None:
     """Return the curated English name for a ``lĩnh vực`` Vietnamese
-    name. NFC-normalises on both sides.
+    name. NFC-normalises on the lookup side; the table is pre-NFC at
+    module load.
     """
     if not name_vi:
         return None
-    table = {nfc(k): v for k, v in LEGAL_AREAS.items()}
-    return table.get(nfc(name_vi))
+    return _AREAS_NFC.get(nfc(name_vi))
 
 
 __all__ = [

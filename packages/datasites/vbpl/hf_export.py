@@ -22,7 +22,7 @@ columns:
 * **Identification + meta** -- ``doc_name`` (= ``item_id``), ``scope``
   (``trung_uong`` / ``dia_phuong``), ``source_url``, ``api_url``,
   ``title``, ``doc_type``, ``doc_number`` (document number),
-  ``issue_date`` (issue date), ``year``, ``issuing_body``
+  ``issue_date`` (issue date), ``year``, ``issuing_authority``
   (issuing agency), ``summary`` (summary). All flat, queryable
   without parsing JSON.
 * **Body + stats** -- ``markdown`` (NFC-normalised, Vietnamese tone
@@ -181,7 +181,7 @@ _DOCUMENT_SCHEMA = pa.schema([
     pa.field("doc_number",             pa.list_(pa.string()), nullable=True),
     pa.field("issue_date",       pa.string()),
     pa.field("year",                pa.int32()),
-    pa.field("issuing_body",    pa.string()),
+    pa.field("issuing_authority",    pa.string()),
     pa.field("summary",           pa.string()),
 
     # Body
@@ -248,7 +248,7 @@ def _project_record(rec: dict[str, Any]) -> dict[str, Any] | None:
 
     Field-level normalization (``strip_markdown_junk``,
     ``clean_title``, ``normalise_doc_number_list``,
-    ``normalise_issuing_body``, ...) is **not** done here -- the
+    ``normalise_issuing_authority``, ...) is **not** done here -- the
     extract Curator pipeline's ``NormalizerChainStage`` is the single
     source of truth (wiki/DATASITES.md §3.5 + ``cfg.extractor.normalizers`` in
     ``configs/default.yaml``). The HF export is a pure projection on
@@ -352,7 +352,7 @@ def _project_record(rec: dict[str, Any]) -> dict[str, Any] | None:
         "doc_number":          doc_number_value,
         "issue_date":    rec.get("issue_date"),
         "year":             _year_from(rec.get("issue_date")),
-        "issuing_body": rec.get("issuing_body"),
+        "issuing_authority": rec.get("issuing_authority"),
         "summary":        rec.get("summary"),
 
         # Body. ``markdown`` is None for shell_html-after-retry rows
@@ -462,7 +462,7 @@ def _synthesize_metadata_markdown(rec: dict[str, Any]) -> str:
     else:
         doc_number = _str_or_empty(raw_doc_number)
     legal_type = _str_or_empty(rec.get("legal_type"))
-    agency = _str_or_empty(rec.get("issuing_body"))
+    agency = _str_or_empty(rec.get("issuing_authority"))
     date = _str_or_empty(rec.get("issue_date"))
     trich = _str_or_empty(rec.get("summary"))
     if not (title or doc_number or agency or trich):
@@ -729,7 +729,7 @@ def _build_manifest(
         r.get("legal_area") or UNCATEGORISED_AREA for r in rows
     )
     by_agency = Counter(
-        (r.get("issuing_body") or "unknown") for r in rows
+        (r.get("issuing_authority") or "unknown") for r in rows
     )
     by_year = Counter(r["year"] for r in rows if r["year"] is not None)
     by_body_source = Counter(r["body_source"] or "unknown" for r in rows)
@@ -1196,7 +1196,7 @@ The parquet has three families of columns:
 | `doc_number` | list&lt;string&gt; (nullable) | Document number(s) as a list of canonical short forms (e.g. `["43/2026/NĐ-CP"]`). A small minority of vbpl rows pack several identifiers into one source cell separated by Vietnamese ` và ` ("and") or `,`; those ship as multi-element lists (e.g. `["142/2009/QĐ-TTg", "49/2012/QĐ-TTg"]`). Source-side cruft is stripped: leading legal-type words (`"Nghị quyết số: 528/2018/UBTVQH14"` → `["528/2018/UBTVQH14"]`), trailing annotations (`"109/2005/QĐ-BCA (A11)"` → `["109/2005/QĐ-BCA"]`, `"49/2007/TTLT-BTC-BGD ngày 18/5/2007"` → `["49/2007/TTLT-BTC-BGD"]`), and the legitimate `"Không số"` ("no number") sentinel is preserved. `null` for rows with no usable number. |
 | `issue_date` | string | Issue date, ISO `YYYY-MM-DD`. |
 | `year` | int32 | Year extracted from `issue_date`. |
-| `issuing_body` | string | Issuing agency (e.g. `"Chính phủ"`, `"Bộ Tài chính"`, `"Hội đồng nhân dân tỉnh A"`). |
+| `issuing_authority` | string | Issuing agency (e.g. `"Chính phủ"`, `"Bộ Tài chính"`, `"Hội đồng nhân dân tỉnh A"`). |
 | `summary` | string | Abstract / summary. |
 
 ### Body + stats

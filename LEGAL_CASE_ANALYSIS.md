@@ -138,7 +138,7 @@ already carries every column we need for the doc-coarse layer:
 | `jurisdiction` | `CẦN THƠ` |
 | `year` | `2021` |
 | `issue_date` | `2021-03-11` |
-| `issuing_body` | `TÒA ÁN NHÂN DÂN THÀNH PHỐ CẦN THƠ` |
+| `issuing_authority` | `TÒA ÁN NHÂN DÂN THÀNH PHỐ CẦN THƠ` |
 | `title` | `Bản án số: 38/2021/DS-PT` |
 | `subject` | `Tranh chấp hợp đồng đặt cọc` |
 | `markdown` | full body, ~18 KB |
@@ -172,7 +172,7 @@ canonical `extracted_json` yet (see §4.6).
 | L0 | `doc_type` | anle metadata | 2-class |
 | L1 | `case_type` | anle metadata | 6-class |
 | L2 | `doc_subtype` | anle metadata | 4-class |
-| L2 | `court_level`, `jurisdiction`, `year`, `issuing_body`, `issue_date` | anle metadata | 4 / 23 / int / 37 / date |
+| L2 | `court_level`, `jurisdiction`, `year`, `issuing_authority`, `issue_date` | anle metadata | 4 / 23 / int / 37 / date |
 | **L3 (primary)** | `phapdien_topic_top_k` | KB #1 phapdien đề-mục encoder vote | **42-class** official topics |
 | **L4 (primary)** | `phapdien_subject_top_k` | KB #1 phapdien đề-mục cosine top-K | **202-class** official subjects (đề mục) |
 | **L5 (secondary)** | `tnpl_broad_domain` | KB #2 tnpl vote | **6-class** (Civil / Criminal / Judicial / Commercial / Administrative / Other) |
@@ -272,7 +272,7 @@ tnpl_broad_domain_vi = "Dân sự"    tnpl_broad_domain_en = "Civil"
 |---|---|---|
 | `doc_name` | str | join key |
 | `doc_type`, `case_type`, `doc_subtype` | str | passthrough |
-| `court_level`, `jurisdiction`, `year`, `issue_date`, `issuing_body`, `doc_code`, `title`, `subject` | various | passthrough |
+| `court_level`, `jurisdiction`, `year`, `issue_date`, `issuing_authority`, `doc_code`, `title`, `subject` | various | passthrough |
 | `phapdien_topic_top_k` | json | **L3 — primary** |
 | `phapdien_subject_top_k` | json | **L4 — primary** |
 | `phapdien_primary_topic_number`, `phapdien_primary_topic_vi`, `phapdien_primary_topic_en` | int/str/str | **primary doc-level label** — topic+subject majority winner |
@@ -472,7 +472,7 @@ leads, tnpl block follows):
   "doc_subtype": "phuc_tham",    "court_level": "tinh",
   "jurisdiction": "CẦN THƠ",     "year": 2021,
   "issue_date": "2021-03-11",
-  "issuing_body": "TÒA ÁN NHÂN DÂN THÀNH PHỐ CẦN THƠ",
+  "issuing_authority": "TÒA ÁN NHÂN DÂN THÀNH PHỐ CẦN THƠ",
   "doc_code": "38/2021/DS-PT",
   "title": "Bản án số: 38/2021/DS-PT",
   "subject": "Tranh chấp hợp đồng đặt cọc",
@@ -567,7 +567,7 @@ The exact `phapdien_article_anchor` value comes from looking up the
 
 | Edge | From | To | Source |
 |---|---|---|---|
-| `decided_by` | Case | Court | `issuing_body` |
+| `decided_by` | Case | Court | `issuing_authority` |
 | `presided_by` | Case | Person | (TODO ORG-PERSON) |
 | `defendant_of`, `plaintiff_of` | Person | Case | (TODO ORG-PERSON) |
 | **`cites_article`** | **Case** | **Article** | **KB #1 — ARTICLE entities resolved via phapdien** |
