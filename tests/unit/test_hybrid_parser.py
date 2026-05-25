@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from packages.parser.base import ParserAlgorithm
-from packages.parser.hybrid import HybridParser
+from packages.parser.hybrid import HybridParser, lossy_score
 
 
 class _FakeLocal(ParserAlgorithm):
@@ -132,3 +132,135 @@ def test_build_parser_hybrid_requires_api_key(
 
     with pytest.raises(RuntimeError, match="NVIDIA_API_KEY"):
         build_parser(cfg)
+
+
+# --------------------------------------------------------------------- lossy_score
+
+
+def test_lossy_score_returns_zero_on_empty_input() -> None:
+    assert lossy_score("") == 0.0
+
+
+def test_lossy_score_is_low_on_healthy_vietnamese_text() -> None:
+    """Real Vietnamese legal prose scores in the p50 band (~0.016)."""
+    md = (
+        "TÒA ÁN NHÂN DÂN TỈNH TÂY NINH\n"
+        "Bản án số 32/2017/HS-PT ngày 07 tháng 4 năm 2017\n"
+        "Tòa án nhân dân tỉnh Tây Ninh xét xử phúc thẩm vụ án hình sự "
+        "thụ lý số 27/2017/TLPT-HS đối với bị cáo Đặng Đức H về tội "
+        "đánh bạc theo Khoản 1 Điều 248 Bộ luật Hình sự."
+    )
+    score = lossy_score(md)
+    assert score < 0.05, (
+        f"healthy Vietnamese should score below threshold; got {score:.3f}"
+    )
+
+
+def test_lossy_score_is_high_on_catastrophic_glyph_drop() -> None:
+    """Mode C garble: short lowercase ASCII fragments dominate."""
+    md = (
+        "QU N LÊ CHÂN do an T H GIA Vô T C TUY N "
+        "ra ng do an phá t v Vô T C TUY N "
+        "ra ng do an phá t v Vô T C TUY N "
+        "ra ng do an phá t v Vô T C TUY N"
+    )
+    score = lossy_score(md)
+    assert score > 0.05, (
+        f"catastrophic garble should score above threshold; got {score:.3f}"
+    )
+
+
+def test_lossy_score_blind_to_uppercase_anonymized_initials() -> None:
+    """Anonymized party names ("Đặng Đức H") are uppercase; must not trip."""
+    md = (
+        "bị cáo Đặng Đức H đã thừa nhận hành vi phạm tội.\n"
+        "Tại phiên tòa, bị cáo M và bị cáo V cùng khai báo "
+        "việc đã tham gia tổ chức đánh bạc cùng với bị cáo H."
+    )
+    score = lossy_score(md)
+    assert score < 0.05, (
+        f"uppercase initials must not inflate lossy_score; got {score:.3f}"
+    )
+
+
+def test_lossy_score_blind_to_tone_marked_short_words() -> None:
+    """Vietnamese 2-char tone-marked words (ở, mà, có) are not ASCII."""
+    md = (
+        "Nội dung vụ án có liên quan đến hành vi của bị cáo "
+        "ở quận M, mà cụ thể là tổ chức cờ bạc trái phép "
+        "theo quy định tại Điều 248 Bộ luật Hình sự."
+    )
+    score = lossy_score(md)
+    assert score < 0.05, score
+
+
+def test_hybrid_keeps_local_when_below_lossy_threshold() -> None:
+    """Healthy long markdown stays on local even with default lossy gate."""
+    local = _FakeLocal(
+        md=(
+            "TÒA ÁN NHÂN DÂN TỈNH TÂY NINH\n"
+            "Bản án số 32/2017/HS-PT ngày 07 tháng 4 năm 2017.\n"
+            "Tòa án nhân dân tỉnh Tây Ninh xét xử phúc thẩm vụ án "
+            "hình sự thụ lý số 27/2017/TLPT-HS đối với bị cáo Đặng "
+            "Đức H về tội đánh bạc theo Khoản 1 Điều 248 Bộ luật "
+            "Hình sự nước Cộng hòa xã hội chủ nghĩa Việt Nam."
+        )
+    )
+    nim = _FakeNim()
+    parser = HybridParser(local=local, nim=nim, max_lossy_score=0.05)
+
+    out = parser.parse(b"%PDF-1.4 ...")
+    assert out["parser_backend"] == "local"
+    assert nim.calls == 0
+    assert "local_lossy_score" in out
+    assert out["local_lossy_score"] < 0.05
+
+
+def test_hybrid_falls_back_on_lossy_local_output() -> None:
+    """Mode C garble: long but lossy markdown routes to NIM OCR."""
+    lossy_md = (
+        "QU N LÊ CHÂN do an T H GIA Vô T C TUY N "
+        "ra ng do an phá t v Vô T C TUY N "
+        "ra ng do an phá t v Vô T C TUY N "
+        "ra ng do an phá t v Vô T C TUY N"
+    )
+    local = _FakeLocal(md=lossy_md)
+    nim = _FakeNim(md="# OCR'd body\nClean Vietnamese after OCR.")
+    parser = HybridParser(local=local, nim=nim, max_lossy_score=0.05)
+
+    out = parser.parse(b"%PDF-1.4 ...")
+    assert out["parser_backend"] == "nim"
+    assert nim.calls == 1
+    # local_lossy_score is attached for audit; lossy md scores > 0.05.
+    assert out["local_lossy_score"] > 0.05
+
+
+def test_hybrid_lossy_branch_can_be_disabled() -> None:
+    """Setting max_lossy_score=1.0 disables the lossy fallback entirely."""
+    lossy_md = "QU N LÊ CHÂN do an T H GIA Vô T C TUY N ra ng do an phá t v"
+    local = _FakeLocal(md=lossy_md)
+    nim = _FakeNim(md="OCR body")
+    parser = HybridParser(local=local, nim=nim, max_lossy_score=1.0)
+
+    out = parser.parse(b"%PDF-1.4 ...")
+    # Even with high lossy_score, the gate is open, so local wins.
+    assert out["parser_backend"] == "local"
+    assert nim.calls == 0
+
+
+def test_build_parser_passes_max_lossy_score_from_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omegaconf import OmegaConf
+
+    from packages.common.schemas import PipelineCfg
+    from packages.parser.stage import build_parser
+
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-test-key")
+    cfg = OmegaConf.structured(PipelineCfg)
+    cfg.parser.runtime = "hybrid"
+    cfg.parser.max_local_lossy_score = 0.12
+
+    parser = build_parser(cfg)
+    assert isinstance(parser, HybridParser)
+    assert parser._max_lossy_score == 0.12

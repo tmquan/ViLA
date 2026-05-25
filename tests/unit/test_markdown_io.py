@@ -14,6 +14,8 @@ from packages.pipeline.io import (
     META_EXTENSION,
     MarkdownPerDocWriter,
     MarkdownReaderStage,
+    _jsonable,
+    _scrub_surrogates,
 )
 
 
@@ -97,3 +99,93 @@ def test_writer_drops_pdf_bytes(tmp_path: Path) -> None:
     )
     assert "pdf_bytes" not in meta
     assert "markdown" not in meta  # markdown lives in the .md file
+
+
+# --------------------------------------------------------------------- surrogate scrub
+
+
+def test_scrub_surrogates_passthrough_on_clean_string() -> None:
+    """Fast path: clean strings are returned as the SAME object (no copy)."""
+    s = "Tòa án nhân dân tỉnh Tây Ninh — Án lệ 1/2021"
+    assert _scrub_surrogates(s) is s
+
+
+def test_scrub_surrogates_handles_empty_string() -> None:
+    assert _scrub_surrogates("") == ""
+
+
+def test_scrub_surrogates_replaces_low_surrogate() -> None:
+    """The exact crash signature: a lone low surrogate U+DF58 in metadata."""
+    payload = "Đặng Đức\udf58H"
+    cleaned = _scrub_surrogates(payload)
+    assert cleaned == "Đặng Đức\ufffdH"
+    # Must survive UTF-8 encode (the crash's failure mode).
+    cleaned.encode("utf-8")
+
+
+def test_scrub_surrogates_replaces_high_and_low_surrogates() -> None:
+    # U+D800 (low end of high-surrogate range) + U+DFFF (top of low).
+    payload = "alpha\ud800beta\udfffgamma"
+    assert _scrub_surrogates(payload) == "alpha\ufffdbeta\ufffdgamma"
+
+
+def test_scrub_surrogates_is_idempotent() -> None:
+    once = _scrub_surrogates("x\udf58y")
+    twice = _scrub_surrogates(once)
+    assert once == twice == "x\ufffdy"
+    # Second call hits the fast path -- same object back.
+    assert _scrub_surrogates(once) is once
+
+
+def test_jsonable_scrubs_surrogates_in_string_fields() -> None:
+    """``_jsonable`` is the boundary every writer's meta path goes through."""
+    assert _jsonable("safe text") == "safe text"
+    assert _jsonable("with\udf58surrogate") == "with\ufffdsurrogate"
+    # Non-string types unaffected.
+    assert _jsonable(42) == 42
+    assert _jsonable(None) is None
+    # Nested structures recurse.
+    nested = {"title": "T\udf58A", "tags": ["clean", "dirt\udfffy"]}
+    assert _jsonable(nested) == {
+        "title": "T\ufffdA",
+        "tags": ["clean", "dirt\ufffdy"],
+    }
+
+
+def test_writer_survives_surrogate_in_metadata(tmp_path: Path) -> None:
+    """End-to-end: the exact crash scenario must produce a clean meta.json."""
+    df = pd.DataFrame(
+        {
+            "doc_name": ["DOC_SURR"],
+            "markdown": ["# clean body"],
+            # Lone low surrogate -- the precise failure mode from the
+            # 21:17 UTC crash on the live congbobanan parse.
+            "pdf_title": ["Bản án số 32\udf58/2017"],
+        }
+    )
+    task = DocumentBatch(task_id="t", dataset_name="anle", data=df)
+    writer = MarkdownPerDocWriter(path=str(tmp_path))
+    writer.setup(None)
+    writer.process(task)
+
+    import json
+    meta_text = (tmp_path / f"DOC_SURR{META_EXTENSION}").read_text(encoding="utf-8")
+    meta = json.loads(meta_text)
+    assert meta["pdf_title"] == "Bản án số 32\ufffd/2017"
+
+
+def test_writer_survives_surrogate_in_markdown_body(tmp_path: Path) -> None:
+    """Body-level surrogates must also be scrubbed (defensive)."""
+    df = pd.DataFrame(
+        {
+            "doc_name": ["DOC_BODY"],
+            "markdown": ["# Bản án\nNội dung\udf58 vụ án."],
+        }
+    )
+    task = DocumentBatch(task_id="t", dataset_name="anle", data=df)
+    writer = MarkdownPerDocWriter(path=str(tmp_path))
+    writer.setup(None)
+    writer.process(task)
+
+    md = (tmp_path / f"DOC_BODY{MARKDOWN_EXTENSION}").read_text(encoding="utf-8")
+    assert md == "# Bản án\nNội dung\ufffd vụ án."

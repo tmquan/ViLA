@@ -31,6 +31,14 @@ from packages.datasites.congbobanan.pipeline import (
     build_reduce_pipeline,
 )
 
+# Register site-specific normalizers (congbobanan_join_word_breaks,
+# congbobanan_join_soft_wraps, congbobanan_strip_page_noise) into the
+# global :data:`packages.extractor.normalizers.NORMALIZER_REGISTRY` so
+# the YAML chain in ``configs/default.yaml`` resolves them by name.
+# The eager import here covers both the driver process and remote
+# Ray workers (which import this package at actor setup time).
+from packages.datasites.congbobanan import normalizers as _normalizers  # noqa: F401
+
 __all__ = [
     "ALL_PIPELINES_ORDER",
     "PIPELINES",

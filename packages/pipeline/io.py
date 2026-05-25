@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,37 @@ META_EXTENSION = ".meta.json"
 MARKDOWN_EXTENSION = ".md"
 JSONL_EXTENSION = ".jsonl"
 PARQUET_EXTENSION = ".parquet"
+
+# Lone UTF-16 surrogates (the U+D800..U+DFFF range) are reserved for
+# UTF-16 codec use and are NOT valid characters in any well-formed
+# Unicode string. Python's str type accepts them (str is internally
+# code-point-oriented, not codec-validated) but UTF-8 forbids them at
+# encode time, so any ``str.encode("utf-8")`` or ``.write_text(...,
+# encoding="utf-8")`` on a surrogate-bearing string raises
+# UnicodeEncodeError. We see this in practice from upstream PDFs whose
+# /Info dict carries a malformed UTF-16BE field where one half of a
+# surrogate pair got dropped or corrupted in transit. ~1 row per
+# ~1M survived a 1.06M-doc parse before the writer crashed mid-run on
+# a low surrogate (U+DF58); the fix is to replace lone surrogates with
+# U+FFFD (REPLACEMENT CHARACTER, the Unicode-canonical "this codepoint
+# was unrepresentable" glyph) before encoding.
+_SURROGATE_RE = re.compile("[\ud800-\udfff]")
+_REPLACEMENT_CHAR = "\ufffd"
+
+
+def _scrub_surrogates(value: str) -> str:
+    """Replace lone UTF-16 surrogates with U+FFFD, leaving clean strings untouched.
+
+    Fast path: strings with no surrogates return the SAME object (no
+    copy, no allocation). Strings with one or more surrogates return a
+    new string with every U+D800..U+DFFF codepoint replaced by U+FFFD.
+
+    Idempotent: U+FFFD is outside the surrogate range, so a re-scrub
+    of an already-scrubbed string is a no-op.
+    """
+    if not value or _SURROGATE_RE.search(value) is None:
+        return value
+    return _SURROGATE_RE.sub(_REPLACEMENT_CHAR, value)
 
 
 # --------------------------------------------------------------------- writer
@@ -117,6 +149,17 @@ class MarkdownPerDocWriter(ProcessingStage[DocumentBatch, FileGroupTask]):
                 )
                 continue
 
+            # Scrub lone UTF-16 surrogates (would crash .write_text(...,
+            # encoding="utf-8")). The scrub is a no-op on clean input;
+            # we log iff it actually mutates the body so operators can
+            # audit which docs had body-level surrogates.
+            scrubbed = _scrub_surrogates(markdown)
+            if scrubbed is not markdown:
+                logger.warning(
+                    "doc_name=%s: scrubbed UTF-16 surrogate(s) from markdown "
+                    "body (replaced with U+FFFD)", doc_name,
+                )
+                markdown = scrubbed
             md_path.write_text(markdown, encoding="utf-8")
             meta = {k: _jsonable(v) for k, v in row.items() if k not in drop}
             meta_path.write_text(
@@ -136,10 +179,19 @@ class MarkdownPerDocWriter(ProcessingStage[DocumentBatch, FileGroupTask]):
 
 
 def _jsonable(value: Any) -> Any:
-    """Coerce pandas / numpy scalars to JSON-friendly Python types."""
+    """Coerce pandas / numpy scalars to JSON-friendly Python types.
+
+    String values are passed through :func:`_scrub_surrogates` so any
+    lone UTF-16 surrogate inherited from upstream PDF metadata is
+    replaced with U+FFFD before the value reaches ``json.dumps`` +
+    ``.encode("utf-8")``. The scrub is silent (operators audit by
+    grepping output files for U+FFFD) and is a no-op on clean strings.
+    """
     if value is None:
         return None
-    if isinstance(value, (str, int, float, bool)):
+    if isinstance(value, str):
+        return _scrub_surrogates(value)
+    if isinstance(value, (int, float, bool)):
         return value
     if isinstance(value, (list, tuple)):
         return [_jsonable(v) for v in value]

@@ -241,6 +241,22 @@ class ParserCfg:
     # Tuned for "image-only scan with a stray header/footer" vs
     # "real digital PDF" -- the latter almost always yields >>50 chars.
     min_local_chars: int = 50
+    # Second hybrid fallback gate (orthogonal to ``min_local_chars``):
+    # if the local parser's markdown scores above this on
+    # :func:`packages.parser.hybrid.lossy_score` -- i.e. the embedded
+    # font is so corrupted that lowercase 1-2-char ASCII glyph-drop
+    # fragments dominate the body -- route to NIM OCR. Calibrated
+    # against a 500-doc sample where the p94/p95 boundary sits at
+    # ~0.05 (~94% healthy, ~6% catastrophic). Set to 1.0 to disable
+    # this branch.
+    #
+    # Two distinct PDF-corruption regimes drive this:
+    # * **CMap-defect Mode D** (~3.4% of corpus): a handful of
+    #   Vietnamese-CID entries map to U+0020. Repaired upstream by
+    #   :mod:`packages.parser.cmap_healer`; rarely trips this score.
+    # * **Catastrophic Mode C** (~6%): missing / stub ToUnicode CMap
+    #   (legacy VnTime / VNI fonts). Healer cannot fix it; needs OCR.
+    max_local_lossy_score: float = 0.05
     preserve_tables: bool = True
     # nemoretriever-parse knobs. ``nim_tool`` is one of
     # ``markdown_bbox`` (default, best fidelity), ``markdown_no_bbox``

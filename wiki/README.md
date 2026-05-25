@@ -16,6 +16,7 @@ files without grepping the workspace first.
 | [`TERMINOLOGY.md`](TERMINOLOGY.md) | Vietnamese legal taxonomy (`legal_type` siblings, codification topics, glossary, document statuses, bilingual-presentation rule) | `packages/common/taxonomy.py`, `packages/common/terminology.py` |
 | [`ONTOLOGY.md`](ONTOLOGY.md) | Implementation-ready ontology freeze **v1.2.0** — classes, properties, axioms `AX-01..AX-18`, state machines, controlled vocabularies, identifier rules, JSON-LD context, AKN export profile | Postgres DDL, Pydantic / Zod models, KG node + edge types, JSON-LD context, AKN serialiser |
 | [`DATASITES.md`](DATASITES.md) | Datasite SoP — Family A (Curator + Ray), Family B (HTML crawler), hybrid (`vbpl`); five-pipeline chain; two-tier output rule (raw per-doc + 10 K-row parquet); HF publish + bilingual card; checklist for new sites | `packages/datasites/*`, `packages/pipeline/factories.py`, `packages/common/io.py`, `packages/common/runner.py` |
+| [`PARSING.md`](PARSING.md) | Vietnamese PDF parsing — Unicode `U+1EA0..U+1EF9` precomposed-vowel block, legacy TCVN3 / VnTime + VNI-Times encodings, ToUnicode CMap defects (Mode D `<CID> <0020>` heal), `lossy_score` detector for catastrophic Mode C garble, site normalizer chain order | `packages/parser/cmap_healer.py`, `packages/parser/pypdf.py`, `packages/parser/hybrid.py`, `packages/datasites/congbobanan/normalizers.py` |
 | [`EXTRACTION.md`](EXTRACTION.md) | Vietnamese legal NER + KB-grounding pipeline — 27-type entity schema (`metadata` / `maindata`), `cache_key` formula, prompt-version history, KB-grounding contract for `legal_dict` (phapdien) + `legal_term` (tnpl) | `packages/extractor/ner/` |
 | [`MODELS.md`](MODELS.md) | Four-model NER roster on NIM (`openai/gpt-oss-120b` canonical, plus Nemotron-3 and two Qwen MoE), deterministic sampling profile, per-model reasoning toggles | `packages/extractor/ner/client.py`, `configs/default.yaml` |
 | [`TIMELINE.md`](TIMELINE.md) | Date-anchored event-line projection of an NER record — `meta` / `main` swimlanes, `WhenAnchor` schema, F1–F5 relative-temporal families, Mermaid renderer | `packages/extractor/timeline/` |
@@ -31,9 +32,13 @@ fastest grounding via this order:
    implement that vocabulary.
 3. **`DATASITES.md`** — how raw corpora flow into the curated tables
    the ontology describes (five-pipeline chain, HF publish, checklist).
-4. **`EXTRACTION.md`** + **`MODELS.md`** — the NER stage that
+4. **`PARSING.md`** — drill-down on the `parse` stage's
+   Vietnamese-specific failure modes (legacy VnTime / VNI encodings,
+   ToUnicode CMap defects) and the `cmap_healer` + `lossy_score`
+   repair layer. Read on first encounter with a corrupted ban-án.
+5. **`EXTRACTION.md`** + **`MODELS.md`** — the NER stage that
    produces the entity records the projections below consume.
-5. **`TIMELINE.md`** + **`DEVELOPMENT.md`** — the two sibling
+6. **`TIMELINE.md`** + **`DEVELOPMENT.md`** — the two sibling
    projections of one NER record (date-axis vs phase-axis).
 
 ## Conventions used in every wiki doc

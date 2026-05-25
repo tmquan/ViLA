@@ -867,6 +867,7 @@ the 2017-06-13 verdict chains three statute references on the
 same date.
 
 ```mermaid
+%%{init: {"theme":"base", "themeVariables":{"cScale0":"#EF8D8D","cScaleLabel0":"#1F2937","cScale1":"#90A2CF","cScaleLabel1":"#1F2937","cScale2":"#BBD991","cScaleLabel2":"#1F2937","cScale3":"#D27FC8","cScaleLabel3":"#1F2937","cScale4":"#9BE4D8","cScaleLabel4":"#1F2937","cScale5":"#DFB380","cScaleLabel5":"#1F2937","cScale6":"#BEAEEF","cScaleLabel6":"#1F2937","cScale7":"#88CF85","cScaleLabel7":"#1F2937","cScale8":"#FD91B5","cScaleLabel8":"#1F2937","cScale9":"#94D3F8","cScaleLabel9":"#1F2937","cScale10":"#E8EDAB","cScaleLabel10":"#1F2937","cScale11":"#D587EA","cScaleLabel11":"#1F2937"}}}%%
 timeline
     title 12722 — Hình sự / Trộm cắp tài sản — Tòa án nhân dân huyện Tiền Hải, tỉnh Thái Bình
     section Logistics
@@ -891,7 +892,6 @@ timeline
     section Ambient
         development : 2 money, 3 statutes, 2 sentences
 ```
-
 ### 11.2 Civil — labour dispute with corporate defendant (`100096`)
 
 A civil labour-dispute case where the defendant is a company
@@ -902,6 +902,7 @@ plus the natural-person plaintiff on the filing event, while
 witnesses and the agency live on the static header instead.
 
 ```mermaid
+%%{init: {"theme":"base", "themeVariables":{"cScale0":"#EF8D8D","cScaleLabel0":"#1F2937","cScale1":"#90A2CF","cScaleLabel1":"#1F2937","cScale2":"#BBD991","cScaleLabel2":"#1F2937","cScale3":"#D27FC8","cScaleLabel3":"#1F2937","cScale4":"#9BE4D8","cScaleLabel4":"#1F2937","cScale5":"#DFB380","cScaleLabel5":"#1F2937","cScale6":"#BEAEEF","cScaleLabel6":"#1F2937","cScale7":"#88CF85","cScaleLabel7":"#1F2937","cScale8":"#FD91B5","cScaleLabel8":"#1F2937","cScale9":"#94D3F8","cScaleLabel9":"#1F2937","cScale10":"#E8EDAB","cScaleLabel10":"#1F2937","cScale11":"#D587EA","cScaleLabel11":"#1F2937"}}}%%
 timeline
     title 100096 — Dân sự / Tranh chấp hợp đồng lao động — Tòa án nhân dân huyện Long Thành
     section Logistics
@@ -924,7 +925,6 @@ timeline
     section Ambient
         development : 1 actors, 1 places, 1 money, 9 statutes, 4 terms
 ```
-
 ### 11.3 Criminal — theft with sentence + victims (`1019756`)
 
 The case the dual-lane bug was visible on. The 2021-08-13 verdict
@@ -937,6 +937,7 @@ prosecutor moved to the static `Logistics` header above; the
 witnesses and agencies likewise.
 
 ```mermaid
+%%{init: {"theme":"base", "themeVariables":{"cScale0":"#EF8D8D","cScaleLabel0":"#1F2937","cScale1":"#90A2CF","cScaleLabel1":"#1F2937","cScale2":"#BBD991","cScaleLabel2":"#1F2937","cScale3":"#D27FC8","cScaleLabel3":"#1F2937","cScale4":"#9BE4D8","cScaleLabel4":"#1F2937","cScale5":"#DFB380","cScaleLabel5":"#1F2937","cScale6":"#BEAEEF","cScaleLabel6":"#1F2937","cScale7":"#88CF85","cScaleLabel7":"#1F2937","cScale8":"#FD91B5","cScaleLabel8":"#1F2937","cScale9":"#94D3F8","cScaleLabel9":"#1F2937","cScale10":"#E8EDAB","cScaleLabel10":"#1F2937","cScale11":"#D587EA","cScaleLabel11":"#1F2937"}}}%%
 timeline
     title 1019756 — Hình sự / Trộm cắp tài sản — Tòa án nhân dân huyện Thanh Thủy, tỉnh Phú Thọ
     section Logistics
@@ -959,7 +960,6 @@ timeline
     section Ambient
         development : 2 actors, 5 places, 1 money, 5 statutes, 2 terms, 2 sentences
 ```
-
 ### 11.4 Sub-day events on the same date (`1334774`)
 
 A criminal "providing for prostitution" case where the narrative
@@ -972,6 +972,7 @@ absolute event on the same date (the regex pre-pass found both
 spans even though the LLM did not).
 
 ```mermaid
+%%{init: {"theme":"base", "themeVariables":{"cScale0":"#EF8D8D","cScaleLabel0":"#1F2937","cScale1":"#90A2CF","cScaleLabel1":"#1F2937","cScale2":"#BBD991","cScaleLabel2":"#1F2937","cScale3":"#D27FC8","cScaleLabel3":"#1F2937","cScale4":"#9BE4D8","cScaleLabel4":"#1F2937","cScale5":"#DFB380","cScaleLabel5":"#1F2937","cScale6":"#BEAEEF","cScaleLabel6":"#1F2937","cScale7":"#88CF85","cScaleLabel7":"#1F2937","cScale8":"#FD91B5","cScaleLabel8":"#1F2937","cScale9":"#94D3F8","cScaleLabel9":"#1F2937","cScale10":"#E8EDAB","cScaleLabel10":"#1F2937","cScale11":"#D587EA","cScaleLabel11":"#1F2937"}}}%%
 timeline
     title 1334774 — Hình sự / Chứa mại dâm — Tòa án nhân dân tỉnh Cao Bằng
     section Logistics
@@ -992,7 +993,6 @@ timeline
     section Ambient
         development : 3 places, 6 statutes, 1 terms
 ```
-
 The Mermaid view collapses the two relative events onto the same
 calendar day because the absolute anchor was a date-only entity
 (the NER cache did not extract `"22 giờ ngày 21/12/2022"` as a

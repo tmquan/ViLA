@@ -57,12 +57,30 @@ parser:
   # Cloud NIM chat model (OpenAI-compatible); do NOT use the old
   # ``nvidia/nemotron-parse`` slug -- that path 404s.
   model_id: nvidia/nemoretriever-parse
-  # hybrid: pypdf first, nemoretriever-parse fallback on image-only
-  # scans (via rasterization + OCR). Requires NVIDIA_API_KEY. Switch
-  # to `local` if you only have pypdf, or `nim` to force every PDF
-  # through nemoretriever-parse.
+  # hybrid: pypdf first, nemoretriever-parse fallback on either
+  # (a) image-only scans (gated by min_local_chars) or
+  # (b) catastrophic font corruption (gated by max_local_lossy_score).
+  # Requires NVIDIA_API_KEY. Switch to `local` if you only have
+  # pypdf, or `nim` to force every PDF through nemoretriever-parse.
   runtime: hybrid
   min_local_chars: 50
+  # Second hybrid fallback gate. ``lossy_score`` (in packages/parser/
+  # hybrid.py) measures the fraction of lowercase 1-2-char ASCII
+  # fragments embedded in body text -- the signature of catastrophic
+  # font corruption where most glyphs render as space (legacy
+  # VnTime / VNI / corrupted ToUnicode CMaps). 0.05 cleanly separates
+  # the healthy tail (~94% of congbobanan, p50=0.016) from the
+  # catastrophic band (~6%, p95+=0.088).
+  #
+  # NOT the same as the cmap_healer in packages/parser/pypdf.py:
+  # * cmap_healer fixes ``<CID> <0020>`` defects in OTHERWISE-healthy
+  #   ToUnicode CMaps (~3.4% of corpus); pypdf still extracts good
+  #   text, lossy_score stays low.
+  # * max_local_lossy_score fires when the CMap is missing entirely
+  #   (legacy non-Unicode fonts); pypdf returns mostly-empty
+  #   1-2-char fragments, lossy_score climbs above the threshold,
+  #   and NIM OCR takes over.
+  max_local_lossy_score: 0.05
   num_workers: 4
   nim_base_url: "${oc.env:NIM_BASE_URL,https://integrate.api.nvidia.com/v1}"
   nim_tool: markdown_bbox         # markdown_bbox | markdown_no_bbox | detection_only
@@ -74,19 +92,30 @@ parser:
   # already canonical and downstream consumers (extractor, embedder,
   # ad-hoc readers) see the cleaned text without re-running this work.
   #
-  # Order matters:
-  #   1. ``letter_spaced_collapse`` first -- relies on the 2+-space
-  #      word-boundary signal pypdf emits between letter-spaced glyphs
-  #      ("T h \u00f4 n g  t i n" -> "Th\u00f4ng tin").
-  #   2. ``vietnamese_text`` second -- ftfy + NFC + tone-mark + final
-  #      whitespace cleanup (collapses the 2-space boundaries to one).
+  # Order matters (see wiki/PARSING.md § 5.3):
+  #   1. ``letter_spaced_collapse`` -- universal 2+-space glyph-run
+  #      collapser ("T h \u00f4 n g  t i n" -> "Th\u00f4ng tin").
+  #   2. ``congbobanan_join_word_breaks`` -- site-specific
+  #      single-space mid-word rejoiner ("hu y\u1ec7n" -> "huy\u1ec7n");
+  #      runs BEFORE vietnamese_text so the syllable predicate sees
+  #      original NFC tone marks.
+  #   3. ``vietnamese_text`` -- ftfy + NFC + tone-mark + whitespace.
+  #   4. ``congbobanan_join_soft_wraps`` -- site-specific PDF
+  #      soft-wrap reflow (folds 4 visual lines back into 1 logical
+  #      paragraph); runs AFTER vietnamese_text so its terminal-
+  #      punctuation checks see canonical NFC quotes.
+  #   5. ``congbobanan_strip_page_noise`` -- site-specific per-page
+  #      bare-digit body-line stripper; runs LAST.
   #
   # Reuses the same registry-backed chain stage the extractor uses,
   # so each name resolves via packages.extractor.normalizers.NORMALIZER_REGISTRY.
   # An empty list explicitly disables parser-side normalisation.
   normalizers:
     - letter_spaced_collapse
+    - congbobanan_join_word_breaks
     - vietnamese_text
+    - congbobanan_join_soft_wraps
+    - congbobanan_strip_page_noise
 
 extractor:
   # Declarative normalizer chain (wiki/DATASITES.md §3.5). congbobanan ships

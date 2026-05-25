@@ -86,6 +86,56 @@ def read_timelines(path: Path) -> Iterator[CaseTimeline]:
 # --------------------------------------------------------------------- helpers
 
 
+#: Deterministic pastel palette built from a golden-ratio HSV walk
+#: (``S ∈ [0.20, 0.45]``, ``V ∈ [0.75, 1.00]``) seeded at ``0``. The
+#: same recipe is documented in the project's PCA-visualiser helper
+#: (``_label_to_rgb``); we precompute it here so the renderer stays
+#: self-contained and the on-disk Mermaid bytes do not depend on
+#: NumPy / PyTorch being importable at render time.
+#:
+#: 12 entries cover up to 12 Mermaid timeline sections; this
+#: renderer uses only the first three (Logistics / Development /
+#: Ambient), but the rest are kept aligned so future section
+#: additions inherit the same cadence.
+_PASTEL_PALETTE: tuple[str, ...] = (
+    "#EF8D8D",  # 0 — salmon       (Logistics)
+    "#90A2CF",  # 1 — periwinkle   (Development)
+    "#BBD991",  # 2 — light green  (Ambient)
+    "#D27FC8",  # 3 — orchid
+    "#9BE4D8",  # 4 — mint
+    "#DFB380",  # 5 — peach
+    "#BEAEEF",  # 6 — lavender
+    "#88CF85",  # 7 — sage
+    "#FD91B5",  # 8 — rose
+    "#94D3F8",  # 9 — sky
+    "#E8EDAB",  # 10 — pale chartreuse
+    "#D587EA",  # 11 — soft magenta
+)
+
+
+#: Dark grey for section labels — pastel backgrounds need a darker
+#: foreground than Mermaid's white default for legibility.
+_PASTEL_LABEL_FG = "#1F2937"
+
+
+def _palette_init_directive() -> str:
+    """Return the Mermaid ``%%{init:…}%%`` line that pins the palette.
+
+    Emitted as the first line of every rendered ``timeline`` block.
+    Each section's background (``cScaleN``) and label foreground
+    (``cScaleLabelN``) are stamped explicitly so the embedded SVG
+    looks the same in Cursor's preview, GitHub's renderer, and the
+    ``mmdc`` CLI — all of which honour ``themeVariables`` on
+    ``theme: base``.
+    """
+    parts: list[str] = []
+    for i, hex_bg in enumerate(_PASTEL_PALETTE):
+        parts.append(f'"cScale{i}":"{hex_bg}"')
+        parts.append(f'"cScaleLabel{i}":"{_PASTEL_LABEL_FG}"')
+    body = ",".join(parts)
+    return '%%{init: {"theme":"base", "themeVariables":{' + body + "}}}%%"
+
+
 #: Maximum characters for a single event label so the diagram stays
 #: readable. Mermaid does not soft-wrap inside a timeline entry.
 _MAX_LABEL_CHARS = 64
@@ -250,6 +300,7 @@ def render_mermaid_timeline(timeline: CaseTimeline) -> str:
     .. _jasonreisman/Timeline: https://github.com/jasonreisman/Timeline
     """
     out: list[str] = []
+    out.append(_palette_init_directive())
     out.append("timeline")
     out.append(f"    title {_case_title(timeline)}")
 

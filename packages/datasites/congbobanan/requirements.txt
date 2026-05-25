@@ -32,12 +32,18 @@ pyyaml>=6.0
 # --- parser (local PDF + NIM PDF rasterization) -------------------
 # pypdf: native text extraction for digital PDFs. Used by the local
 #        runtime and by the hybrid runtime's first pass.
+# pikepdf: low-level PDF surgery for the CMap healer
+#        (packages.parser.cmap_healer) -- patches broken Vietnamese
+#        ToUnicode entries in ~3.4% of the corpus where CIDs in
+#        Adobe's precomposed-vowel block [0x04A4, 0x04F5] are
+#        corrupted to map to U+0020 (space).
 # pypdfium2 + Pillow: page -> PNG raster for cfg.parser.runtime in
 #            {nim, hybrid}. nemoretriever-parse accepts images only,
 #            so the NIM path rasterizes every page via pypdfium2 and
 #            encodes PNG via Pillow before upload. Pure-wheel, no
 #            system-level poppler / mupdf dep.
 pypdf>=4.0
+pikepdf>=10.0
 pypdfium2>=4.24
 Pillow>=10.0
 

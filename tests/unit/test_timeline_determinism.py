@@ -816,8 +816,24 @@ class TestRender:
         return render_mermaid_timeline(tl)
 
     def test_timeline_render_starts_with_mermaid_keyword(self, rendered: str) -> None:
-        assert rendered.startswith("timeline\n")
+        # The first line is the pastel-palette init directive; the
+        # second line is the diagram keyword. Mermaid requires the
+        # ``%%{init:…}%%`` directive to precede the diagram type.
+        lines = rendered.splitlines()
+        assert lines[0].startswith("%%{init:")
+        assert '"theme":"base"' in lines[0]
+        assert lines[1] == "timeline"
         assert "    title doc_test" in rendered
+
+    def test_timeline_render_pastel_palette_pinned(self, rendered: str) -> None:
+        """The pastel palette is stamped into every render so the
+        embedded SVG matches across Cursor / GitHub / mmdc."""
+        # First three sections (Logistics / Development / Ambient)
+        # always get cScale0..2 hex stamps.
+        assert '"cScale0":"#EF8D8D"' in rendered
+        assert '"cScale1":"#90A2CF"' in rendered
+        assert '"cScale2":"#BBD991"' in rendered
+        assert '"cScaleLabel0":"#1F2937"' in rendered
 
     def test_timeline_render_has_logistics_and_development_sections(
         self, rendered: str,

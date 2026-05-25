@@ -82,3 +82,167 @@ def test_doc_modifier_works_with_curator_modify_pattern() -> None:
     df = batch.to_pandas()
     df["markdown"] = df["markdown"].apply(normalizer.modify_document)
     assert df.loc[0, "markdown"] == "TÒA ÁN hòa bình"
+
+
+# ----------------------------------------------------- u-a diphthong
+
+
+def test_ua_diphthong_lowercase_to_modern() -> None:
+    # New: tone on head u; old: tone on tail a. Vendored from
+    # undertheseanlp/text_normalization rules.json.
+    cases = {
+        "muà xuân": "mùa xuân",
+        "thuà nhận": "thùa nhận",      # u-a rule fires; semantics
+                                       # belong to the dictionary layer
+        "uá vàng": "úa vàng",
+        "vuả mặt": "vủa mặt",
+        "muã": "mũa",
+        "muạ": "mụa",
+    }
+    for old, new in cases.items():
+        got = normalize_text(old)
+        assert got == new, f"{old!r} -> got {got!r}, expected {new!r}"
+
+
+def test_ua_diphthong_all_caps_letterhead() -> None:
+    # ALLCAPS letterhead pattern (court headings).
+    assert normalize_text("MUÀ XUÂN") == "MÙA XUÂN"
+
+
+# ----------------------------------------------------- qu- exemption
+
+
+def test_qu_initial_uy_not_rewritten() -> None:
+    """``Quỳnh``, ``quỳ``, ``quý`` keep tone on the rime vowel."""
+    cases = [
+        "Quỳnh là tên thường gặp",
+        "Anh ấy quỳ xuống xin lỗi",
+        "đồ quý giá",
+        "Quý vị",
+        "thầy quở trách",      # qu + ở (not a covered diphthong)
+        "QUỲNH HOA",
+        "QUÝ I/2024",
+    ]
+    for text in cases:
+        assert normalize_text(text) == text, (
+            f"qu-initial syllable was wrongly rewritten: "
+            f"{text!r} -> {normalize_text(text)!r}"
+        )
+
+
+def test_qu_initial_ua_not_rewritten() -> None:
+    """``quà``, ``quá``, ``quả``, ``quã``, ``quạ`` keep tone on a."""
+    cases = [
+        "tặng quà sinh nhật",
+        "quá khứ và hiện tại",
+        "quả táo đỏ",
+        "Quạ kêu trong đêm",
+        "QUÀ TẶNG ĐẶC BIỆT",
+    ]
+    for text in cases:
+        assert normalize_text(text) == text, (
+            f"qu-initial ua syllable was wrongly rewritten: "
+            f"{text!r} -> {normalize_text(text)!r}"
+        )
+
+
+def test_uy_after_other_consonants_still_rewritten() -> None:
+    # The qu- exemption is q-specific. ``th``, ``l``, ``t``, ``h``
+    # initials with old-orthography diphthongs still rewrite.
+    cases = {
+        "huỳnh đệ": "hùynh đệ",        # h + uỳ -> h + ùy
+        "luỳ tre xanh": "lùy tre xanh",
+        "tuỷ sống": "tủy sống",
+    }
+    for old, new in cases.items():
+        assert normalize_text(old) == new, (
+            f"{old!r} -> got {normalize_text(old)!r}, expected {new!r}"
+        )
+
+
+# ----------------------------------------------------- word variants
+
+
+def test_word_variant_cong_ti_to_cong_ty() -> None:
+    assert normalize_text("công ti TNHH ABC") == "công ty TNHH ABC"
+    assert normalize_text("Công ti cổ phần") == "Công ty cổ phần"
+    assert normalize_text("CÔNG TI XYZ") == "CÔNG TY XYZ"
+
+
+def test_word_variant_li_to_ly() -> None:
+    assert normalize_text("lí do") == "lý do"
+    assert normalize_text("Lí luận") == "Lý luận"
+    assert normalize_text("PHÁP LÍ") == "PHÁP LÝ"
+    # Inside a word: ``lít`` must NOT decay to ``lýt``.
+    assert normalize_text("một lít sữa") == "một lít sữa"
+    assert normalize_text("ăn líp ba ga") == "ăn líp ba ga"
+
+
+def test_word_variant_xay_bay_gay() -> None:
+    assert normalize_text("Đã xẩy ra việc") == "Đã xảy ra việc"
+    assert normalize_text("bẩy giờ sáng") == "bảy giờ sáng"
+    assert normalize_text("Cây gẫy cành") == "Cây gãy cành"
+
+
+def test_word_variant_noop_lay_bay_reduplication() -> None:
+    """``lẩy bẩy`` is the canonical reduplication; must not decay."""
+    assert normalize_text("Tay chân run lẩy bẩy") == "Tay chân run lẩy bẩy"
+    assert normalize_text("Lẩy bẩy vì sợ") == "Lẩy bẩy vì sợ"
+
+
+def test_word_variant_noop_tham_cong_tiec_viec() -> None:
+    """``tham công tiếc việc`` set phrase preserved as a unit."""
+    assert (
+        normalize_text("Anh ấy tham công tiếc việc")
+        == "Anh ấy tham công tiếc việc"
+    )
+
+
+def test_word_variants_compose_with_tone_rewrite() -> None:
+    """Tone-mark + word-variant passes compose correctly."""
+    # ``hoà`` -> ``hòa`` (tone), ``công ti`` -> ``công ty`` (word).
+    assert (
+        normalize_text("Công ti hoà bình lí tưởng")
+        == "Công ty hòa bình lý tưởng"
+    )
+
+
+# ----------------------------------------------------- upstream parity
+
+
+def test_upstream_rules_json_parity() -> None:
+    """Every right-hand-side in undertheseanlp/rules.json round-trips.
+
+    Keeps the vendored data set explicit: if upstream ever ships a new
+    rule (e.g. fixes a missing tone-mark variant), this test pins the
+    set of covered cases so the gap is visible.
+    """
+    # Mirror of github.com/undertheseanlp/text_normalization/rules.json
+    # (master @ 2026-05). LEFT = old / variant, RIGHT = canonical.
+    upstream = {
+        "oà": "òa", "oá": "óa", "oả": "ỏa", "oã": "õa", "oạ": "ọa",
+        "oè": "òe", "oé": "óe", "oẻ": "ỏe", "oẽ": "õe", "oẹ": "ọe",
+        "uỳ": "ùy", "uý": "úy", "uỷ": "ủy", "uỹ": "ũy", "uỵ": "ụy",
+        "uà": "ùa", "uá": "úa", "uả": "ủa", "uã": "ũa", "uạ": "ụa",
+        "công ti": "công ty",
+        "lí": "lý",
+        "xẩy": "xảy",
+        "bảy": "bảy",                   # bảy -> bảy (canonical fixpoint)
+        "gãy": "gãy",                   # gãy -> gãy (canonical fixpoint)
+    }
+    for variant, canonical in upstream.items():
+        # Test as a standalone word with a leading non-qu consonant
+        # so the rewrite actually fires (qu- exemption excluded).
+        if " " in variant:
+            sentence = f"Đây là {variant} hoạt động"
+            expected = f"Đây là {canonical} hoạt động"
+        elif variant[0] in "ou":
+            sentence = f"Từ m{variant} là gì"
+            expected = f"Từ m{canonical} là gì"
+        else:
+            sentence = f"{variant} là từ"
+            expected = f"{canonical} là từ"
+        assert normalize_text(sentence) == expected, (
+            f"upstream rule {variant!r} -> {canonical!r} not honoured: "
+            f"got {normalize_text(sentence)!r}"
+        )

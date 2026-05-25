@@ -90,7 +90,29 @@ class PypdfParser(ParserAlgorithm):
 
         import pypdf
 
-        reader = pypdf.PdfReader(io.BytesIO(data))
+        from packages.parser.cmap_healer import heal_pdf_bytes
+
+        # Heal broken Vietnamese ToUnicode CMap entries before pypdf
+        # tries to decode glyphs. ~3-5% of the congbobanan / vbpl
+        # corpus has one or more <CID> <0020> entries in the Adobe
+        # Vietnamese precomposed-vowel block; without the heal,
+        # pypdf drops those glyphs as spaces ("đấu" -> "đ u"). The
+        # heal is a no-op when no such corruption exists and only
+        # incurs pikepdf inspection overhead.
+        try:
+            healed, patches = heal_pdf_bytes(data)
+        except Exception as exc:
+            logger.warning(
+                "PypdfParser: cmap_healer raised %s: %s; "
+                "falling back to raw bytes", type(exc).__name__, exc,
+            )
+            healed, patches = data, []
+        if patches:
+            logger.debug(
+                "PypdfParser: healed %d Vietnamese CMap entries", len(patches),
+            )
+
+        reader = pypdf.PdfReader(io.BytesIO(healed))
         pages: list[dict[str, Any]] = []
         md_parts: list[str] = []
         for i, page in enumerate(reader.pages, start=1):
@@ -102,7 +124,17 @@ class PypdfParser(ParserAlgorithm):
             pages.append({"page_number": i, "markdown": md, "blocks": []})
             if md:
                 md_parts.append(f"## Page {i}\n\n{md}")
-        return {"pages": pages, "markdown": "\n\n".join(md_parts), "confidence": None}
+        result = {
+            "pages": pages,
+            "markdown": "\n\n".join(md_parts),
+            "confidence": None,
+        }
+        if patches:
+            # Surface the heal count for downstream auditing /
+            # metrics; the field is opt-in for any consumer that
+            # wants to track CMap repair coverage.
+            result["cmap_patches"] = len(patches)
+        return result
 
     @staticmethod
     def _parse_docx(data: bytes) -> dict[str, Any]:

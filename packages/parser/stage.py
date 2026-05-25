@@ -74,10 +74,15 @@ def build_parser(cfg: Any) -> ParserAlgorithm:
     * ``"nim"``     -- nemotron-parse NIM only. Requires
       ``NVIDIA_API_KEY``.
     * ``"hybrid"``  (default) -- pypdf first, nemotron-parse fallback
-      when the local path returns fewer than
-      ``cfg.parser.min_local_chars`` characters. Covers image-only /
-      scan-only PDFs without paying NIM on the 90%+ of documents
-      pypdf can handle natively.
+      on either of two failure modes:
+        (a) local output below ``cfg.parser.min_local_chars`` chars
+            (image-only / scan-only PDFs), or
+        (b) ``lossy_score`` above ``cfg.parser.max_local_lossy_score``
+            (catastrophic font corruption -- the document is long
+            enough but mostly unreadable; ~6% of the congbobanan
+            corpus).
+      Covers both failure modes without paying NIM on the ~94% of
+      documents pypdf can handle natively.
     """
     runtime = str(cfg.parser.runtime).lower()
     if runtime == "local":
@@ -89,6 +94,9 @@ def build_parser(cfg: Any) -> ParserAlgorithm:
             local=PypdfParser(),
             nim=_build_nemotron(cfg),
             min_chars=int(cfg.parser.get("min_local_chars", 50)),
+            max_lossy_score=float(
+                cfg.parser.get("max_local_lossy_score", 0.05),
+            ),
         )
     raise ValueError(
         f"unknown parser runtime: {runtime!r}; "

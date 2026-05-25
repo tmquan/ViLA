@@ -669,9 +669,9 @@ flowchart TB
     O --> O_main
     O --> S
 
-    classDef header  fill:#1f2d3d,stroke:#0d1b2a,color:#ffffff;
-    classDef phase   fill:#264653,stroke:#1f2d3d,color:#ffffff;
-    classDef introduced fill:#2a9d8f,stroke:#1d6f64,color:#ffffff;
+    classDef header     fill:#EF8D8D,stroke:#A85F5F,color:#1F2937;
+    classDef phase      fill:#90A2CF,stroke:#5B6E9C,color:#1F2937;
+    classDef introduced fill:#BBD991,stroke:#7E9D5B,color:#1F2937;
 ```
 
 The ribbon reads top-to-bottom: each `phase` node is followed by
