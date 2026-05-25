@@ -1,30 +1,44 @@
-# ViLA Datasite SoP — `anle.toaan.gov.vn` audit + reusable recipe
+# ViLA Datasite SoP — Curator pipelines, HF publish, datasite checklist
 
-> Authoritative SoP (Standard Operating Procedure) for every new
-> ViLA datasite, distilled from the reference implementation under
-> `packages/datasites/anle/`. Treat this
-> file as the *checklist* a new datasite must satisfy before its
-> `--pipeline all` is green-lit for nightly cron and HF publish.
->
-> Scope: **all three datasite shapes** ViLA ships today.
->
-> * **Family A — NeMo Curator multi-stage** (`anle`, `congbobanan`).
->   PDF / DOCX source → five Curator pipelines on Ray. This is the
->   primary recipe; §§1–4 + §8–§10 describe it end-to-end.
-> * **Family B — HTML crawler** (`pbgdpl`, `phapdien`,
->   `thuvienphapluat_tnpl`). HTML-only Q&A / tree / terminology
->   surfaces with no PDF / OCR step; in-process workers + thread pool,
->   no Ray. §13 describes the harvester pattern.
-> * **Hybrid** (`vbpl`). Family-B-style `harvest → detail → parse →
->   extract` in-process (Playwright-driven), then Family-A-style
->   `embed → reduce` through the same Curator stages on Ray. §13.4
->   describes the hybrid wiring.
->
-> Every site — regardless of family — ships the same five-stage
-> conceptual flow on the wire: **download → parse → extract → embed
-> → reduce → HF publish**. Only the orchestration backend (Curator-
-> on-Ray vs in-process) and the stage names (`download` vs
-> `harvest`/`detail`) change.
+> **Source of truth for** `packages/datasites/*`,
+> `packages/pipeline/factories.py`, `packages/common/io.py`
+> (shard-sizing constants), `packages/common/runner.py` (CLI
+> bootstrap), and `packages/datasites/*/hf_export.py` +
+> `push_to_hf.py`.
+> **Status**: stable; six datasites in production (`anle`,
+> `congbobanan`, `pbgdpl`, `phapdien`, `thuvienphapluat_tnpl`, `vbpl`).
+> Implementation-status caveats are flagged inline (notably the §3.5
+> two-tier output rule, partially landed as of May 2026).
+> **Siblings**: [`TERMINOLOGY.md`](TERMINOLOGY.md) (column-name rule
+> at § 3.4 keys off the bilingual-presentation rule),
+> [`ONTOLOGY.md`](ONTOLOGY.md) (the ontology the curated tables
+> populate).
+
+Authoritative Standard Operating Procedure for every ViLA datasite,
+distilled from the reference implementation under
+`packages/datasites/anle/`. Treat this file as the **checklist** a new
+datasite must satisfy before its `--pipeline all` is green-lit for
+nightly cron and HF publish.
+
+Scope — **all three datasite shapes** ViLA ships today:
+
+* **Family A — NeMo Curator multi-stage** (`anle`, `congbobanan`).
+  PDF / DOCX source → five Curator pipelines on Ray. This is the
+  primary recipe; §§1–4 + §8–§10 describe it end-to-end.
+* **Family B — HTML crawler** (`pbgdpl`, `phapdien`,
+  `thuvienphapluat_tnpl`). HTML-only Q&A / tree / terminology
+  surfaces with no PDF / OCR step; in-process workers + thread pool,
+  no Ray. §13 describes the harvester pattern.
+* **Hybrid** (`vbpl`). Family-B-style `harvest → detail → parse →
+  extract` in-process (Playwright-driven), then Family-A-style
+  `embed → reduce` through the same Curator stages on Ray. §13.4
+  describes the hybrid wiring.
+
+Every site — regardless of family — ships the same five-stage
+conceptual flow on the wire: **download → parse → extract → embed
+→ reduce → HF publish**. Only the orchestration backend (Curator-
+on-Ray vs in-process) and the stage names (`download` vs
+`harvest`/`detail`) change.
 
 ## 0. TL;DR — the contract every datasite must satisfy
 

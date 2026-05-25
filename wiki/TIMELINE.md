@@ -1,14 +1,24 @@
-# TIMELINE — case-content visual analytics
+# Case Timeline — date-axis projection (`packages/extractor/timeline`)
+
+> **Source of truth for** `packages/extractor/timeline/` — the
+> date-anchored event-line projection of each ban-án's NER record.
+> **Status**: production. `schema_version = v2` and
+> `builder_version = v2` add time-of-day support and the
+> relative-temporal pre-pass (§ 3a); pinned on the 140-doc canonical
+> NER pass (§ 10).
+> **Siblings**: [`EXTRACTION.md`](EXTRACTION.md) (the upstream NER
+> record this projection consumes), [`DEVELOPMENT.md`](DEVELOPMENT.md)
+> (the *phase*-axis sibling projection of the same NER record).
 
 Stand-alone spec for `packages/extractor/timeline/`. The package
-projects each ban-án's NER record onto two parallel swimlanes of
-dated events ready to render in any timeline / Gantt / event-log
-visualiser. No further LLM call; pure deterministic function of the
-upstream NER cache record + the source markdown.
+projects each ban-án's NER record onto a **single chronological
+lane** of dated events plus a static **logistics header**, ready
+to render in any timeline / Gantt / event-log visualiser. No
+further LLM call; pure deterministic function of the upstream NER
+cache record + the source markdown.
 
-This document is the source-of-truth contract. Any change to
-schema field names, builder logic, or determinism rules must land
-here in the same commit.
+Any change to schema field names, builder logic, or determinism rules
+must land here in the same commit as the code change.
 
 ## 1. Goal & non-goals
 
@@ -29,33 +39,51 @@ etc.).
 * Not a coreference resolver — actors are the verbatim entity
   mentions; same-person mentions are not collapsed across events.
 
-## 2. Two tracks per case (the meta / main split)
+## 2. Logistics header + development arc
 
-The timeline mirrors the NER `metadata` / `maindata` partition:
+Each callout's lane is determined by the NER section of its source
+entity (see `wiki/EXTRACTION.md § 4`):
 
-| Track | Vietnamese | Contains | Drives |
-|---|---|---|---|
-| `meta` (procedural) | lịch sử & hậu cần vụ án | Filings, hearings, verdicts, sentences | The court-machinery swimlane |
-| `main` (substantive) | nội dung vụ án | Alleged facts, parties, money, locations, statutes, terms | The case-content swimlane |
+| NER section | Where it goes | What it represents |
+|---|---|---|
+| `METADATA_TYPES` (`case_number`, `per_judge`, `per_prosecutor`, `per_lawyer`, `per_witness`, `org_court`, `org_agency`) | `case` (`CaseHeader`) | **Logistics** — the static header information about *how* the case is processed. No date, no chronology. |
+| `MAINDATA_TYPES` (`per_*` / `org_*` parties, `loc_*`, `date`, `date_relative`, `money`, `id_number`, `plate_number`, `statute_ref`, `legal_term`, `crime`, `sentence_*`) | `events` (`TimelineEvent` list) | **Development arc** — how the case substantively unfolds across time. The chronological lane. |
 
-Each track carries:
+The event-kind classifier (`filing` / `hearing` / `verdict` /
+`sentence` / `fact` / `unknown`) labels each row but does **not**
+decide the lane. Every event lives on the same single lane,
+labelled by the cue phrases near its date anchor.
 
-1. An ordered list of **dated events** sorted by ISO date.
-2. An optional **ambient bucket** — one event holding every entity
-   of that track's section that could not be anchored to any date
-   in the source. Ambient is always rendered last (or pinned to a
-   "no date" lane in the UI).
+Each timeline carries:
 
-Routing rule (`packages/extractor/timeline/schema.py`):
+1. **`case`** — `CaseHeader`, the full logistics roster (case
+   number, court, judges, prosecutors, lawyers, witnesses,
+   agencies, parties). Aggregated once per doc; deduped by text;
+   no dates.
+2. **`events`** — the chronological list of dated events on the
+   single lane, sorted by `WhenAnchor.sort_key`. Each event
+   carries only MAINDATA-typed callouts.
+3. **`ambient`** — an optional single `TimelineEvent` aggregating
+   MAINDATA entities the builder could not anchor to any date in
+   the source. Procedural personnel never enter the ambient
+   bucket — they always feed the case header.
 
-| Event kind | Track |
-|---|---|
-| `filing`, `hearing`, `verdict`, `sentence` | `meta` |
-| `fact`, `unknown` | `main` |
-| `ambient` | split by NER `section_for(entity.type)` |
+Routing rule (`packages/extractor/timeline/schema.py`,
+`build._build_event` and `build._build_case_header`):
 
-This keeps the partition disjoint and exhaustive. The unit test
-`tests/unit/test_timeline_determinism.py::TestTrackForKind` pins it.
+| Entity section | Destination | Kind matters? |
+|---|---|---|
+| `METADATA_TYPES` | `CaseHeader` | No (kind is descriptive). |
+| `MAINDATA_TYPES` (anchored to a date) | `events[i]` callouts | Kind is the row label. |
+| `MAINDATA_TYPES` (not anchored) | `ambient` | No. |
+| Cluster with only METADATA members | dropped (header keeps the personnel) | No. |
+
+This keeps the partition disjoint, exhaustive, and free of the
+old "track-by-event-kind" misrouting that dragged substantive
+callouts (crime, statute_ref, sentence_*) onto the procedural
+lane whenever a verdict or hearing classified. The unit test
+`tests/unit/test_timeline_determinism.py::test_logistics_in_header_only`
+pins it.
 
 ## 3. Output schema
 
@@ -63,8 +91,8 @@ This keeps the partition disjoint and exhaustive. The unit test
 
 ```jsonc
 {
-  "schema_version":   "v2",          // shape contract — v2 adds time-of-day + relative-temporal
-  "builder_version":  "v2",          // algorithm contract — v2 adds the relative pre-pass
+  "schema_version":   "v3",          // shape contract — v3 collapses meta/main into one lane
+  "builder_version":  "v3",          // algorithm contract — v3 routes by section, not kind
 
   "doc_name":              "1030573",
   "source_cache_key":      "22ec260f07dbf65a02348bb6b5fa16f4",
@@ -73,18 +101,19 @@ This keeps the partition disjoint and exhaustive. The unit test
   "source_input_text_hash":"88f59dd37bf4812a9539a929c8f966cf",
   "built_at":              "2026-05-25T00:00:00Z",
 
-  "case":     CaseHeader,            // static identifiers
-  "meta":     TimelineTrack,         // procedural swimlane
-  "main":     TimelineTrack,         // substantive swimlane
-  "outcome":  CaseOutcome,           // operative ruling
-  "stats":    TimelineStats          // per-track + total counts
+  "case":     CaseHeader,                // logistics roster (no dates)
+  "events":   [TimelineEvent, ...],      // dated development arc (single lane)
+  "ambient":  TimelineEvent | null,      // un-anchored maindata bucket
+  "outcome":  CaseOutcome,               // operative ruling
+  "stats":    TimelineStats              // counts over the single lane
 }
 ```
 
 ### 3.2 `CaseHeader`
 
-The static card shown above the swimlanes — identifiers and rosters
-that don't change across events:
+The static logistics card — identifiers and rosters that don't
+change across events. Holds every `METADATA_TYPES` mention deduped
+by text plus the substantive parties from the maindata partition:
 
 ```jsonc
 {
@@ -95,6 +124,8 @@ that don't change across events:
   "judges":           ["Bà Tăng Trần Quỳnh Phương"],
   "prosecutors":      ["Ông Trần Thanh Thuận - Kiểm sát viên"],
   "lawyers":          [],
+  "witnesses":        [{ "kind": "person", "type": "per_witness", "role": "witness", "text": "Anh Hoàng Bá H" }],
+  "agencies":         ["Công an huyện Tiền Hải"],
   "parties": {
     "defendants": [{ "kind": "person", "type": "per_defendant", "role": "defendant", "text": "Nguyễn Văn A" }],
     "plaintiffs": [],
@@ -103,24 +134,18 @@ that don't change across events:
 }
 ```
 
-### 3.3 `TimelineTrack`
+The header builder walks both `record.metadata` (the LLM's
+metadata partition) AND any METADATA-typed entity surfaced by the
+cluster pre-pass (i.e. that the locator placed near a date in the
+source); both flows feed the same dedup. Witness mentions reuse
+the :class:`Actor` model with `role = "witness"` so the same
+shape can describe header witnesses and event-level parties.
+
+### 3.3 `TimelineEvent`
 
 ```jsonc
 {
-  "track":   "meta" | "main",
-  "events":  [TimelineEvent, ...],   // dated events, sorted by sort_key
-  "ambient": TimelineEvent | null,   // un-anchored entities for this track
-  "n_events": <int>,
-  "n_dated":  <int>
-}
-```
-
-### 3.4 `TimelineEvent`
-
-```jsonc
-{
-  "event_id":   "1030573:M002",      // <doc>:<M|X>NNN ; M=meta, X=main, A=ambient
-  "track":      "meta",              // mirror of parent track for flat exports
+  "event_id":   "1030573:E002",      // <doc>:E### (or :EA00 for the ambient bucket)
   "when": {
     "iso":          "2018-06-01",          // YYYY-MM-DD when fully resolved
     "iso_partial":  null,                  // YYYY-MM or YYYY when partial
@@ -137,9 +162,9 @@ that don't change across events:
     "direction":        null,
     "iso_max":          null
   },
-  "kind":       "filing",            // EventKind literal
+  "kind":       "filing",            // EventKind literal — descriptive label only
 
-  "actors":     [Actor, ...],        // parties / personnel near this date
+  "actors":     [Actor, ...],        // MAINDATA parties only (defendant/plaintiff/victim)
   "places":     [Place, ...],        // loc_* near this date
   "money":      [MoneyRef, ...],
   "statutes":   [StatuteRef, ...],   // KB-grounded when linked_anchor != null
@@ -153,14 +178,21 @@ that don't change across events:
 }
 ```
 
-### 3.5 `Actor` / `Place` / `MoneyRef` / `StatuteRef` / `TermRef` / `SentenceRef`
+The `actors` list is constrained at build time to the MAINDATA
+party triple (`per_defendant` / `per_plaintiff` / `per_victim` and
+the matching `org_*` set). Procedural personnel never appear here
+— they are aggregated into `case.judges` / `prosecutors` /
+`lawyers` / `witnesses` / `agencies` instead.
+
+### 3.4 `Actor` / `Place` / `MoneyRef` / `StatuteRef` / `TermRef` / `SentenceRef`
 
 ```jsonc
-Actor      = { "role": "defendant" | "plaintiff" | "victim" | "judge" |
-                       "prosecutor" | "lawyer" | "witness" | "court" | "agency",
+Actor      = { "role": "defendant" | "plaintiff" | "victim" | "witness",
                "kind": "person" | "organization",
-               "type": "per_defendant" | "org_court" | ...,   // original NER type id
+               "type": "per_defendant" | "per_witness" | ...,   // original NER type id
                "text": "Nguyễn Văn A" }
+//             role="witness" appears only inside CaseHeader.witnesses;
+//             event-level actors are constrained to the substantive triple.
 
 Place      = { "type": "loc_province" | "loc_district" |
                        "loc_commune"  | "loc_address",
@@ -180,7 +212,7 @@ SentenceRef = { "kind": "prison" | "fine",
                 "text": "12 năm tù" }
 ```
 
-### 3.6 `CaseOutcome` and `TimelineStats`
+### 3.5 `CaseOutcome` and `TimelineStats`
 
 ```jsonc
 CaseOutcome = {
@@ -190,13 +222,9 @@ CaseOutcome = {
 }
 
 TimelineStats = {
-  "n_events":            <int>,   // total = meta + main, dated + ambient
-  "n_dated":             <int>,
-  "n_ambient":           <int>,   // 0..2 (one per track at most)
-  "n_meta_events":       <int>,
-  "n_meta_dated":        <int>,
-  "n_main_events":       <int>,
-  "n_main_dated":        <int>,
+  "n_events":            <int>,   // total = dated events + ambient (0 or 1)
+  "n_dated":             <int>,   // events with a non-null ``when``
+  "n_ambient":           <int>,   // 0 or 1 (single bucket post-v3)
   "n_actors":            <int>,
   "n_places":            <int>,
   "n_money":             <int>,
@@ -212,6 +240,10 @@ TimelineStats = {
   "n_relative_unresolved": <int>  // of which were left as raw text in the ambient bucket
 }
 ```
+
+The pre-v3 per-lane counters (`n_meta_events`, `n_meta_dated`,
+`n_main_events`, `n_main_dated`) are gone — there is no longer a
+lane partition to count.
 
 ## 3a. Relative temporal expressions and time-of-day resolution
 
@@ -350,7 +382,8 @@ is itself deterministic) and three knobs:
 
 | Knob | Where | Effect |
 |---|---|---|
-| `BUILDER_VERSION` | `schema.py` | Bumped on any algorithm change. |
+| `BUILDER_VERSION` (currently `v3`) | `schema.py` | Bumped on any algorithm change. `v3` collapses the two-lane model into a single development arc. |
+| `SCHEMA_VERSION` (currently `v3`) | `schema.py` | Bumped on any change to the persisted JSON shape. `v3` removes the `meta` / `main` `TimelineTrack` blocks and adds `witnesses` / `agencies` to `CaseHeader`. |
 | `cluster_window_chars` | `configs/default.yaml :: cluster.window_chars` | Default `1500`. Controls cluster proximity. |
 | `built_at` | CLI `--built-at` | Pins the timestamp stamped onto the record. Use a fixed value in CI. |
 
@@ -423,34 +456,45 @@ locate every NER entity by greedy left-to-right
 substring search → char_start / char_end
             │
             ▼
-relative pre-pass (v2):                           (build.py + datetimes.py)
-  regex-scan source for relative spans the LLM    
-  missed, dedupe against existing entities,       
-  walk merged stream in source order, resolve     
-  every date_relative against the most-recent     
-  absolute date anchor, promote resolved          
-  relatives to type=date with pre_resolved        
-  WhenAnchor; unresolved → date_relative          
+relative pre-pass (v2+):                          (build.py + datetimes.py)
+  regex-scan source for relative spans the LLM
+  missed, dedupe against existing entities,
+  walk merged stream in source order, resolve
+  every date_relative against the most-recent
+  absolute date anchor, promote resolved
+  relatives to type=date with pre_resolved
+  WhenAnchor; unresolved → date_relative
             │
             ▼
 cluster by date proximity                         (cluster.py)
 window = cluster.window_chars (default 1500)
             │
             ▼
-for each dated cluster:
-    classify_event_kind(cluster, source)          (classify.py)
-    track = track_for_kind(kind)                  (schema.py)
+for each dated cluster (v3):                      (build.py)
+    split members by section_for(entity.type):
+      METADATA  → header_extra (case header pre-pass)
+      MAINDATA  → event callouts
+    if cluster has metadata members but no
+    maindata callouts → drop (pure logistics);
+    else emit one TimelineEvent on the single lane
+    with kind = classify_event_kind(...) (label
+    only — does not decide the lane)
             │
             ▼
-split ambient cluster into                        (build.py)
-(meta_ambient, main_ambient) via section_for()
+filter ambient cluster to MAINDATA only
+(metadata always feeds the case header)
             │
             ▼
-build TimelineTrack(meta) + TimelineTrack(main)
-stamp event ids: <doc>:M### / <doc>:X### / <doc>:[MX]A00
+sort events by (sort_key, char_start);
+stamp event ids <doc>:E000, E001, … (single
+prefix); ambient bucket gets <doc>:EA00
             │
             ▼
 patch anchor_event_id placeholders → final ids    (build.py)
+            │
+            ▼
+build CaseHeader from record.metadata + the
+header_extra surfaced by the cluster pre-pass
             │
             ▼
 write timelines/<doc>.json (sorted-keys JSON)
@@ -498,8 +542,9 @@ preamble and again in the verdict) collapse to the **first**
 occurrence; later mentions are not separately matched. If the
 LLM emits an entity that is not in the source at all (e.g.,
 paraphrased through OCR drift), the locator records it with
-`start = end = None` and the entity flows into the relevant
-track's ambient bucket.
+`start = end = None` and the entity flows into the ambient
+bucket (when MAINDATA-typed) or directly into the case header
+(when METADATA-typed).
 
 ## 7. Reproduction recipe
 
@@ -539,7 +584,7 @@ CLI flags (`python -m packages.extractor.timeline --help`):
 
 ## 8. Determinism tests
 
-`tests/unit/test_timeline_determinism.py` (65 tests, no network):
+`tests/unit/test_timeline_determinism.py` (64 tests, no network):
 
 1. **Date parser** — every surface form in `§ 5.1` plus OCR-noise
    variants, two-digit-year pivot, and the `v2` clock+date forms
@@ -554,12 +599,16 @@ CLI flags (`python -m packages.extractor.timeline --help`):
 4. **Byte-stable build** — `build_timeline` twice on the same
    `(record, source_text, cluster_window, built_at)` produces
    identical JSON serialisations.
-5. **Track partition** — meta-kind events land on the meta track,
-   main-kind events on the main track; `n_meta_* + n_main_*`
-   round-trips through totals; ambient is split by NER section.
-6. **Track-for-kind contract** — `track_for_kind` covers
-   `META_KINDS` and `MAIN_KINDS` exhaustively and rejects
-   `ambient` (which is split by composition, not kind).
+5. **Logistics in header only** — every METADATA-typed entity
+   (case_number, per_judge, per_prosecutor, per_lawyer,
+   per_witness, org_court, org_agency) lands on `case.*`, never
+   inside an event. Conversely, every event's `actors` list has
+   `role ∈ {defendant, plaintiff, victim}` and `type ∈
+   MAINDATA_TYPES` (no judges, prosecutors, lawyers, witnesses,
+   courts, agencies leak through).
+6. **Single development lane** — `tl.events` is one chronological
+   list sorted by `sort_key`; the legacy `tl.meta` / `tl.main`
+   `TimelineTrack` attributes do not exist.
 7. **Relative pre-pass integration** — a synthetic doc with two
    `X phút sau` / `X ngày sau` spans must produce
    `n_relative_total ≥ 2`, `n_relative_resolved ≥ 2`, and
@@ -567,7 +616,10 @@ CLI flags (`python -m packages.extractor.timeline --help`):
 8. **Mermaid renderer** — vertical Mermaid output is byte-stable;
    special characters (`:`, `#`, newlines) are escaped; the
    chained-callout shape carries each event's kind plus its
-   highest-priority entity bullet on the same date row.
+   highest-priority entity bullet on the same date row; the
+   output contains `section Logistics` and `section Development`
+   (and not the legacy `Procedural (meta)` / `Substantive (main)`
+   labels).
 
 All tests run offline.
 
@@ -616,67 +668,77 @@ representative cases from the 140-doc sample corpus.
 
 ### 9.1 vis-timeline / react-chrono
 
-The on-disk record maps directly onto a vis-timeline two-group
-layout. Pseudo-code:
+The on-disk record maps onto a single-lane vis-timeline view with
+the case header rendered as a sticky info card above the axis:
 
 ```js
-const groups = [
-  { id: "meta", content: "Procedural" },
-  { id: "main", content: "Case content" }
-];
-
-const items = [];
-for (const ev of [...timeline.meta.events, ...timeline.main.events]) {
-  if (!ev.when || !ev.when.iso) continue;        // hide unresolved on the date-axis lane
-  items.push({
+const items = timeline.events
+  .filter(ev => ev.when && ev.when.iso)
+  .map(ev => ({
     id: ev.event_id,
-    group: ev.track,
     start: ev.when.iso,
     content: `${ev.kind}: ${ev.actors.map(a => a.text).join(", ")}`,
     title: ev.span_text                          // hover detail
-  });
-}
+  }));
+
+const headerCard = {
+  caseNumber: timeline.case.case_number,
+  court:      timeline.case.court,
+  judges:     timeline.case.judges,
+  prosecutors:timeline.case.prosecutors,
+  lawyers:    timeline.case.lawyers,
+  witnesses:  timeline.case.witnesses.map(w => w.text),
+  agencies:   timeline.case.agencies,
+  parties:    timeline.case.parties,
+};
 ```
 
-Ambient buckets (`timeline.meta.ambient`, `timeline.main.ambient`)
-render as a static "no date" panel beside the timeline.
+The single ambient bucket (`timeline.ambient`) renders as a "no
+date" panel beside the timeline; un-anchored maindata mentions
+appear there. Procedural personnel are never in `ambient` — they
+live on `headerCard` exclusively.
 
 ### 9.2 Apache ECharts
 
-Use the `timeline` series with `categoryAxis` keyed on
-`event.track` to get two horizontal swimlanes. Each event becomes
-a `markPoint` at `when.iso` with the kind colouring it.
+Use the `timeline` series at the top of the chart for the events
+list (one `markPoint` per `ev.when.iso`, kind colouring it) and a
+sibling `tooltip` formatter that pulls the case header for hover
+context. There is no second axis to colour-key — the development
+arc is a single lane.
 
 ### 9.3 Tabular flatten (CSV / Pandas)
-
-Each event already carries its own `track` field, so a flat dump
-preserves the partition:
 
 ```python
 import json, pathlib, pandas as pd
 rows = []
 for line in pathlib.Path("data/samplebanan.toaan.gov.vn/timelines.jsonl").read_text().splitlines():
     tl = json.loads(line)
-    for ev in [*tl["meta"]["events"], *tl["main"]["events"]]:
+    case = tl["case"]
+    for ev in tl["events"]:
         rows.append({
             "doc": tl["doc_name"],
-            "event_id": ev["event_id"],
-            "track": ev["track"],
-            "kind":  ev["kind"],
-            "iso":   ev["when"]["iso"] if ev["when"] else None,
-            "actors": "; ".join(a["text"] for a in ev["actors"]),
-            "money":  "; ".join(m["text"] for m in ev["money"]),
+            "case_number": case.get("case_number"),
+            "court":       case.get("court"),
+            "event_id":    ev["event_id"],
+            "kind":        ev["kind"],
+            "iso":         ev["when"]["iso"] if ev["when"] else None,
+            "actors":      "; ".join(a["text"] for a in ev["actors"]),
+            "money":       "; ".join(m["text"] for m in ev["money"]),
         })
 df = pd.DataFrame(rows)
 ```
 
-## 10. Build results — `v2` canonical pass
+Joining the static logistics back onto every flattened event is
+trivial since `case.*` is one struct per doc — no per-event
+denormalisation to maintain.
+
+## 10. Build results — `v3` canonical pass
 
 End-to-end build over the 140-doc `samplebanan` corpus with
-`builder_version = v2`, `cluster.window_chars = 1500`, against the
-NER canonical pass (re-run on the `v4` prompt for the relative
-pre-pass; the regex post-processor in `build.py` still catches the
-remainder).
+`builder_version = v3`, `schema_version = v3`,
+`cluster.window_chars = 1500`, against the NER canonical pass on
+the `v4` prompt (the regex pre-pass in `build.py` still catches
+relative spans the LLM missed).
 
 ### 10.1 Headline numbers
 
@@ -684,15 +746,38 @@ remainder).
 |---|---|
 | Documents processed | 140 / 140 |
 | Wall-clock | < 1 second total (timeline pass only; NER pass is the slow stage at ~19 min for 140 docs) |
-| Total events | 1 983 (1 703 dated + 280 ambient) |
-| Mean dated events / doc | 12.2 (up from 10.4 in `v1`) |
+| Total events | **1 741** (1 601 dated + 140 ambient) |
+| Mean dated events / doc | 11.4 (the single development lane; previously the two-lane build reported 12.2 events/doc summed across `meta` + `main`) |
+| Total event callouts | 410 actors, 1 029 money, 2 054 statutes, 737 terms, 87 crimes, 162 sentences |
+| Logistics roster (across all 140 docs) | 355 judges, 137 prosecutors, 49 lawyers, 105 witnesses, 469 agencies |
 | Docs with at least one relative-temporal span | 66 / 140 |
-| `date_relative` entities emitted by the v4 LLM | 8 (the regex pre-pass catches the remainder) |
-| `n_relative_total` | 136 |
-| `n_relative_resolved` | 113 (83.1% resolution rate) |
-| `n_relative_unresolved` | 23 (no preceding absolute anchor, ambiguous magnitude, or partial-only anchor) |
+| `n_relative_total` / `n_relative_resolved` / `n_relative_unresolved` | 136 / 113 (83.1%) / 23 |
 | Events carrying `iso_time` | 4 |
-| Output size | ~3.7 MiB per-doc directory; 2.9 MiB aggregate JSONL |
+| Output size | ~3.4 MiB per-doc directory; 2.8 MiB aggregate JSONL |
+
+### 10.1.1 Before vs after the lane collapse
+
+| | `v2` two-lane | `v3` single lane | Δ |
+|---|---|---|---|
+| `meta` events | 1 060 | — | dropped |
+| `main` events | 923 | — | dropped |
+| Single-lane events | — | **1 741** | the development arc |
+| dated | 1 703 | 1 601 | −102 (procedural-only clusters now drop) |
+| ambient | 280 (2 buckets/doc) | 140 (1 bucket/doc) | −140 (no per-lane split) |
+
+The 102-event drop is the structural cleanup: `v2` emitted a
+`<date> : hearing : judge - X : prosecutor - Y` row on the meta
+lane for every cluster whose only nearby content was procedural
+personnel. In `v3` those clusters are recognised as **logistics
+near a date**, contribute the personnel to the static
+:class:`CaseHeader`, and emit no chronological row. The personnel
+are still searchable; they just no longer pretend to be
+"events".
+
+The single ambient bucket per doc (down from two) reflects the
+collapse of the meta/main split; the metadata-section orphans no
+longer exist as ambient events because metadata always feeds the
+header instead of any time-bound bucket.
 
 ### 10.2 Top relative cue phrases (from the resolved set)
 
@@ -716,36 +801,32 @@ previous sentence" in Vietnamese narrative.
 
 ### 10.3 Event-kind tally
 
-The exact mix varies as the `v4` LLM and regex pre-pass shift
-slightly per cache, but the dominant shape is:
+Kinds are now purely descriptive labels — every event lives on
+the same lane regardless of its kind. The corpus distribution is
+dominated by `unknown` (the regex resolver promotes a lot of
+deixis without an obvious procedural cue):
 
-| Kind | Approx. count | Track |
-|---|---|---|
-| `unknown` | ~870 | main |
-| `hearing` | ~500 | meta |
-| `ambient` | 280 | both (split by section) |
-| `filing`  | ~210 | meta |
-| `verdict` | ~60  | meta |
-| `sentence`| ~50  | meta |
-| `fact`    | ~15  | main |
+| Kind | Approx. count |
+|---|---|
+| `unknown` | ~1 110 |
+| `hearing` | ~340 |
+| `filing` | ~110 |
+| `sentence` | ~30 |
+| `verdict` | ~20 |
+| `fact` | ~10 |
 
-The `unknown` jump from 624 (`v1`) to ~870 (`v2`) is the resolved-
-relative effect: every `X phút sau` / `Cùng ngày` lands on a
-fresh `unknown` cluster on the substantive track (it carries no
-procedural cue), but is still queryable via
-`when.is_relative=true` + `anchor_event_id`. UI consumers should
-treat relative events as inheriting the kind / context of their
-anchor unless the cluster otherwise classifies.
+UI consumers should treat relative events as inheriting the kind
+context of their anchor (`when.is_relative=true` +
+`when.anchor_event_id`) unless the cluster otherwise classifies.
 
 ### 10.4 Date-parser coverage
 
-> 97% of dated events still resolve to full `YYYY-MM-DD`. Roughly
+\> 97% of dated events still resolve to full `YYYY-MM-DD`. Roughly
 1.7% of the absolute tail remains unresolvable OCR noise,
-preserved as raw surface text and sorted to the bottom of its
-track via `sort_key = "9999-99-99T99:99:99"` (note the `v2` ISO-
-datetime shape).
+preserved as raw surface text and sorted to the bottom of the
+single lane via `sort_key = "9999-99-99T99:99:99"`.
 
-### 10.4 Known limitations
+### 10.5 Known limitations
 
 * **Coreference**: a defendant named in five separate hearings
   appears as five `Actor` entries, each tied to its own event —
@@ -765,146 +846,181 @@ invalidates downstream caches cleanly when an iteration ships.
 
 ## 11. Sample renderings
 
-Three vertical Mermaid timelines, generated from `timelines.jsonl`
+Four vertical Mermaid timelines, generated from `timelines.jsonl`
 by `python -m packages.extractor.timeline.render` against the
-canonical NER cache. Each date row chains the event kind with up
-to six descriptive callouts, in the visual spirit of
+canonical NER cache. The `Logistics` section at the top of each
+diagram is the static :class:`CaseHeader` — case identifiers,
+panel, witnesses, agencies, parties — with no dates. The
+`Development` section is the chronological lane: every date row
+chains the event kind with up to six MAINDATA-section callouts,
+in the visual spirit of
 [`jasonreisman/Timeline`](https://github.com/jasonreisman/Timeline).
 
 ### 11.1 Criminal — theft (`12722`)
 
-A criminal-theft case with five procedural events spanning four
-months and a substantive fact dating back six years before the
-filing. The 2017-07-28 hearing row stacks four personnel callouts
-on a single date — the panel's three judges plus the prosecutor.
+A criminal-theft case with the substantive facts dating back six
+years before the filing. The `Logistics` rows surface a
+three-judge panel plus the prosecutor; the `Development` lane
+opens with two `fact` rows then proceeds through the procedural
+arc. The 2017-03-09 hearing carries the alleged-statute callout;
+the 2017-06-13 verdict chains three statute references on the
+same date.
 
 ```mermaid
 timeline
     title 12722 — Hình sự / Trộm cắp tài sản — Tòa án nhân dân huyện Tiền Hải, tỉnh Thái Bình
-    section Procedural (meta)
-        2017-03-03 : hearing : 520.000 đồng
-        2017-03-09 : hearing : 1.400.000 đồng : khoản 1 Điều 138 Bộ luật hình sự
-        2017-03-21 : hearing : agency - Viện kiểm sát nhân dân huyện Tiền Hải,…
-        2017-06-13 : verdict : điểm b, p, khoản 1, Điều 46 : Điều 33 : Điều 51 Bộ luật hình sự
-        2017-07-28 : hearing : judge - Bà Chu Thị Tuyết : judge - Ông Bùi Hải Triều : judge - bà Trần Thị Cúc : prosecutor - Bà Đoàn Thị Sớm
-    section Substantive (main)
-        2011-06-21 : fact : Trộm cắp tài sản : tội "Trộm cắp tài sản"
-        2012-03-29 : unknown : tội "Lạm dụng tín nhiệm chiếm đoạt tài sản"
-        2013-12-17 : unknown
+    section Logistics
+        Header : case_number 41/2017/HSST : court Tòa án nhân dân huyện Tiền Hải, tỉnh Thái Bình : case_type Hình sự / Trộm cắp tài sản : offence Trộm cắp tài sản
+        Header : judge Bà Chu Thị Tuyết : judge Ông Bùi Hải Triều : judge bà Trần Thị Cúc : prosecutor Bà Đoàn Thị Sớm
+        Header : witness ông Đỗ Văn P : witness bà Phạm Thị V : agency VKSND huyện Tiền Hải, tỉnh Thái Bình : agency Công an huyện Tiền Hải : agency Công an huyện Tiền Hả : agency Phòng KT - Tòa án ND tỉnh TB
+        Header : defendant Trần Văn T : victim Chị Nguyễn Thị Th
+    section Development
+        2011-06-21 : fact : Trộm cắp tài sản
+        2012-03-29 : unknown : chiếm đoạt tài sản
+        2013-12-17 : unknown : trộm cắp tài sản
         2015-12-18 : unknown
+        2016-12-30 : hearing
         2017-01-20 : unknown
-    section Ambient (no date)
-        meta : 4 actors
-        main : 2 actors, 1 places, 2 money, 3 statutes, 1 terms, 2 sentences
+        2017-03-03 : unknown
+        2017-03-03 : hearing : 520.000 đồng
+        2017-03-09 : hearing : 1.400.000 đồng : Điều 138 Bộ luật hình sự
+        2017-03-21 : hearing : victim - Chị Nguyễn Thị Th
+        2017-06-13 : verdict : điểm b, p, khoản 1, Điều 46 : Điều 33 : Điều 51 Bộ luật hình sự
+        2017-07-28 : hearing
+        2017-07-28 : hearing : defendant - Trần Văn T
+    section Ambient
+        development : 2 money, 3 statutes, 2 sentences
 ```
 
 ### 11.2 Civil — labour dispute with corporate defendant (`100096`)
 
 A civil labour-dispute case where the defendant is a company
 (`org_defendant: Công ty TNHH DMC (Việt Nam)`) — exactly the
-v3-NER paired-role variant `wiki/EXTRACTION.md § 4.0` describes.
-Note the meta-track row at 2018-03-02 carrying a corporate
-defendant alongside a witness and a filing cue on the same date.
+paired-role variant `wiki/EXTRACTION.md § 4.0` describes. The
+`Development` row at 2018-03-02 carries the corporate defendant
+plus the natural-person plaintiff on the filing event, while
+witnesses and the agency live on the static header instead.
 
 ```mermaid
 timeline
-    title 100096 — Dân sự / Tranh chấp lao động — Tòa án nhân dân huyện Long Thành
-    section Procedural (meta)
-        2016-05-26 : filing
-        2017-03-15 : hearing : 144.000.000 đồng : 199.000.000 đồng : 12.270.867 đồng
-        2017-07-17 : filing
-        2018-03-02 : filing : defendant - Công ty TNHH DMC (Việt Nam) : witness - Anh Hoàng Bá H : đơn khởi kiện
-        2018-03-21 : hearing : judge - Bà Nguyễn Thị Thanh Hà : judge - Bà Mai Thị Huệ : prosecutor - Bà Lê Thị Hồng Hà
-    section Substantive (main)
+    title 100096 — Dân sự / Tranh chấp hợp đồng lao động — Tòa án nhân dân huyện Long Thành
+    section Logistics
+        Header : case_number 01/2018/DS-ST : court Tòa án nhân dân huyện Long Thành : case_type Dân sự / Tranh chấp hợp đồng lao động
+        Header : judge Bà Nguyễn Thị Thanh Hà : judge Bà Mai Thị Huệ : judge Bà Lê Thị Ánh Sáng : prosecutor Bà Lê Thị Hồng Hà - Kiểm sát viên
+        Header : agency Viện kiểm sát nhân dân huyện Long Thành
+        Header : defendant Công ty TNHH DMC (Việt Nam) : defendant Công ty TNHH DMC Việt Nam : plaintiff Chị Võ Thị H
+    section Development
         2004-03-16 : unknown
-        2008-12-31 : unknown : 30.983.940 đồng : 70.000.000 đồng
+        2008-12-31 : unknown : 30.983.940 đồng : hơn 70.000.000 đồng
         2016-01-01 : unknown
+        2016-05-26 : filing
+        2016-09-20 : filing : 12.270.867 đồng
         2017-03-14 : unknown
-        2017-03-25 : unknown
+        2017-03-15 : hearing : 144.000.000 đồng : 31.000 .000 đ ồng : 199.000.000 đồng
+        2017-07-17 : filing
         2017-11-07 : unknown
-    section Ambient (no date)
-        meta : 3 actors
-        main : 1 actors, 2 money, 9 statutes, 5 terms
+        2018-03-02 : filing : plaintiff - Chị Võ Thị H : defendant - Công ty TNHH DMC (Việt Nam)
+        2018-03-21 : hearing
+    section Ambient
+        development : 1 actors, 1 places, 1 money, 9 statutes, 4 terms
 ```
 
 ### 11.3 Criminal — theft with sentence + victims (`1019756`)
 
-A criminal theft case with the verdict row at 2021-08-13 chaining
-the alleged crime, the primary statute, the mitigating-circumstance
-clause, and two procedural cues. The 2021-07-26 fact row stacks
-two natural-person victims and the disputed monetary amount on the
-same incident date.
+The case the dual-lane bug was visible on. The 2021-08-13 verdict
+row now carries the substantive callouts that belong to the
+ruling — the alleged crime (`Trộm cắp tài sản`), the primary
+statute (`khoản 1 Điều 173 Bộ luật hình sự`), the
+mitigating-circumstance clause, and three legal terms — without
+any procedural personnel mixed in. The presiding judge and the
+prosecutor moved to the static `Logistics` header above; the
+witnesses and agencies likewise.
 
 ```mermaid
 timeline
     title 1019756 — Hình sự / Trộm cắp tài sản — Tòa án nhân dân huyện Thanh Thủy, tỉnh Phú Thọ
-    section Procedural (meta)
-        2016-12-30 : hearing : defendant - Trần Ngọc O : 200.000đ
-        2021-07-27 : hearing
-        2021-08-13 : verdict : Trộm cắp tài sản : khoản 1 Điều 173 Bộ luật hình sự : Điểm b, i, s khoản 1, khoản 2 Điều 51 : khởi tố : bản cáo trạng
-        2021-11-12 : hearing : judge - Ông Đặng Xuân Bộ : prosecutor - Bà Trần Hồng Hạnh
-        2021-11-12 : hearing : agency - Viện kiểm sát nhân dân huyện Thanh Thủy : bồi thường dân sự : án phí
-    section Substantive (main)
-        2021-07-26 : unknown : victim - anh Tuấn : victim - anh Dân : 500.000 đồng : điều tra
-        2021-08-02 : unknown
-        2021-08-04 : unknown : 3.800.000 đồng : 4.300.000 đồng : vật chứng
-    section Ambient (no date)
-        meta : 3 actors
-        main : 2 actors, 7 places, 5 money, 8 statutes, 9 terms, 2 sentences
+    section Logistics
+        Header : case_number 52/2021/HS-ST : court Tòa án nhân dân huyện Thanh Thủy, tỉnh Phú Thọ : case_type Hình sự / Trộm cắp tài sản : offence Trộm cắp tài sản
+        Header : judge Ông Đặng Xuân Bộ : prosecutor Bà Trần Hồng Hạnh
+        Header : agency Công an huyện Thanh Thủy : agency Cơ quan Cảnh sát điều tra Công an huyện Thanh Thủy : agency Viện kiểm sát nhân dân huyện Thanh Thủy
+        Header : defendant Trần Ngọc O : victim Anh Nguyễn Văn T : victim Anh Nguyễn Thế D : victim anh Tuấn : victim anh Dân
+    section Development
+        2021-07-26 : unknown
+        2021-07-26 : unknown : 500.000 đồng
+        2021-07-26 : unknown
+        2021-07-26 : unknown : 2.335.000 đồng : 300.000 đồng : 2.035.000 đồng
+        2021-08-04 : unknown : 4.300.000 đồng
+        2021-08-13 : fact : Trộm cắp tài sản : khoản 1 Điều 173 Bộ luật hình sự
+        2021-08-13 : hearing
+        2021-08-13 : verdict : Điểm b, i, s khoản 1, khoản 2 Điều 51 : Khoản 1 Điều 92 Luật thi hành án hình sự : thử thách : giám sát : giáo dục
+        2021-08-13 : hearing : 4.800.000 đồng : trộm cắp tài sản
+        2021-08-13 : hearing : victim - anh Tuấn : 5.000.000 đồng đến 50.000.000 đồng : khoản 5 Điều 173 BLHS
+        2021-11-01 : hearing : victim - Anh Nguyễn Văn T : victim - Anh Nguyễn Thế D
+    section Ambient
+        development : 2 actors, 5 places, 1 money, 5 statutes, 2 terms, 2 sentences
 ```
 
 ### 11.4 Sub-day events on the same date (`1334774`)
 
 A criminal "providing for prostitution" case where the narrative
 stacks two `"Khoảng X phút sau"` events on top of the 22 giờ
-absolute anchor on 2022-12-21. The two substantive-lane rows on
-that date are the resolved relatives — their `when.is_relative=
-true` carries the original Vietnamese surface form, and their
-`when.anchor_event_id` points back to the meta-track absolute
-event on the same date (the regex pre-pass found both spans even
-though the LLM did not).
+absolute anchor on 2022-12-21. The two un-procedural rows on
+that date are the resolved relatives — their
+`when.is_relative=true` carries the original Vietnamese surface
+form, and their `when.anchor_event_id` points back to the
+absolute event on the same date (the regex pre-pass found both
+spans even though the LLM did not).
 
 ```mermaid
 timeline
     title 1334774 — Hình sự / Chứa mại dâm — Tòa án nhân dân tỉnh Cao Bằng
-    section Procedural (meta)
+    section Logistics
+        Header : case_number 31/2023/HS-PT : court Tòa án nhân dân tỉnh Cao Bằng : case_type Hình sự / Chứa mại dâm : offence Chứa mại dâm
+        Header : judge Bà Lê Na : judge Bà Nông Biên Hòa : judge Ông Hoàng Văn Thụ : prosecutor Bà Nông Diệu Linh
+        Header : agency Công an thành phố C : agency Công an thành phố Cao Bằng : agency Viện kiểm sát nhân dân tỉnh Cao Bằng
+        Header : defendant Đường Thị Hồng C : victim Hoàng Thị P : victim Lê Thị H2
+    section Development
         2022-12-21 : hearing : victim - Hoàng Thị P : victim - Lê Thị H2 : 900.000đ
-        2022-12-22 : hearing
-        2022-12-31 : hearing
-        2023-04-25 : sentence : Chứa mại dâm : sentence - 12 (mười hai) tháng tù : court - Tòa án nhân dân thành phố Cao Bằng : Điều 327 : Khoản 1 Điều 327
-        2023-06-16 : hearing : Điều 355 : Điều 357
-        2023-08-24 : hearing : judge - Bà Lê Na : judge - Bà Nông Biên Hòa : judge - Ông Hoàng Văn Thụ : agency - Viện kiểm sát nhân dân tỉnh Cao Bằng
-        2023-08-24 : hearing : defendant - Đường Thị Hồng C : kháng cáo : bản án : tạm giữ
-    section Substantive (main)
         2022-12-21 : unknown : 200.000đ
         2022-12-21 : unknown
-    section Ambient (no date)
-        meta : 4 actors
-        main : 3 places, 6 statutes, 1 terms
+        2022-12-22 : hearing
+        2022-12-31 : hearing
+        2023-04-25 : sentence : Chứa mại dâm : sentence - 12 (mười hai) tháng tù : Điều 327 : Khoản 1 Điều 327 : Điều 51
+        2023-06-16 : hearing : Điều 355 : Điều 357
+        2023-08-24 : hearing
+        2023-08-24 : hearing : defendant - Đường Thị Hồng C : kháng cáo : bản án : tạm giữ
+    section Ambient
+        development : 3 places, 6 statutes, 1 terms
 ```
 
-The Mermaid view collapses both relative events to the same
-calendar day because the anchor was a date-only entity (the
-NER `v3` cache did not extract `"22 giờ ngày 21/12/2022"` as a
-single date+time). Once the `v4` NER pass also captures the clock
-prefix on absolute dates, the two rows will instead read
+The Mermaid view collapses the two relative events onto the same
+calendar day because the absolute anchor was a date-only entity
+(the NER cache did not extract `"22 giờ ngày 21/12/2022"` as a
+single date+time). Once the LLM also captures the clock prefix
+on absolute dates, the two rows will instead read
 `2022-12-21T22:05 : unknown` and `2022-12-21T22:20 : unknown`,
-and the dual-axis renderers (vis-timeline, ECharts) will pick up
-the `iso_datetime` field automatically.
+and the date-aware renderers (vis-timeline, ECharts) will pick
+up the `iso_datetime` field automatically.
 
 ### 11.5 How to read
 
-* Top-to-bottom flow within each `section` — earliest date at the
-  top, latest at the bottom. Mermaid renders both sections side by
-  side, so meta and main read as parallel vertical lanes.
-* The first callout on every row is the event `kind`
+* The `Logistics` section at the top is the static
+  :class:`CaseHeader` — case number, court, judges, prosecutors,
+  lawyers, witnesses, agencies, parties. No dates; this is the
+  case's roster, not its arc.
+* The `Development` section is the single chronological lane —
+  earliest date at the top, latest at the bottom.
+* The first callout on every event row is the event `kind`
   (`filing` / `hearing` / `verdict` / `sentence` / `fact` /
-  `unknown`).
+  `unknown`). It is a label only; every kind shares the same
+  lane.
 * Subsequent callouts on the same row are the most distinctive
-  entities the builder attached to that cluster — alleged crime →
-  imposed sentence → actor with role prefix → money → statute →
-  legal term. Order is fixed (`render.py::_event_callouts`) so
-  diagrams are diff-friendly across re-runs.
-* The "Ambient (no date)" section carries the count of un-anchored
-  entities for each lane — the pieces of context that flow into
-  the case card rather than onto the timeline axis.
+  MAINDATA entities the builder attached to that cluster —
+  alleged crime → imposed sentence → actor with role prefix →
+  money → statute → legal term. Order is fixed
+  (`render.py::_event_callouts`) so diagrams are diff-friendly
+  across re-runs.
+* The `Ambient` section, when present, summarises the
+  un-anchored MAINDATA entities — the pieces of context that did
+  not fit a date window. Procedural personnel never appear here;
+  they are always promoted to the static header above.

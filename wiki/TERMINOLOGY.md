@@ -1,12 +1,20 @@
-# Vietnamese Legal Taxonomy
+# Vietnamese Legal Taxonomy — `legal_type` siblings, codification topics, bilingual glossary
 
-This is the canonical taxonomy that drives the decision tree (Phase 7/8),
-knowledge-graph ontology (Phase 6), relational schema (Phase 5), UI
-terminology, and i18n keys.
+> **Source of truth for** `packages/common/taxonomy.py` and
+> `packages/common/terminology.py`.
+> **Status**: stable; the canonical vocabulary the decision tree
+> (Phase 7/8), the knowledge-graph ontology (Phase 6, [`ONTOLOGY.md`](ONTOLOGY.md)),
+> the relational schema (Phase 5), UI terminology, and i18n keys all
+> key off.
+> **Siblings**: [`ONTOLOGY.md`](ONTOLOGY.md) (formal classes / axioms),
+> [`DATASITES.md`](DATASITES.md) (column-name rule, § 3.4).
 
 ## Bilingual presentation rule
 
-Every bilingual table or tree in this document is **English-primary**:
+Every bilingual table or tree in **every** wiki document
+(`wiki/TERMINOLOGY.md`, `wiki/ONTOLOGY.md`, `wiki/DATASITES.md`,
+`wiki/EXTRACTION.md`, `wiki/MODELS.md`, `wiki/TIMELINE.md`,
+`wiki/DEVELOPMENT.md`) is **English-primary**:
 
 - The English `snake_case` identifier (or English label) is the canonical,
   unsuffixed name. It matches the column / field / KG-node-type / i18n key
@@ -18,9 +26,10 @@ Every bilingual table or tree in this document is **English-primary**:
 - Tables order columns `id`, `en`, `vi`. JSON objects place `id`,
   `label`, `label_vi` in that order.
 
-The rule applies to every wiki document (`wiki/TERMINOLOGY.md`,
-`wiki/ONTOLOGY.md`, `wiki/DATASITES.md`); the Tree section below is the
-worked example.
+This document is the **canonical statement** of the rule; every other
+wiki doc follows it. The Tree section below is the worked example.
+For the column-name flavour of the same rule (no Vietnamese-only
+stems in published parquet/jsonl), see [`DATASITES.md § 3.4`](DATASITES.md).
 
 ## Design rule
 

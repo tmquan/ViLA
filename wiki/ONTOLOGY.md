@@ -1,20 +1,33 @@
-# ViLA Ontology (implementation freeze)
+# ViLA Ontology — implementation freeze (v1.2.0)
+
+> **Source of truth for** Postgres DDL, Pydantic / Zod schemas, KG node
+> and edge types, JSON-LD `@context` (§ 9), and the Akoma Ntoso export
+> profile (§ 10).
+> **Status**: frozen at **v1.2.0** (historical legal-arc extension,
+> backwards-compatible; see § 14 changelog).
+> **Siblings**: [`TERMINOLOGY.md`](TERMINOLOGY.md) (the bilingual
+> vocabulary the classes below name), [`DATASITES.md`](DATASITES.md)
+> (the curation pipelines that populate the tables).
 
 This document consolidates ViLA's knowledge model into one
 implementation-ready reference. It is the authoritative specification
 for:
 
-- Class hierarchy and instance membership
-- Properties, their domains, ranges, and cardinality constraints
-- State machines (life-cycle) per `legal_type` artifact
-- Temporal axioms and integrity constraints
-- Enumerated controlled vocabularies
-- Identifier generation rules
-- Extension namespace for VN-specific concepts
-- JSON-LD `@context` for public API output
-- Akoma Ntoso export profile
+- Class hierarchy and instance membership (§ 2)
+- Properties, their domains, ranges, and cardinality constraints (§ 3)
+- Integrity axioms `AX-01..AX-18` (§ 4) and the per-axiom enforcement
+  matrix (§ 12)
+- State machines (life-cycle) per `legal_type` artifact (§ 5)
+- Enumerated controlled vocabularies (§ 6)
+- Identifier generation rules (§ 7)
+- Temporal axioms and queries (§ 8)
+- JSON-LD `@context` for public API output (§ 9)
+- Akoma Ntoso export profile (§ 10)
+- Provenance model (§ 11)
+- Versioning and changelog (§ 14)
 
-This document is the authoritative ontology for ViLA implementation.
+The bilingual names of every class below come from
+[`TERMINOLOGY.md`](TERMINOLOGY.md); this document never restates them.
 Postgres DDL, Pydantic and Zod schemas, knowledge-graph node and edge
 types, JSON-LD contexts, and Akoma Ntoso export profiles all derive
 from the classes, properties, axioms, identifier rules, and enumerated

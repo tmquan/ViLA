@@ -1,21 +1,29 @@
 """Determinism regression tests for the timeline builder.
 
-Pins the byte-stability, date-parsing, and dual-track partition
-contracts. Four classes of tests:
+Pins the byte-stability, date-parsing, and single-lane partition
+contracts. Test categories:
 
 1. **Date parser** — surface-form → ISO + sort_key for the
    ``DD/MM/YYYY``, ``DD tháng MM năm YYYY``, ``tháng MM năm YYYY``,
    ``năm YYYY``, and bare-year forms; plus OCR-noise edge cases
    pulled from the real corpus.
-2. **Byte-stable build** — :func:`build_timeline` twice on the same
+2. **Relative parser** — F1..F5 surface families resolved against
+   an absolute anchor.
+3. **Source scanner** — regex pre-pass for relative spans the LLM
+   missed.
+4. **Byte-stable build** — :func:`build_timeline` twice on the same
    ``(record, source_text, cluster_window_chars)`` produces
    byte-identical sorted-key JSON.
-3. **Track partition** — meta-kind events land on the meta track,
-   main-kind events on the main track, ambient is split by NER
-   section. ``stats.n_meta_* + stats.n_main_*`` round-trips through
-   the totals.
-4. **Track-for-kind contract** — ``track_for_kind`` covers
-   ``META_KINDS`` and ``MAIN_KINDS`` exhaustively.
+5. **Logistics-in-header partition** — every METADATA-typed entity
+   (case_number, per_judge, per_prosecutor, per_lawyer,
+   per_witness, org_court, org_agency) lands on
+   :class:`CaseHeader`, never on an event. Conversely, every
+   event's actor / place / money / statute / term / crime /
+   sentence is MAINDATA-typed.
+6. **Single-lane shape** — :class:`CaseTimeline` exposes ``events``
+   (a single chronological list) and an optional ``ambient`` event
+   bucket; the legacy ``meta`` / ``main`` ``TimelineTrack`` fields
+   are gone.
 
 All tests run without network and without NER credentials; they
 synthesise a fixture :class:`PersistedExtraction` so the timeline
@@ -30,6 +38,7 @@ from datetime import UTC, datetime
 import pytest
 
 from packages.extractor.ner.schema import (
+    METADATA_TYPES,
     CaseSummary,
     EntityAttributes,
     ExtractedEntity,
@@ -45,11 +54,7 @@ from packages.extractor.timeline import (
     parse_relative_to_anchor,
 )
 from packages.extractor.timeline.datetimes import _UNRESOLVED_SORT_KEY
-from packages.extractor.timeline.schema import (
-    MAIN_KINDS,
-    META_KINDS,
-    track_for_kind,
-)
+from packages.extractor.timeline.schema import CaseTimeline
 
 # --------------------------------------------------------------------- 1. dates
 
@@ -182,8 +187,6 @@ class TestDateParser:
         partial_m = parse_date_to_anchor("5/2021").sort_key
         partial_y = parse_date_to_anchor("năm 2021").sort_key
         unresolved = parse_date_to_anchor("foo").sort_key
-        # Full date in May sorts before "2021-05-99" sorts before
-        # "2021-99-99" sorts before the unresolved sentinel.
         assert full < partial_m < partial_y < unresolved
 
 
@@ -217,7 +220,6 @@ class TestRelativeParser:
         r = parse_relative_to_anchor("5 ngày sau", anchor=anchor)
         assert r is not None
         assert r.iso == "2023-03-19"
-        # Day-or-larger arithmetic preserves the anchor clock.
         assert r.iso_time == "22:30:00"
 
     def test_f1_days_against_date_only_anchor(self) -> None:
@@ -244,7 +246,6 @@ class TestRelativeParser:
         assert r.direction == "before"
 
     def test_f2_years_clamp_feb_29(self) -> None:
-        # 2024-02-29 minus 5 years → 2019-02-28 (Feb-29 clamp).
         anchor = parse_date_to_anchor("29/02/2024")
         r = parse_relative_to_anchor("5 năm trước", anchor=anchor)
         assert r is not None
@@ -257,7 +258,6 @@ class TestRelativeParser:
         r = parse_relative_to_anchor("Cùng ngày", anchor=anchor)
         assert r is not None
         assert r.iso == "2023-03-14"
-        # "same" preserves both date and the anchor's clock time.
         assert r.iso_time == "22:30:00"
         assert r.direction == "same"
 
@@ -288,20 +288,14 @@ class TestRelativeParser:
         assert r.iso == "2024-03-14"
 
     def test_f5_khoang_weeks(self) -> None:
-        # "khoảng 5 tuần sau" against 2023-03-14 → iso = 2023-04-18
-        # (+ 35 days), iso_max = +25% spread → ~ +44 days = 2023-04-27.
         anchor = parse_date_to_anchor("14/3/2023")
         r = parse_relative_to_anchor("khoảng 5 tuần sau", anchor=anchor)
         assert r is not None
         assert r.iso == "2023-04-18"
-        # iso_max with magnitude*1.25 ≈ 6.25 weeks ≈ +43.75 days ≈ 2023-04-26
-        # (rounded to int days through the timedelta path).
         assert r.iso_max is not None
-        # Bracketed sanity: somewhere in late April.
         assert r.iso_max.startswith("2023-04-2")
 
     def test_decimal_comma_minutes(self) -> None:
-        # "1,2 phút sau" = 72 seconds. 22:30:00 + 72s = 22:31:12.
         anchor = parse_date_to_anchor("22 giờ 30 phút ngày 14/3/2023")
         r = parse_relative_to_anchor("1,2 phút sau", anchor=anchor)
         assert r is not None
@@ -342,17 +336,14 @@ class TestSourceScanner:
             "Vài tuần sau, vụ án được khởi tố."         # F5
         )
         spans = find_relative_expressions(snippet)
-        # All five families should match at least once.
         raws = [r for _, _, r in spans]
         assert any("05 phút sau" in r.lower() for r in raws)
         assert any("trước đó 3 ngày" in r.lower() for r in raws)
         assert any("cùng ngày" in r.lower() for r in raws)
         assert any("hôm sau" in r.lower() for r in raws)
         assert any("vài tuần sau" in r.lower() for r in raws)
-        # Left-to-right document order.
         starts = [s for s, _, _ in spans]
         assert starts == sorted(starts)
-        # No two spans overlap.
         for i in range(1, len(spans)):
             assert spans[i][0] >= spans[i - 1][1]
 
@@ -371,8 +362,6 @@ class TestSourceScanner:
             pytest.skip(f"corpus file {md} missing")
         body = md.read_text(encoding="utf-8")
         spans = find_relative_expressions(body)
-        # 1334774 contains "Khoảng 05 phút sau" and "Khoảng 20 phút
-        # sau" in the narrative — verify the scanner hits both.
         raws = " | ".join(r for _, _, r in spans).lower()
         assert "05 phút sau" in raws
         assert "20 phút sau" in raws
@@ -403,32 +392,39 @@ def fake_record() -> PersistedExtraction:
 
     Source text below contains:
 
-    * a filing date (with a "khởi kiện" cue),
-    * a hearing date (with "phiên toà" cue + court mention),
-    * a verdict / sentence date (with "tuyên xử" + sentence_prison),
-    * a fact date (with crime),
-    * an unanchored party (case-header role) → ambient.
+    * a filing date with maindata callouts (defendant + money near
+      the cue),
+    * a hearing date with maindata callouts (defendant + money),
+    * a verdict / sentence date (statute_ref + sentence_prison +
+      money + legal_term + crime),
+    * a fact date (crime),
+    * unanchored parties (case-header roles) → ambient on the
+      single lane.
     """
     metadata = [
         _make_entity("case_number", "01/2022/HS-ST", page=1),
         _make_entity("per_judge", "Bà Tăng Trần Quỳnh Phương", page=1),
+        _make_entity("per_witness", "Ông Nhân Chứng Q", page=1),
         _make_entity("org_court", "TAND tỉnh Bạc Liêu", page=1),
+        _make_entity("org_agency", "Viện kiểm sát nhân dân tỉnh Bạc Liêu", page=2),
     ]
     maindata = [
-        # Fact (with crime)
+        # Fact (with crime + defendant)
         _make_entity("date", "21/3/2018", page=1),
         _make_entity("crime", "Tội giết người", page=1),
         _make_entity("per_defendant", "Nguyễn Văn A", page=1),
-        # Filing
+        # Filing (carries a money callout so the cluster is non-empty
+        # of maindata under v3 and still emits an event).
         _make_entity("date", "01/06/2018", page=1),
-        # Hearing (org_court repeated near the date)
+        _make_entity("money", "10.000.000 đồng", page=1),
+        # Hearing (carries a victim party so it has maindata content).
         _make_entity("date", "01/12/2018", page=1),
+        _make_entity("per_victim", "Lê Thị B", page=1),
         # Verdict + sentence
         _make_entity("date", "15/12/2018", page=2),
         _make_entity("statute_ref", "Điều 123 BLHS", page=2,
                      linked_article_anchor="#A" * 20),
         _make_entity("sentence_prison", "12 năm tù", page=2),
-        # Money + term, anchored to the verdict
         _make_entity("money", "500.000.000 đồng", page=2),
         _make_entity("legal_term", "hợp đồng lao động", page=2,
                      linked_term_id=641),
@@ -453,7 +449,7 @@ def fake_record() -> PersistedExtraction:
             outcome="Bị cáo bị tuyên 12 năm tù.",
         ),
         stats=ExtractionStats(
-            n_entities=12, n_metadata=3, n_maindata=11,
+            n_entities=14, n_metadata=5, n_maindata=13,
             legal_dict=KbCoverage(n_total=1, n_linked=1, coverage_pct=100.0),
             legal_term=KbCoverage(n_total=1, n_linked=1, coverage_pct=100.0),
         ),
@@ -462,7 +458,7 @@ def fake_record() -> PersistedExtraction:
 
 @pytest.fixture()
 def fake_source() -> str:
-    """Source text wired so each date sits near its event cue.
+    """Source text wired so each date sits near its event cue and callouts.
 
     Sections are spaced with ~400 chars of filler so the classifier's
     240-char-pad window does not bleed cues across events. Real
@@ -472,25 +468,27 @@ def fake_source() -> str:
 
     return (
         "## Page 1\n"
-        "Bản án số 01/2022/HS-ST. TAND tỉnh Bạc Liêu.\n"
+        "Bản án số 01/2022/HS-ST. TAND tỉnh Bạc Liêu. "
+        "Có sự tham gia của Ông Nhân Chứng Q.\n"
         + section_pad
         # Section A: alleged fact.
         + "Vào ngày 21/3/2018 Nguyễn Văn A đã thực hiện hành vi "
         + "Tội giết người tại địa điểm xảy ra vụ việc.\n"
         + section_pad
-        # Section B: filing.
+        # Section B: filing (with money callout near the cue).
         + "Đơn khởi kiện được tiếp nhận ngày 01/06/2018, "
-        + "thụ lý vụ án theo trình tự sơ thẩm.\n"
+        + "thụ lý vụ án theo trình tự sơ thẩm. Lệ phí nộp 10.000.000 đồng.\n"
         + section_pad
         + "## Page 2\n"
         # Section C: hearing.
         + "Tại phiên toà ngày 01/12/2018, Hội đồng xét xử mở phiên xét xử "
-        + "công khai vụ án nói trên.\n"
+        + "công khai vụ án nói trên với sự có mặt của bị hại Lê Thị B.\n"
         + section_pad
-        # Section D: verdict + sentence.
+        # Section D: verdict + sentence + agency.
         + "Quyết định: tuyên xử ngày 15/12/2018. Áp dụng Điều 123 BLHS. "
         + "Bị cáo bị 12 năm tù. Bồi thường 500.000.000 đồng. "
-        + "Liên quan đến hợp đồng lao động đã ký.\n"
+        + "Liên quan đến hợp đồng lao động đã ký. "
+        + "Viện kiểm sát nhân dân tỉnh Bạc Liêu giữ quyền công tố.\n"
     )
 
 
@@ -519,21 +517,19 @@ def test_build_timeline_versions_stamped(
     )
     assert tl.schema_version == SCHEMA_VERSION
     assert tl.builder_version == BUILDER_VERSION
+    assert tl.schema_version == "v3"
+    assert tl.builder_version == "v3"
     assert tl.source_cache_key == fake_record.cache_key
     assert tl.source_kb_version == fake_record.kb_version
     assert tl.source_prompt_version == fake_record.prompt_version
     assert tl.source_input_text_hash == fake_record.input_text_hash
 
 
-def _all_events(tl) -> list:
-    """Flatten meta + main (dated + ambient) into one list."""
-    out = []
-    out.extend(tl.meta.events)
-    if tl.meta.ambient is not None:
-        out.append(tl.meta.ambient)
-    out.extend(tl.main.events)
-    if tl.main.ambient is not None:
-        out.append(tl.main.ambient)
+def _all_events(tl: CaseTimeline) -> list:
+    """Flatten dated events + ambient (if any) into one list."""
+    out = list(tl.events)
+    if tl.ambient is not None:
+        out.append(tl.ambient)
     return out
 
 
@@ -547,76 +543,87 @@ def test_event_kinds_cover_expected_buckets(
         source_text=fake_source,
         built_at="2026-05-25T00:00:00Z",
     )
-    meta_kinds = [e.kind for e in tl.meta.events]
-    main_kinds = [e.kind for e in tl.main.events]
-    assert "filing" in meta_kinds
-    assert "hearing" in meta_kinds
-    assert "sentence" in meta_kinds
-    assert "fact" in main_kinds
+    kinds = [e.kind for e in tl.events]
+    assert "filing" in kinds
+    assert "hearing" in kinds
+    assert "sentence" in kinds
+    assert "fact" in kinds
 
 
-def test_events_sorted_by_sort_key_per_track(
+def test_events_sorted_by_sort_key(
     fake_record: PersistedExtraction,
     fake_source: str,
 ) -> None:
-    """Dated events on each track appear in ascending ISO-date order."""
+    """Dated events appear in ascending ISO-date order on the single lane."""
     tl = build_timeline(
         record=fake_record,
         source_text=fake_source,
         built_at="2026-05-25T00:00:00Z",
     )
-    for track in (tl.meta, tl.main):
-        sort_keys = [e.when.sort_key for e in track.events if e.when is not None]
-        assert sort_keys == sorted(sort_keys)
+    sort_keys = [e.when.sort_key for e in tl.events if e.when is not None]
+    assert sort_keys == sorted(sort_keys)
 
 
-def test_track_partition_consistent(
+def test_logistics_in_header_only(
     fake_record: PersistedExtraction,
     fake_source: str,
 ) -> None:
-    """Per-track stats round-trip through totals; meta/main lanes disjoint."""
+    """METADATA-typed entities never leak into events; they live on CaseHeader."""
     tl = build_timeline(
         record=fake_record,
         source_text=fake_source,
         built_at="2026-05-25T00:00:00Z",
     )
-    assert tl.stats.n_meta_dated == tl.meta.n_dated
-    assert tl.stats.n_main_dated == tl.main.n_dated
-    assert (
-        tl.stats.n_meta_events + tl.stats.n_main_events == tl.stats.n_events
-    )
-    assert tl.stats.n_dated == tl.stats.n_meta_dated + tl.stats.n_main_dated
-    # Every meta-track event has track=meta; same for main.
-    assert all(e.track == "meta" for e in tl.meta.events)
-    assert all(e.track == "main" for e in tl.main.events)
-    if tl.meta.ambient is not None:
-        assert tl.meta.ambient.track == "meta"
-    if tl.main.ambient is not None:
-        assert tl.main.ambient.track == "main"
+
+    assert tl.case.case_number == "01/2022/HS-ST"
+    assert tl.case.court == "TAND tỉnh Bạc Liêu"
+    assert "Bà Tăng Trần Quỳnh Phương" in tl.case.judges
+    assert any(w.text == "Ông Nhân Chứng Q" for w in tl.case.witnesses)
+    assert "Viện kiểm sát nhân dân tỉnh Bạc Liêu" in tl.case.agencies
+
+    # Every event's actor is a substantive party role only.
+    allowed_actor_roles = {"defendant", "plaintiff", "victim"}
+    allowed_actor_types = {
+        "per_defendant", "per_plaintiff", "per_victim",
+        "org_defendant", "org_plaintiff", "org_victim",
+    }
+    for ev in _all_events(tl):
+        for a in ev.actors:
+            assert a.role in allowed_actor_roles
+            assert a.type in allowed_actor_types
+            assert a.type not in METADATA_TYPES
 
 
-def test_event_ids_are_lex_stable_per_track(
+def test_dev_arc_is_one_lane(
     fake_record: PersistedExtraction,
     fake_source: str,
 ) -> None:
-    """Event ids on each track are zero-padded and lex-stable.
-
-    Meta-track ids use the ``M`` prefix; main-track ids use ``X``.
-    Each track's ambient bucket gets a single ``*A00`` id.
-    """
+    """No legacy meta/main TimelineTrack fields; events live on a single list."""
     tl = build_timeline(
         record=fake_record,
         source_text=fake_source,
         built_at="2026-05-25T00:00:00Z",
     )
-    expected_meta = [f"doc_test:M{i:03d}" for i in range(len(tl.meta.events))]
-    expected_main = [f"doc_test:X{i:03d}" for i in range(len(tl.main.events))]
-    assert [e.event_id for e in tl.meta.events] == expected_meta
-    assert [e.event_id for e in tl.main.events] == expected_main
-    if tl.meta.ambient is not None:
-        assert tl.meta.ambient.event_id == "doc_test:MA00"
-    if tl.main.ambient is not None:
-        assert tl.main.ambient.event_id == "doc_test:XA00"
+    assert isinstance(tl.events, list)
+    assert tl.ambient is None or hasattr(tl.ambient, "actors")
+    assert not hasattr(tl, "meta")
+    assert not hasattr(tl, "main")
+
+
+def test_event_ids_are_lex_stable(
+    fake_record: PersistedExtraction,
+    fake_source: str,
+) -> None:
+    """Event ids are zero-padded ``E###`` on the single lane; ambient is ``EA00``."""
+    tl = build_timeline(
+        record=fake_record,
+        source_text=fake_source,
+        built_at="2026-05-25T00:00:00Z",
+    )
+    expected = [f"doc_test:E{i:03d}" for i in range(len(tl.events))]
+    assert [e.event_id for e in tl.events] == expected
+    if tl.ambient is not None:
+        assert tl.ambient.event_id == "doc_test:EA00"
 
 
 def test_outcome_carries_summary_and_sentence(
@@ -663,29 +670,23 @@ def test_build_at_default_is_iso_utc(
     assert delta < 30
 
 
-# --------------------------------------------------------------------- 3. tracks
+def test_stats_are_consistent(
+    fake_record: PersistedExtraction,
+    fake_source: str,
+) -> None:
+    """Total stats equal sum of dated events plus ambient (0 or 1)."""
+    tl = build_timeline(
+        record=fake_record,
+        source_text=fake_source,
+        built_at="2026-05-25T00:00:00Z",
+    )
+    assert tl.stats.n_dated == len(tl.events)
+    n_amb = 1 if tl.ambient is not None else 0
+    assert tl.stats.n_ambient == n_amb
+    assert tl.stats.n_events == len(tl.events) + n_amb
 
 
-class TestTrackForKind:
-    """``track_for_kind`` covers META_KINDS and MAIN_KINDS exhaustively."""
-
-    def test_meta_kinds_all_route_to_meta(self) -> None:
-        for k in META_KINDS:
-            assert track_for_kind(k) == "meta"
-
-    def test_main_kinds_all_route_to_main(self) -> None:
-        for k in MAIN_KINDS:
-            assert track_for_kind(k) == "main"
-
-    def test_ambient_is_rejected(self) -> None:
-        with pytest.raises(ValueError, match="no fixed track"):
-            track_for_kind("ambient")
-
-    def test_meta_main_kinds_are_disjoint(self) -> None:
-        assert not (META_KINDS & MAIN_KINDS)
-
-
-# --------------------------------------------------------------------- 3b. relatives in build
+# --------------------------------------------------------------------- 3. relatives in build
 
 
 @pytest.fixture()
@@ -697,7 +698,6 @@ def fake_record_with_relatives() -> PersistedExtraction:
     maindata = [
         _make_entity("date", "14/3/2023", page=1),
         _make_entity("per_defendant", "Nguyễn Văn A", page=1),
-        # Relative spans — the locator will find them in the source.
         _make_entity("date_relative", "05 phút sau", page=1),
         _make_entity("date_relative", "02 ngày sau", page=1),
     ]
@@ -764,7 +764,7 @@ class TestBuildWithRelatives:
             source_text=fake_source_with_relatives,
             built_at="2026-05-25T00:00:00Z",
         )
-        all_events = [*tl.meta.events, *tl.main.events]
+        all_events = list(tl.events)
         absolute_event_ids = {
             e.event_id for e in all_events
             if e.when is not None and not e.when.is_relative
@@ -788,13 +788,11 @@ class TestBuildWithRelatives:
             source_text=fake_source_with_relatives,
             built_at="2026-05-25T00:00:00Z",
         )
-        all_events = [*tl.meta.events, *tl.main.events]
-        # Find the "05 phút sau" event — same date as the 14/3 anchor.
+        all_events = list(tl.events)
         same_day = [
             e for e in all_events
             if e.when is not None and e.when.iso == "2023-03-14"
         ]
-        # At least one absolute + one relative on 14/3.
         assert any(e.when is not None and e.when.is_relative for e in same_day)
         assert any(
             e.when is not None and not e.when.is_relative for e in same_day
@@ -821,9 +819,14 @@ class TestRender:
         assert rendered.startswith("timeline\n")
         assert "    title doc_test" in rendered
 
-    def test_timeline_render_has_both_track_sections(self, rendered: str) -> None:
-        assert "section Procedural (meta)" in rendered
-        assert "section Substantive (main)" in rendered
+    def test_timeline_render_has_logistics_and_development_sections(
+        self, rendered: str,
+    ) -> None:
+        assert "section Logistics" in rendered
+        assert "section Development" in rendered
+        # Legacy track-name section labels must be gone.
+        assert "Procedural (meta)" not in rendered
+        assert "Substantive (main)" not in rendered
 
     def test_timeline_render_includes_iso_dates(self, rendered: str) -> None:
         # The fixture covers 2018-03-21 (fact), 2018-06-01 (filing),
@@ -847,7 +850,6 @@ class TestRender:
     def test_safe_label_escapes_mermaid_specials(self) -> None:
         from packages.extractor.timeline.render import _safe_label
         out = _safe_label("Khoản 1: Điều 173 #BLHS\nnext line")
-        # `:` becomes ` -`, `#` becomes `№`, newline becomes a space.
         assert ":" not in out
         assert "#" not in out
         assert "\n" not in out
@@ -864,16 +866,30 @@ class TestRender:
             built_at="2026-05-25T00:00:00Z",
         )
         out = render_mermaid_timeline(tl)
-        # Verdict / sentence event chains: kind + sentence text.
+        # Verdict / sentence event chains: kind + sentence text on the
+        # development lane.
         assert "sentence : sentence - 12 năm tù" in out
-        # Fact event chains: kind + crime + actor.
+        # Fact event chains: kind + crime.
         assert "fact : Tội giết người" in out
+
+    def test_logistics_section_lists_judge_and_court(
+        self, fake_record: PersistedExtraction, fake_source: str,
+    ) -> None:
+        """Logistics rows surface the static personnel / identifiers."""
+        from packages.extractor.timeline.render import render_mermaid_timeline
+        tl = build_timeline(
+            record=fake_record,
+            source_text=fake_source,
+            built_at="2026-05-25T00:00:00Z",
+        )
+        out = render_mermaid_timeline(tl)
+        assert "case_number 01/2022/HS-ST" in out
+        assert "judge Bà Tăng Trần Quỳnh Phương" in out
+        assert "court TAND tỉnh Bạc Liêu" in out
 
     def test_read_timelines_jsonl_roundtrip(self, tmp_path) -> None:
         """Aggregate JSONL is parsed back into CaseTimeline objects."""
         from packages.extractor.timeline.render import read_timelines
-
-        # Build two minimal timelines and write them as jsonl.
         from packages.extractor.timeline.schema import CaseTimeline
         rows = [
             CaseTimeline(

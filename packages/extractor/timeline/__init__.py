@@ -2,9 +2,14 @@
 
 Projects the NER ``maindata`` entities for one ban-án onto a
 sequence of dated events suitable for vis-timeline / react-chrono /
-Apache ECharts timeline / Gantt swimlane renderers. No LLM call,
-no network, no randomness — pure function of the upstream NER cache
-record + the source markdown.
+Apache ECharts timeline / Gantt swimlane renderers. The ``v3``
+shape collapses the prior dual-track (``meta`` / ``main``) layout
+into a single chronological lane plus a static
+:class:`CaseHeader` — see ``wiki/TIMELINE.md § 2`` for the routing
+rule (``METADATA_TYPES`` → header, ``MAINDATA_TYPES`` → events).
+
+No LLM call, no network, no randomness — pure function of the
+upstream NER cache record + the source markdown.
 
 See ``wiki/TIMELINE.md`` for the spec and reproduction recipe.
 
@@ -22,8 +27,8 @@ Sub-modules:
 * :mod:`packages.extractor.timeline.cluster` — date-anchored
   proximity clustering (single-knob ``window_chars``).
 * :mod:`packages.extractor.timeline.classify` — heuristic event-kind
-  classifier (fact / filing / hearing / verdict / sentence / ambient
-  / unknown).
+  classifier (fact / filing / hearing / verdict / sentence /
+  unknown). Pure label, never decides which lane an event is on.
 * :mod:`packages.extractor.timeline.build` — per-doc builder, IO,
   aggregation.
 * :mod:`packages.extractor.timeline.__main__` — CLI entry point;

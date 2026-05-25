@@ -1,9 +1,19 @@
-# Vietnamese Legal NER — Extraction Procedure
+# Vietnamese Legal NER — extraction procedure (`packages.extractor.ner`)
 
-Procedure-as-spec for `packages.extractor.ner` (the NER + KB-grounding
-pipeline that runs over the 140 ban-án in
-`data/samplebanan.toaan.gov.vn/`). The pipeline is deterministic and
-reproducible by construction; this document is the contract.
+> **Source of truth for** `packages/extractor/ner/` — the NER +
+> KB-grounding pipeline that runs over the 140 ban-án in
+> `data/samplebanan.toaan.gov.vn/`.
+> **Status**: production. Canonical pass on `prompt_version = v3`
+> shipped (8 880 entities across 140 docs, § 10); `v4` adds
+> `date_relative` to the catalogue for the downstream timeline
+> projection ([`TIMELINE.md § 3a`](TIMELINE.md)).
+> **Siblings**: [`MODELS.md`](MODELS.md) (the four-model NIM roster),
+> [`TIMELINE.md`](TIMELINE.md) (date-axis projection of this NER
+> record), [`DEVELOPMENT.md`](DEVELOPMENT.md) (phase-axis projection
+> of this NER record).
+
+The pipeline is deterministic and reproducible by construction; this
+document is the contract.
 
 ## 0. Canonical KB names
 

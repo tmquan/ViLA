@@ -1,28 +1,31 @@
 """Pydantic schema for the case-timeline view.
 
 A *case timeline* is a deterministic, JSON-renderable projection of a
-single ban-án's NER record onto **two parallel swimlanes** of dated
-events. Mirrors the upstream NER ``metadata`` / ``maindata`` split
-(see ``wiki/EXTRACTION.md § 4``):
+single ban-án's NER record onto a **single chronological lane** of
+dated events plus a static :class:`CaseHeader` that holds the
+case's logistical roster (case number, court, judges, prosecutors,
+lawyers, witnesses, agencies, parties).
 
-* :class:`TimelineTrack` ``meta`` — *history + logistics of the
-  case*: when it was filed, when each hearing happened, when the
-  verdict and sentence were pronounced. The court machinery view.
-* :class:`TimelineTrack` ``main`` — *substantive content of the
-  case*: when the underlying facts occurred, who was involved, what
-  money / statutes / locations entered the record. The "what really
-  happened" view.
+Rationale (``v3``): every callout's lane is determined by its NER
+section per ``wiki/EXTRACTION.md § 4``:
 
-Each track carries an ordered list of dated events plus an optional
-*ambient* bucket for entities that could not be anchored to any
-date in the source. Together with the static :class:`CaseHeader`
-and :class:`CaseOutcome`, this is everything a visualisation needs
-to render two horizontal swimlanes (vis-timeline / react-chrono /
-Apache ECharts) without further processing.
+* :data:`packages.extractor.ner.schema.METADATA_TYPES` — the
+  *logistics* of the case: case_number, per_judge, per_prosecutor,
+  per_lawyer, per_witness, org_court, org_agency. These are
+  STATIC HEADER information about *how* the case is processed; they
+  do NOT belong on a chronological lane and are aggregated into
+  :class:`CaseHeader` at the case level.
+* :data:`packages.extractor.ner.schema.MAINDATA_TYPES` — the
+  *development arc* of the case: parties (per_*/org_*), loc_*,
+  date, date_relative, money, id_number, plate_number, statute_ref,
+  legal_term, crime, sentence_*. These are how the case
+  substantively develops; they are the timeline.
 
-The shape is documented in detail in ``wiki/TIMELINE.md`` (§ 3
-schema, § 4 determinism contract). This module is the source of
-truth for the field names; the wiki tracks it.
+The previous :class:`TimelineTrack` (``"meta"`` / ``"main"``)
+abstraction is gone. The kind classifier (``filing`` / ``hearing``
+/ ``verdict`` / ``sentence`` / ``fact`` / ``unknown``) keeps
+running and labels each event purely as an annotation; it does NOT
+decide which lane an event lives on.
 
 Determinism: every output that reaches disk is a function of
 
@@ -45,17 +48,16 @@ from pydantic import BaseModel, ConfigDict, Field
 #: persisted JSON bytes. Anything that re-orders events, reclassifies
 #: kinds, changes clustering, or rewrites the date parser counts as
 #: a builder change. The version participates in the per-doc cache
-#: key (see :func:`make_timeline_cache_key`) so any algorithm edit
-#: invalidates only the affected outputs instead of silently
-#: shadowing past runs.
+#: key so any algorithm edit invalidates only the affected outputs
+#: instead of silently shadowing past runs.
 #:
 #: * ``v1`` — initial implementation: char-offset re-localisation in
 #:   the source md, date-anchored clustering with a proximity window,
 #:   heuristic event-kind classifier (fact / filing / hearing /
 #:   verdict / sentence / ambient / unknown), and the **dual-track
 #:   split** (procedural ``meta`` vs substantive ``main``) that
-#:   mirrors the NER ``METADATA_TYPES`` / ``MAINDATA_TYPES`` partition
-#:   in ``packages/extractor/ner/schema.py``.
+#:   mirrored the NER ``METADATA_TYPES`` / ``MAINDATA_TYPES``
+#:   partition by routing on event-kind.
 #: * ``v2`` — add **relative temporal resolution** *and* **time-of-day
 #:   resolution**: a regex pre-pass that scavenges ``Trước đó X
 #:   ngày``, ``X phút sau``, ``Cùng ngày``, ``Hôm qua``, etc. from
@@ -63,15 +65,22 @@ from pydantic import BaseModel, ConfigDict, Field
 #:   preceding absolute date anchor, and re-emits the resolved span
 #:   as a synthetic ``date`` member of the located-entity stream.
 #:   The absolute date parser is renamed ``datetimes.py`` and is
-#:   extended to recognise Vietnamese clock-time surface forms
-#:   (``"22 giờ 30 phút ngày 14/3/2023"``, ``"khoảng 22 giờ ngày
-#:   14/3/2023"``, ``"lúc 14:25"``); :class:`WhenAnchor` gains
-#:   ``iso_time`` / ``iso_datetime`` fields plus
-#:   ``is_relative`` / ``anchor_event_id`` / ``magnitude`` /
-#:   ``unit`` / ``direction`` / ``iso_max`` provenance fields; the
-#:   :class:`TimelineStats` gains the ``n_relative_*`` counters. See
-#:   ``wiki/TIMELINE.md § 3a`` for the full spec.
-BUILDER_VERSION = "v2"
+#:   extended to recognise Vietnamese clock-time surface forms;
+#:   :class:`WhenAnchor` gains time + relative-temporal provenance
+#:   fields; :class:`TimelineStats` gains ``n_relative_*`` counters.
+#: * ``v3`` — **collapse the meta/main two-lane model into a single
+#:   development lane; logistics moves entirely into the static
+#:   :class:`CaseHeader`**. The previous track-by-event-kind
+#:   dispatch (``track_for_kind``) was wrong — it dragged
+#:   substantive callouts (crime, statute_ref, sentence_*) onto the
+#:   meta lane whenever the cluster's classifier label was
+#:   ``verdict`` / ``hearing`` / ``sentence``. The fix is
+#:   structural: each cluster's members are filtered to MAINDATA
+#:   types only when forming the event's callouts; metadata-typed
+#:   members (judge, prosecutor, court, …) feed the case header at
+#:   case scope, never an event. The kind classifier is preserved
+#:   as a descriptive label.
+BUILDER_VERSION = "v3"
 
 
 #: Stable schema_version stamped into the on-disk JSON for downstream
@@ -82,80 +91,48 @@ BUILDER_VERSION = "v2"
 #:   one ``WhenAnchor`` per event with absolute-date provenance
 #:   only).
 #: * ``v2`` — :class:`WhenAnchor` extended with **time-of-day** and
-#:   **relative-temporal** provenance: ``iso_time`` (``HH:MM[:SS]``
-#:   when the surface form carried a clock), ``iso_datetime``
-#:   (convenience ``YYYY-MM-DDTHH:MM[:SS]`` when both halves are
-#:   populated), ``is_relative`` / ``anchor_event_id`` /
-#:   ``magnitude`` / ``unit`` / ``direction`` / ``iso_max`` for
-#:   resolved relative spans. ``sort_key`` is widened from
-#:   ``"YYYY-MM-DD"`` to ``"YYYY-MM-DDTHH:MM:SS"`` so timed events
-#:   sort before untimed events on the same day. :class:`TimelineStats`
-#:   gains ``n_relative_total`` / ``n_relative_resolved`` /
-#:   ``n_relative_unresolved``. All new fields are nullable /
-#:   default-zero so v1 readers degrade gracefully.
-SCHEMA_VERSION = "v2"
+#:   **relative-temporal** provenance: ``iso_time``, ``iso_datetime``,
+#:   ``is_relative`` / ``anchor_event_id`` / ``magnitude`` /
+#:   ``unit`` / ``direction`` / ``iso_max``. ``sort_key`` is widened
+#:   from ``"YYYY-MM-DD"`` to ``"YYYY-MM-DDTHH:MM:SS"``.
+#: * ``v3`` — JSON shape collapses to a single chronological
+#:   ``events`` list plus an optional ``ambient`` bucket. The
+#:   ``meta`` and ``main`` :class:`TimelineTrack` fields are
+#:   removed. :class:`CaseHeader` gains ``witnesses`` and
+#:   ``agencies`` fields so the full logistics roster has a home.
+#:   :class:`TimelineEvent` drops its ``track`` field.
+#:   :class:`TimelineStats` drops the per-lane counters.
+SCHEMA_VERSION = "v3"
 
 
 # --------------------------------------------------------------------- types
 
+#: Closed vocabulary of event-kind labels. The classifier in
+#: :mod:`packages.extractor.timeline.classify` stamps each event
+#: with one of these — they are purely descriptive labels for the
+#: UI to render with kind-specific styling. **Lane assignment does
+#: NOT depend on the kind**: every event lives on the single
+#: chronological lane regardless of its kind label.
 EventKind = Literal[
     "fact",      # alleged offence / underlying real-world event
     "filing",    # case opened (sơ thẩm / phúc thẩm filing date)
     "hearing",   # in-court session ("Tại phiên toà")
     "verdict",   # ruling / decision date
     "sentence",  # explicit prison or fine sentence event
-    "ambient",   # case-level facts that have no date anchor
     "unknown",   # dated event that the heuristic could not type
 ]
 
 
-#: Track id — selects which swimlane of the dual-panel timeline an
-#: event lives on. ``"meta"`` is the procedural / court-machinery
-#: track (filing, hearings, verdict, sentence). ``"main"`` is the
-#: substantive content track (alleged facts, parties, money,
-#: statutes). The mapping ``EventKind`` → ``Track`` is fixed in
-#: :data:`META_KINDS` / :data:`MAIN_KINDS` below; ``unknown`` events
-#: route to ``main`` by default.
-Track = Literal["meta", "main"]
-
-
-#: Event kinds that always live on the procedural ``meta`` track —
-#: the *history + logistics* of how the case was processed.
-META_KINDS: frozenset[str] = frozenset({"filing", "hearing", "verdict", "sentence"})
-
-
-#: Event kinds that always live on the substantive ``main`` track —
-#: the *content* of the case. The ``unknown`` kind also routes here
-#: by default (a date with no clear procedural cue is more often a
-#: substantive fact than a logistical one in this corpus).
-MAIN_KINDS: frozenset[str] = frozenset({"fact", "unknown"})
-
-
-def track_for_kind(kind: str) -> Track:
-    """Return the swimlane (``"meta"`` or ``"main"``) for an event kind.
-
-    ``ambient`` is intentionally rejected: ambient events are split
-    into per-track buckets by the builder based on entity-section
-    composition rather than by kind, so callers should never ask for
-    a track from a literal ``ambient`` kind.
-    """
-    if kind in META_KINDS:
-        return "meta"
-    if kind in MAIN_KINDS:
-        return "main"
-    raise ValueError(
-        f"event kind {kind!r} has no fixed track; ambient events "
-        "are split by entity-section composition, not kind",
-    )
-
-
+#: Closed vocabulary of actor roles that may appear on an
+#: :class:`Actor`. Event-level actors are constrained to
+#: ``defendant`` / ``plaintiff`` / ``victim`` (the MAINDATA
+#: substantive parties); the ``witness`` role is reserved for
+#: :class:`CaseHeader.witnesses`, which holds the procedural-side
+#: ``per_witness`` mentions deduped by text. The builder enforces
+#: the event-vs-header partition; the role union is widened only
+#: so the static header card has a typed home for witnesses.
 PartyRole = Literal[
-    # substantive (in maindata)
-    "defendant", "plaintiff", "victim",
-    # procedural (in metadata)
-    "judge", "prosecutor", "lawyer", "witness",
-    # organisational
-    "court", "agency",
+    "defendant", "plaintiff", "victim", "witness",
 ]
 
 
@@ -180,53 +157,9 @@ RelativeUnit = Literal["giây", "phút", "giờ", "ngày", "tuần", "tháng", "
 class WhenAnchor(BaseModel):
     """Resolved time anchor for an event.
 
-    * ``iso`` — full ISO date ``YYYY-MM-DD`` if the surface form
-      yields a complete date. For *resolved relative anchors* this
-      is the absolute date computed from the anchor + delta — the
-      relative provenance is preserved in :attr:`is_relative` and
-      friends so consumers can render the original phrasing
-      alongside the resolved point.
-    * ``iso_partial`` — partial ISO ``YYYY-MM`` or ``YYYY`` when the
-      day or both the day and month are missing.
-    * ``iso_time`` — clock time as ``HH:MM:SS`` (``v2``+) when the
-      surface form carried a clock — e.g. ``"22 giờ 30 phút ngày
-      14/3/2023"`` populates both ``iso`` and ``iso_time``,
-      ``"khoảng 22 giờ ngày 14/3/2023"`` populates ``iso_time =
-      "22:00:00"``, ``"14 giờ 25 phút"`` (no date) populates only
-      ``iso_time = "14:25:00"``. The relative resolver also writes
-      this field when a sub-day delta (``X phút sau`` /
-      ``X giờ sau``) is added to a dated + timed anchor.
-    * ``iso_datetime`` — convenience full ISO
-      ``YYYY-MM-DDTHH:MM:SS`` when both ``iso`` and ``iso_time``
-      are populated; ``None`` otherwise. Computed at construction.
-    * ``raw`` — the original surface text from the entity.
-    * ``page`` — 1-based page number from the entity (may be null
-      when the LLM omitted it).
-    * ``sort_key`` — lexicographically sortable key used by the
-      builder to order events. In ``v2`` the shape is
-      ``"YYYY-MM-DDTHH:MM:SS"``: timed events on the same calendar
-      day sort before untimed events (which use ``T99:99:99``),
-      and partial / unresolved dates sort to the end of the
-      track. See
-      :func:`packages.extractor.timeline.datetimes.parse_date_to_anchor`
-      for the construction.
-
-    Relative-temporal provenance (added in :data:`SCHEMA_VERSION`
-    ``v2``; absent on absolute anchors):
-
-    * ``is_relative`` — ``True`` iff this anchor was synthesised by
-      resolving a relative expression against a preceding absolute
-      date. Renderers can use the flag to draw the marker
-      differently (dashed line, lighter colour, …).
-    * ``anchor_event_id`` — id of the event whose ``when`` was used
-      as the anchor for resolution. ``None`` for absolute anchors.
-    * ``magnitude`` / ``unit`` / ``direction`` — the parsed delta
-      that produced the resolved date. ``magnitude`` is a float to
-      accommodate decimal-comma OCR forms (``"1,2 phút sau"``).
-    * ``iso_max`` — upper-bound ISO date for vague magnitudes
-      (``"vài ngày sau"``, ``"khoảng 5 tuần sau"``); ``iso`` then
-      carries the lower bound and ``iso_max`` carries the upper.
-      Single-point resolutions leave ``iso_max`` ``None``.
+    See ``wiki/TIMELINE.md § 3a`` for the full provenance spec.
+    Field semantics are unchanged from ``v2``; only the surrounding
+    schema collapsed in ``v3``.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -248,13 +181,24 @@ class WhenAnchor(BaseModel):
 
 
 class Actor(BaseModel):
-    """A party / personnel mention attached to an event.
+    """A party mention attached to an event or to the case header.
 
-    ``role`` is the procedural / substantive role, derived from the
-    entity ``type`` (``per_defendant`` → ``defendant`` etc.).
-    ``kind`` distinguishes natural persons from legal entities; this
-    matters because the v3 NER schema pairs ``per_*`` with ``org_*``
-    for the three party roles.
+    Event actors (``TimelineEvent.actors``) are constrained at
+    build time to substantive party types only — ``per_defendant``
+    / ``per_plaintiff`` / ``per_victim`` and the matching
+    ``org_*`` triple — because the timeline's chronological lane
+    is the *development* arc of the case (see
+    ``wiki/EXTRACTION.md § 4``).
+
+    The header roster (``CaseHeader.witnesses``) reuses this
+    model with ``role = "witness"`` so the same shape can describe
+    both event-level actors and header-level witness mentions.
+    Procedural personnel that are NOT stored as :class:`Actor`
+    (judges, prosecutors, lawyers — natural-person strings; courts
+    / agencies — organisation strings) live on
+    :class:`CaseHeader` as plain ``list[str]`` for the same reason
+    the static card holds a flat roster: there's no per-event
+    role variation to capture.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -314,22 +258,17 @@ class SentenceRef(BaseModel):
 class TimelineEvent(BaseModel):
     """One row in the case timeline.
 
-    A *dated* event has a non-null :attr:`when`; an *ambient* event
-    has ``when is None`` and gathers case-level entities that the
-    builder could not anchor to any date in the source. Ambient
-    events are still emitted (for completeness) under
-    :attr:`TimelineTrack.ambient`.
-
-    The :attr:`track` field is redundant with the parent
-    :class:`TimelineTrack.track` — it is stamped on the event so
-    flattened views (CSV exports, joined tables) preserve the
-    partition without losing information.
+    A *dated* event has a non-null :attr:`when`; the *ambient*
+    bucket is a single :class:`TimelineEvent` with ``when is None``
+    that aggregates maindata entities the builder could not anchor
+    to any date in the source. The bucket is exposed as
+    :attr:`CaseTimeline.ambient` (singular — there is only one,
+    since lanes were collapsed in ``v3``).
     """
 
     model_config = ConfigDict(extra="ignore")
 
     event_id: str
-    track: Track
     when: WhenAnchor | None
     kind: EventKind
 
@@ -347,7 +286,7 @@ class TimelineEvent(BaseModel):
 
 
 class PartySummary(BaseModel):
-    """Per-role roster of parties for the case header."""
+    """Per-role roster of substantive parties for the case header."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -357,10 +296,17 @@ class PartySummary(BaseModel):
 
 
 class CaseHeader(BaseModel):
-    """Case-level header, derived from the metadata + summary.
+    """Static logistics card for the case.
 
-    Cards on a timeline UI usually show a static header plus the
-    event list; this model is the contract for that card.
+    Holds the procedural / court-side identifiers that don't change
+    across events — the home for every ``METADATA_TYPES`` entity
+    plus the substantive parties (deduped by text).
+
+    The case header is computed once per doc by aggregating the
+    NER ``record.metadata`` list AND any METADATA-typed entity that
+    happened to be located near a date in the source (the cluster
+    pre-pass). Both flows feed the same dedup; the partition rule
+    is :func:`packages.extractor.ner.schema.section_for`.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -372,6 +318,8 @@ class CaseHeader(BaseModel):
     judges: list[str] = Field(default_factory=list)
     prosecutors: list[str] = Field(default_factory=list)
     lawyers: list[str] = Field(default_factory=list)
+    witnesses: list[Actor] = Field(default_factory=list)
+    agencies: list[str] = Field(default_factory=list)
     parties: PartySummary = Field(default_factory=PartySummary)
 
 
@@ -385,39 +333,12 @@ class CaseOutcome(BaseModel):
     sentences: list[SentenceRef] = Field(default_factory=list)
 
 
-class TimelineTrack(BaseModel):
-    """One swimlane (procedural ``meta`` or substantive ``main``).
-
-    Each track carries:
-
-    * ``events`` — the dated events on this lane, sorted by
-      :attr:`WhenAnchor.sort_key` (then by event id for stability).
-    * ``ambient`` — a single optional bucket aggregating entities of
-      this track's section that did not anchor to any date in the
-      source. ``None`` when there are no orphans for this track.
-    * ``n_dated`` / ``n_events`` — convenience counts so
-      visualisations can show track totals without iterating.
-
-    The track id (``"meta"`` or ``"main"``) is also stamped onto each
-    :class:`TimelineEvent` via ``track`` so consumers that flatten
-    both lanes into a single CSV / table can preserve the partition.
-    """
-
-    model_config = ConfigDict(extra="ignore")
-
-    track: Track
-    events: list[TimelineEvent] = Field(default_factory=list)
-    ambient: TimelineEvent | None = None
-    n_events: int = 0
-    n_dated: int = 0
-
-
 class TimelineStats(BaseModel):
     """Per-doc counts, useful for filtering / sanity in dashboards.
 
-    The per-track counts (``n_meta_*`` / ``n_main_*``) are the
-    primary source of truth; the totals are derived sums kept for
-    convenience.
+    The ``v3`` collapse removed the per-lane counters; everything
+    is reported once over the single chronological lane plus the
+    optional ambient bucket.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -425,11 +346,6 @@ class TimelineStats(BaseModel):
     n_events: int = 0
     n_dated: int = 0
     n_ambient: int = 0
-
-    n_meta_events: int = 0
-    n_meta_dated: int = 0
-    n_main_events: int = 0
-    n_main_dated: int = 0
 
     n_actors: int = 0
     n_places: int = 0
@@ -451,24 +367,27 @@ class TimelineStats(BaseModel):
     #: Of :attr:`n_relative_total`, how many were left unresolved
     #: (no preceding anchor, ambiguous magnitude, or unparseable
     #: surface form). Unresolved expressions are routed to the
-    #: substantive ambient bucket so consumers still see the text.
+    #: ambient bucket so consumers still see the text.
     n_relative_unresolved: int = 0
 
 
 class CaseTimeline(BaseModel):
     """Top-level on-disk record per doc.
 
-    Two parallel swimlanes:
+    The case develops along a single chronological lane:
 
-    * :attr:`meta` — procedural / court-machinery track (history +
-      logistics of the case). Events here are filings, hearings,
-      verdicts, and sentences.
-    * :attr:`main` — substantive content track (what really
-      happened). Events here are alleged facts plus any dated
-      events the classifier could not pin to a procedural cue.
-
-    The static :class:`CaseHeader` (parties, judges, court) and the
-    :class:`CaseOutcome` panel are shared across both swimlanes.
+    * :attr:`case` — :class:`CaseHeader`, the static logistics
+      roster (case_number, court, judges, prosecutors, lawyers,
+      witnesses, agencies, parties).
+    * :attr:`events` — :class:`TimelineEvent` list, the development
+      arc, sorted by :attr:`WhenAnchor.sort_key` (then by
+      ``char_start`` for stability).
+    * :attr:`ambient` — optional single :class:`TimelineEvent`
+      gathering maindata entities the builder could not anchor to
+      any date. ``None`` when there are no orphan substantive
+      mentions.
+    * :attr:`outcome` — :class:`CaseOutcome` panel; the operative
+      ruling and its statute/sentence backing.
 
     Stamped with both :data:`SCHEMA_VERSION` (shape) and the upstream
     NER cache identifiers so consumers can join back to the entity
@@ -488,16 +407,14 @@ class CaseTimeline(BaseModel):
     built_at: str
 
     case: CaseHeader = Field(default_factory=CaseHeader)
-    meta: TimelineTrack = Field(default_factory=lambda: TimelineTrack(track="meta"))
-    main: TimelineTrack = Field(default_factory=lambda: TimelineTrack(track="main"))
+    events: list[TimelineEvent] = Field(default_factory=list)
+    ambient: TimelineEvent | None = None
     outcome: CaseOutcome = Field(default_factory=CaseOutcome)
     stats: TimelineStats = Field(default_factory=TimelineStats)
 
 
 __all__ = [
     "BUILDER_VERSION",
-    "MAIN_KINDS",
-    "META_KINDS",
     "SCHEMA_VERSION",
     "Actor",
     "CaseHeader",
@@ -515,8 +432,5 @@ __all__ = [
     "TermRef",
     "TimelineEvent",
     "TimelineStats",
-    "TimelineTrack",
-    "Track",
     "WhenAnchor",
-    "track_for_kind",
 ]

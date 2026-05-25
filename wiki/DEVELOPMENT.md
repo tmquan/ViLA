@@ -1,4 +1,14 @@
-# DEVELOPMENT — case-development arc analytics
+# Case Development Arc — phase-axis projection (`packages/extractor/development`)
+
+> **Source of truth for** `packages/extractor/development/` — the
+> phase-anchored development-arc projection of each ban-án's NER
+> record.
+> **Status**: production. `schema_version = v1` and
+> `builder_version = v1`; first canonical pass over the 140-doc
+> `samplebanan` corpus shipped (§ 10).
+> **Siblings**: [`EXTRACTION.md`](EXTRACTION.md) (the upstream NER
+> record this projection consumes), [`TIMELINE.md`](TIMELINE.md) (the
+> *date*-axis sibling projection of the same NER record).
 
 Stand-alone spec for `packages/extractor/development/`. The package
 projects each ban-án's NER record onto the **procedural-development
@@ -8,15 +18,14 @@ per-lane (metadata / maindata) entity delta at each phase. No
 LLM call; pure deterministic function of the upstream NER cache
 record + the source markdown.
 
-This document is the source-of-truth contract. Any change to
-schema field names, builder logic, or determinism rules must land
-here in the same commit.
+Any change to schema field names, builder logic, or determinism rules
+must land here in the same commit as the code change.
 
-The development view is the second of two complementary
-projections living under `packages/extractor`:
+The development view is the second of two complementary projections
+living under `packages/extractor`:
 
 * `packages/extractor/timeline` — date-anchored event-line view
-  (*when* did things happen). See `wiki/TIMELINE.md`.
+  (*when* did things happen). See [`TIMELINE.md`](TIMELINE.md).
 * `packages/extractor/development` — phase-anchored
   development-arc view (*how* the case develops; which lane of
   information grows in which phase). This wiki.
@@ -232,7 +241,7 @@ for each doc.
 
 The pipeline is reproducible by construction. Every output that
 reaches disk is a function of the upstream NER cache record
-(which is itself deterministic; see `wiki/EXTRACTION.md § 0` for
+(which is itself deterministic; see `wiki/EXTRACTION.md § 5` for
 its determinism contract) and two knobs:
 
 | Knob | Where | Effect |
@@ -635,8 +644,8 @@ flowchart TB
     N_main[main · money 144.000.000 đồng<br/>date 2004-03-16]:::introduced
 
     R[hearing · cue 'tại phiên tòa']:::phase
-    R_meta[meta · per_lawyer Ông Nguyễn Văn X]:::introduced
-    R_main[main · per_witness Anh Hoàng Bá H<br/>money 70.000.000 đồng]:::introduced
+    R_meta[meta · per_lawyer Ông Nguyễn Văn X<br/>per_witness Anh Hoàng Bá H]:::introduced
+    R_main[main · money 70.000.000 đồng]:::introduced
 
     J[reasoning · cue 'nhận định của tòa án']:::phase
     J_main[main · legal_term hợp đồng lao động<br/>statute_ref Điều 32 BLLĐ]:::introduced

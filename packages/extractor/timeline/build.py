@@ -8,6 +8,22 @@ inputs and :data:`packages.extractor.timeline.schema.BUILDER_VERSION`.
 
 See ``wiki/TIMELINE.md`` for the procedural spec; this file is the
 canonical implementation that the wiki tracks.
+
+Routing rule (``v3``):
+
+* Every entity's lane is determined by its NER section per
+  :func:`packages.extractor.ner.schema.section_for`. METADATA-typed
+  entities (``case_number``, ``per_judge``, …) are *logistics* and
+  feed the :class:`CaseHeader` card at case scope. They never
+  appear as event callouts and never enter the ambient bucket.
+* MAINDATA-typed entities (parties, dates, money, statute_ref,
+  sentence_*, …) are *development*: when located near a date in
+  the source they become an event's callouts; otherwise they go
+  into the single ambient bucket.
+* The event-kind classifier (``filing`` / ``hearing`` / ``verdict``
+  / ``sentence`` / ``fact`` / ``unknown``) keeps running but
+  produces a descriptive label only — it does NOT drive lane
+  selection any more.
 """
 
 from __future__ import annotations
@@ -19,6 +35,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from packages.extractor.ner.schema import (
+    METADATA_TYPES,
     ExtractedEntity,
     PersistedExtraction,
     section_for,
@@ -51,10 +68,7 @@ from packages.extractor.timeline.schema import (
     TermRef,
     TimelineEvent,
     TimelineStats,
-    TimelineTrack,
-    Track,
     WhenAnchor,
-    track_for_kind,
 )
 
 logger = logging.getLogger("packages.extractor.timeline")
@@ -62,24 +76,19 @@ logger = logging.getLogger("packages.extractor.timeline")
 
 # --------------------------------------------------------------------- maps
 
-#: NER entity type → (party role, party kind). Only the subset of
-#: types that map to actors. Other types route through their own
-#: collectors.
+#: NER entity type → (party role, party kind) for MAINDATA-section
+#: parties only. Procedural personnel (judge, prosecutor, lawyer,
+#: witness, court, agency) are NOT mapped here — they live on the
+#: case header rather than as event actors. The split between
+#: metadata and maindata is owned by
+#: :func:`packages.extractor.ner.schema.section_for`.
 _ENTITY_TO_ACTOR: dict[str, tuple[str, str]] = {
-    # substantive (in maindata)
     "per_defendant":  ("defendant",  "person"),
     "per_plaintiff":  ("plaintiff",  "person"),
     "per_victim":     ("victim",     "person"),
     "org_defendant":  ("defendant",  "organization"),
     "org_plaintiff":  ("plaintiff",  "organization"),
     "org_victim":     ("victim",     "organization"),
-    # procedural (in metadata)
-    "per_judge":      ("judge",      "person"),
-    "per_prosecutor": ("prosecutor", "person"),
-    "per_lawyer":     ("lawyer",     "person"),
-    "per_witness":    ("witness",    "person"),
-    "org_court":      ("court",      "organization"),
-    "org_agency":     ("agency",     "organization"),
 }
 
 
@@ -140,25 +149,70 @@ def _entity_to_crime(ent: ExtractedEntity) -> str | None:
     return ent.text if ent.type == "crime" else None
 
 
-def _build_case_header(
-    record: PersistedExtraction,
-) -> CaseHeader:
-    """Aggregate metadata + summary into the per-case card.
+def _section_of(ent: ExtractedEntity) -> str:
+    """Return ``"metadata"`` or ``"maindata"`` for an entity, defaulting safely.
 
-    De-duplication is exact-match-on-text after NFC; sort order
-    preserved as encountered for byte-stability.
+    The NER schema's :func:`section_for` raises on unknown ids; the
+    builder must not fail on schema drift, so we default to
+    ``"maindata"`` (kept in the event lane / ambient bucket) on
+    unrecognised types.
+    """
+    try:
+        return section_for(ent.type)
+    except ValueError:
+        return "maindata"
+
+
+def _dedup_actors(actors: list[Actor]) -> list[Actor]:
+    """Preserve first-seen order; dedupe by ``(role, text)``."""
+    seen: set[tuple[str, str]] = set()
+    out: list[Actor] = []
+    for a in actors:
+        key = (a.role, a.text)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(a)
+    return out
+
+
+# --------------------------------------------------------------------- header
+
+
+def _build_case_header(
+    *,
+    record: PersistedExtraction,
+    extra_metadata_entities: list[ExtractedEntity],
+) -> CaseHeader:
+    """Aggregate all logistics entities into the per-case card.
+
+    ``record.metadata`` is the LLM's metadata partition;
+    ``extra_metadata_entities`` collects any METADATA-typed entity
+    that the builder also saw via the cluster pre-pass (i.e. it
+    appeared near a date in the source). Both flows feed the same
+    deduper so a judge mentioned both in the preamble and beside
+    a hearing date appears exactly once on the header.
+
+    Substantive parties (the maindata-section ``per_*`` /
+    ``org_*`` triple) come from ``record.maindata`` and dedupe on
+    ``(role, text)``.
     """
     case_number: str | None = None
     court: str | None = None
     judges: list[str] = []
     prosecutors: list[str] = []
     lawyers: list[str] = []
+    witnesses: list[Actor] = []
+    agencies: list[str] = []
 
     seen_judge: set[str] = set()
     seen_pros: set[str] = set()
     seen_lawyer: set[str] = set()
+    seen_witness: set[str] = set()
+    seen_agency: set[str] = set()
 
-    for ent in record.metadata:
+    def _ingest(ent: ExtractedEntity) -> None:
+        nonlocal case_number, court
         t, txt = ent.type, ent.text
         if t == "case_number" and case_number is None:
             case_number = txt
@@ -173,6 +227,26 @@ def _build_case_header(
         elif t == "per_lawyer" and txt not in seen_lawyer:
             lawyers.append(txt)
             seen_lawyer.add(txt)
+        elif t == "per_witness" and txt not in seen_witness:
+            witnesses.append(Actor(
+                role="witness",
+                kind="person",
+                type="per_witness",
+                text=txt,
+            ))
+            seen_witness.add(txt)
+        elif t == "org_agency" and txt not in seen_agency:
+            agencies.append(txt)
+            seen_agency.add(txt)
+
+    for ent in record.metadata:
+        _ingest(ent)
+    # The cluster pre-pass may have surfaced additional METADATA
+    # entities the LLM listed under maindata or that appear only
+    # near a date in the source — pass them through the same
+    # deduper.
+    for ent in extra_metadata_entities:
+        _ingest(ent)
 
     parties = PartySummary()
     seen_party: set[tuple[str, str]] = set()
@@ -195,6 +269,8 @@ def _build_case_header(
         judges=judges,
         prosecutors=prosecutors,
         lawyers=lawyers,
+        witnesses=_dedup_actors(witnesses),
+        agencies=agencies,
         parties=parties,
     )
 
@@ -219,15 +295,24 @@ def _build_outcome(record: PersistedExtraction) -> CaseOutcome:
     )
 
 
+# --------------------------------------------------------------------- events
+
+
 def _build_event(
     *,
     cluster: Cluster,
     source_text: str,
     event_id: str,
-    track: Track,
     is_ambient: bool,
-) -> TimelineEvent:
-    """Build a :class:`TimelineEvent` from a cluster."""
+) -> TimelineEvent | None:
+    """Build a :class:`TimelineEvent` from a cluster.
+
+    Returns ``None`` if the cluster contributes no MAINDATA callouts
+    AND is not the ambient bucket — i.e. a date with only
+    procedural personnel near it. Those clusters are silently
+    dropped from the events list (the personnel still feed the
+    case header at case scope).
+    """
     actors: list[Actor] = []
     places: list[Place] = []
     money: list[MoneyRef] = []
@@ -246,6 +331,8 @@ def _build_event(
 
     for le in cluster.members:
         ent = le.entity
+        if _section_of(ent) != "maindata":
+            continue
         if (a := _entity_to_actor(ent)) is not None:
             key = (a.role, a.text)
             if key not in seen_actor:
@@ -274,9 +361,26 @@ def _build_event(
                 sentences.append(sn)
                 seen_sent.add(key2)
 
-    when = None
-    kind = "ambient"
-    span_text = None
+    has_metadata_members = any(
+        _section_of(le.entity) == "metadata" for le in cluster.members
+    )
+    has_maindata_callouts = bool(
+        actors or places or money or statutes or terms or crimes or sentences,
+    )
+    if (
+        not is_ambient
+        and has_metadata_members
+        and not has_maindata_callouts
+    ):
+        # Purely procedural cluster — judge / prosecutor / court
+        # near a date with no other content. The personnel
+        # mentions still feed the case header via the parallel
+        # pre-pass; they don't need a chronological row.
+        return None
+
+    when: WhenAnchor | None = None
+    kind: str = "unknown"
+    span_text: str | None = None
     char_start = cluster.char_start
     char_end = cluster.char_end
 
@@ -284,22 +388,17 @@ def _build_event(
         anchor_le = cluster.anchor
         anchor_ent = anchor_le.entity
         if anchor_le.pre_resolved is not None:
-            # Relative span that was already resolved into a
-            # full WhenAnchor by the pre-pass — use it verbatim
-            # so we don't lose the relative-provenance fields.
             when = anchor_le.pre_resolved
         else:
             when = parse_date_to_anchor(anchor_ent.text, page=anchor_ent.page)
         kind = classify_event_kind(cluster, source_text=source_text)
         if char_start is not None and char_end is not None:
-            # 240-char neighbourhood for UI tooltips.
             a = max(0, char_start - 80)
             b = min(len(source_text), char_end + 80)
             span_text = source_text[a:b]
 
     return TimelineEvent(
         event_id=event_id,
-        track=track,
         when=when,
         kind=kind,  # type: ignore[arg-type]
         actors=actors,
@@ -315,82 +414,30 @@ def _build_event(
     )
 
 
-# --------------------------------------------------------------------- entry
+# --------------------------------------------------------------------- ambient
 
 
-def _split_ambient_by_section(
-    ambient: Cluster,
-) -> tuple[Cluster, Cluster]:
-    """Partition an ambient cluster into ``(meta, main)`` sub-clusters.
+def _filter_ambient_to_maindata(ambient: Cluster) -> Cluster:
+    """Return a copy of ``ambient`` keeping only MAINDATA-typed members.
 
-    Each member is routed by :func:`section_for` on its NER type id —
-    metadata-typed entities (``case_number``, ``per_judge``, …) go to
-    the procedural ambient bucket; maindata-typed entities (parties,
-    money, statute_ref, …) go to the substantive ambient bucket.
-    Order within each sub-cluster is preserved.
+    Procedural personnel (METADATA-typed) never enter the ambient
+    bucket — they are aggregated into the case header by the
+    parallel pre-pass.
     """
-    meta = Cluster(anchor=None, members=[])
-    main = Cluster(anchor=None, members=[])
+    out = Cluster(anchor=None, members=[])
     for le in ambient.members:
-        try:
-            sect = section_for(le.entity.type)
-        except ValueError:
-            sect = "maindata"
-        if sect == "metadata":
-            meta.members.append(le)
-        else:
-            main.members.append(le)
-    return meta, main
+        if _section_of(le.entity) == "maindata":
+            out.members.append(le)
+    return out
 
+
+# --------------------------------------------------------------------- relatives
 
 _UNRESOLVED_SORT_KEY = "9999-99-99T99:99:99"
 
-
-def _finalise_track(
-    *,
-    track: Track,
-    dated_events: list[TimelineEvent],
-    ambient_cluster: Cluster,
-    source_text: str,
-    doc_name: str,
-) -> TimelineTrack:
-    """Sort, re-id, and box up one track's events + ambient."""
-    dated_events.sort(key=lambda e: (
-        e.when.sort_key if e.when else _UNRESOLVED_SORT_KEY,
-        e.char_start if e.char_start is not None else 1 << 30,
-    ))
-    prefix = "M" if track == "meta" else "X"
-    for idx, ev in enumerate(dated_events):
-        ev.event_id = f"{doc_name}:{prefix}{idx:03d}"
-
-    ambient_event: TimelineEvent | None = None
-    if ambient_cluster.members:
-        ambient_event = _build_event(
-            cluster=ambient_cluster,
-            source_text=source_text,
-            event_id=f"{doc_name}:{prefix}A00",
-            track=track,
-            is_ambient=True,
-        )
-
-    n_dated = len(dated_events)
-    n_events = n_dated + (1 if ambient_event is not None else 0)
-    return TimelineTrack(
-        track=track,
-        events=dated_events,
-        ambient=ambient_event,
-        n_events=n_events,
-        n_dated=n_dated,
-    )
-
-
 #: Placeholder anchor-event-id used in pass 1 of the cross-link.
-#: After ``_finalise_track`` assigns final event ids, we walk all
-#: events and patch ``__src_anchor_<idx>__`` markers to the actual
-#: anchor event id. The marker is unambiguous (the absolute-anchor
-#: index is a stable per-doc integer counter) and never escapes the
-#: builder — `_patch_anchor_event_ids` always rewrites or clears
-#: it before the timeline is returned.
+#: After we assign final event ids, we walk all events and patch
+#: ``__src_anchor_<idx>__`` markers to the actual anchor event id.
 _ANCHOR_PLACEHOLDER_PREFIX = "__src_anchor_"
 _ANCHOR_PLACEHOLDER_SUFFIX = "__"
 
@@ -406,40 +453,9 @@ def _resolve_relatives(
 ) -> tuple[list[LocatedEntity], int, int, int]:
     """Walk located entities in source order and resolve relative spans.
 
-    Inputs:
-        ``located`` — the NER-emitted entities after location.
-        ``nfc_source`` — the NFC-normalised source text for the regex pre-pass.
-
-    Returns a 4-tuple:
-        ``merged`` — the located stream with regex-discovered relative
-            spans merged in (in source order). Each absolute ``date``
-            entity is tagged with a synthetic anchor-id via the
-            ``pre_resolved`` field's ``anchor_event_id`` placeholder
-            (so we can patch it later) — wait, that's only for
-            relatives. Absolute anchors keep ``pre_resolved=None``;
-            their position is recorded in ``abs_anchor_starts``.
-        ``n_total`` / ``n_resolved`` / ``n_unresolved`` — counts of
-            relative expressions encountered (NER-emitted plus
-            regex-discovered, after dedupe).
-
-    Algorithm:
-
-    1. Synthesise :class:`LocatedEntity` records for every regex
-       hit not already present in the NER stream (dedupe by exact
-       ``(start, end)`` match).
-    2. Sort the combined stream by ``start`` (unlocated entities
-       — ``start is None`` — drop to the end and keep their original
-       relative order).
-    3. Walk in source order. For each absolute ``date`` entity:
-       record its (start, anchor_idx) and update ``current_anchor``.
-       For each ``date_relative`` entity (NER-emitted or synthetic):
-       call :func:`parse_relative_to_anchor` and, on success,
-       promote the entity to type ``"date"`` carrying the resolved
-       :class:`WhenAnchor` in ``pre_resolved``. On failure, keep the
-       entity as ``date_relative`` (the clusterer ignores it for
-       anchor purposes; it flows into the ambient bucket).
+    See ``wiki/TIMELINE.md § 3a`` for the algorithm. Unchanged in
+    ``v3``; only the surrounding builder collapsed lanes.
     """
-    # 1. Build the regex-discovered relative entries.
     existing_spans = {
         (le.start, le.end)
         for le in located
@@ -450,22 +466,16 @@ def _resolve_relatives(
     for s, e, _ in regex_spans:
         if (s, e) in existing_spans:
             continue
-        # Use the exact source slice as the entity text so the
-        # raw surface is preserved (the locator would re-find this
-        # span anyway).
         raw = nfc_source[s:e]
         ent = ExtractedEntity(type="date_relative", text=raw)
         synthetic.append(LocatedEntity(entity=ent, start=s, end=e))
 
-    # 2. Merge and order by source position.
     combined = list(located) + synthetic
     combined.sort(key=lambda le: (
         le.start if le.start is not None else 1 << 30,
-        # Tiebreaker: NER entities (no pre_resolved) before synthetic.
         0 if le.pre_resolved is None else 1,
     ))
 
-    # 3. Walk in order to resolve relatives.
     merged: list[LocatedEntity] = []
     current_anchor: WhenAnchor | None = None
     current_anchor_idx: int | None = None
@@ -480,12 +490,6 @@ def _resolve_relatives(
             current_anchor = parse_date_to_anchor(ent.text, page=ent.page)
             current_anchor_idx = abs_anchor_counter
             abs_anchor_counter += 1
-            # Stash the source-anchor-id on a dedicated marker
-            # WhenAnchor so we can map cluster → anchor_idx later.
-            # We keep the anchor's own ``anchor_event_id`` empty;
-            # the patcher uses (start, end) → event_id mapping
-            # instead. The counter is only needed to disambiguate
-            # the anchor when patching the relatives below.
             merged.append(le)
             continue
 
@@ -504,12 +508,6 @@ def _resolve_relatives(
             )
             if resolved is not None and resolved.iso is not None:
                 n_resolved += 1
-                # Promote to type=date so the clusterer opens an
-                # event for it. The original entity.type is
-                # preserved on the inner ExtractedEntity via a new
-                # copy (so the section_for() lookup in ambient-
-                # split logic still sees date_relative if we ever
-                # leak one out).
                 promoted = ExtractedEntity(
                     type="date",
                     text=ent.text,
@@ -524,7 +522,6 @@ def _resolve_relatives(
                 ))
             else:
                 n_unresolved += 1
-                # Keep as date_relative — flows into ambient.
                 merged.append(le)
             continue
 
@@ -536,13 +533,12 @@ def _resolve_relatives(
 def _patch_anchor_event_ids(
     *,
     located: list[LocatedEntity],
-    meta_track: TimelineTrack,
-    main_track: TimelineTrack,
+    events: list[TimelineEvent],
 ) -> None:
     """Replace ``__src_anchor_<idx>__`` placeholders with real event ids.
 
-    Walks every dated event on both tracks. For absolute anchors
-    (``when.is_relative=False``), records the mapping
+    Walks every dated event in the single events list. For absolute
+    anchors (``when.is_relative=False``), records the mapping
     ``(char_start of anchor_entity) → event_id``. Then on a second
     pass, for every relative event, finds its anchor's char_start
     by re-walking ``located`` to recover the (anchor_idx → start)
@@ -551,54 +547,50 @@ def _patch_anchor_event_ids(
     anchor event was clustered into ambient) are cleared to
     ``None`` so on-disk readers don't see internal sentinels.
     """
-    # anchor_idx -> char_start of the absolute date entity
     anchor_idx_to_start: dict[int, int] = {}
     abs_counter = 0
     for le in located:
         if le.entity.type != "date":
             continue
-        # Skip promoted relatives (they have pre_resolved set);
-        # those are NOT absolute anchors, they are themselves
-        # being patched.
         if le.pre_resolved is not None:
             continue
         if le.start is not None:
             anchor_idx_to_start[abs_counter] = le.start
         abs_counter += 1
 
-    # char_start -> event_id (for absolute anchors only).
     start_to_event_id: dict[int, str] = {}
-    for track in (meta_track, main_track):
-        for ev in track.events:
-            if (
-                ev.when is not None
-                and not ev.when.is_relative
-                and ev.char_start is not None
-            ):
-                start_to_event_id[ev.char_start] = ev.event_id
+    for ev in events:
+        if (
+            ev.when is not None
+            and not ev.when.is_relative
+            and ev.char_start is not None
+        ):
+            start_to_event_id[ev.char_start] = ev.event_id
 
-    for track in (meta_track, main_track):
-        for ev in track.events:
-            if ev.when is None or not ev.when.is_relative:
-                continue
-            placeholder = ev.when.anchor_event_id
-            if placeholder is None or not placeholder.startswith(
-                _ANCHOR_PLACEHOLDER_PREFIX,
-            ):
-                continue
-            try:
-                idx = int(
-                    placeholder[len(_ANCHOR_PLACEHOLDER_PREFIX):
-                                -len(_ANCHOR_PLACEHOLDER_SUFFIX)],
-                )
-            except ValueError:
-                ev.when.anchor_event_id = None
-                continue
-            anchor_start = anchor_idx_to_start.get(idx)
-            if anchor_start is None:
-                ev.when.anchor_event_id = None
-                continue
-            ev.when.anchor_event_id = start_to_event_id.get(anchor_start)
+    for ev in events:
+        if ev.when is None or not ev.when.is_relative:
+            continue
+        placeholder = ev.when.anchor_event_id
+        if placeholder is None or not placeholder.startswith(
+            _ANCHOR_PLACEHOLDER_PREFIX,
+        ):
+            continue
+        try:
+            idx = int(
+                placeholder[len(_ANCHOR_PLACEHOLDER_PREFIX):
+                            -len(_ANCHOR_PLACEHOLDER_SUFFIX)],
+            )
+        except ValueError:
+            ev.when.anchor_event_id = None
+            continue
+        anchor_start = anchor_idx_to_start.get(idx)
+        if anchor_start is None:
+            ev.when.anchor_event_id = None
+            continue
+        ev.when.anchor_event_id = start_to_event_id.get(anchor_start)
+
+
+# --------------------------------------------------------------------- entry
 
 
 def build_timeline(
@@ -631,29 +623,27 @@ def build_timeline(
        ``date_relative`` and flow into the ambient bucket.
     4. Cluster located entities by date proximity within
        ``cluster_window_chars``.
-    5. For each dated cluster: classify the event kind, then route
-       to the procedural ``meta`` track or the substantive ``main``
-       track via :func:`track_for_kind`.
-    6. Split the ambient cluster (un-anchored entities) by NER
-       section (``METADATA_TYPES`` vs ``MAINDATA_TYPES``) into per-
-       track ambient buckets.
-    7. Stamp stable, sortable event ids per track and patch each
-       resolved relative event's ``anchor_event_id`` to its
-       absolute-anchor event id.
-    8. Emit the :class:`CaseTimeline` record.
+    5. Walk every cluster: split members into header_members
+       (METADATA-typed; collected for the case header card) and
+       event_members (MAINDATA-typed; the event's callouts). Emit
+       at most one :class:`TimelineEvent` per cluster, on the
+       single chronological lane. A cluster with no MAINDATA members
+       is silently skipped — its date had only logistics around it.
+    6. Build the :class:`CaseHeader` from ``record.metadata`` plus
+       any METADATA entities the cluster pre-pass surfaced.
+    7. Sort emitted events by ``(when.sort_key, char_start)`` and
+       stamp ids ``<doc>:E000``, ``E001``, …
+    8. Filter the ambient cluster to MAINDATA only; emit it as the
+       optional :class:`CaseTimeline.ambient` event.
+    9. Patch each resolved relative event's ``anchor_event_id`` to
+       its absolute-anchor event id.
+    10. Emit the :class:`CaseTimeline` record.
     """
     nfc_source = unicodedata.normalize("NFC", source_text)
 
-    # Locate every entity (metadata + maindata) once. Metadata
-    # entities (case_number, judge, court, ...) DO participate in
-    # clustering — their proximity to a date in the source is what
-    # tells us "Judge A presided at the hearing on date X". The
-    # CaseHeader card aggregates them at the case level
-    # independently.
     all_entities = list(record.all_entities)
     located = locate_entities(source_text=nfc_source, entities=all_entities)
 
-    # Relative pre-pass: regex scan + per-entity anchor resolution.
     located, n_rel_total, n_rel_resolved, n_rel_unresolved = _resolve_relatives(
         located=located,
         nfc_source=nfc_source,
@@ -664,74 +654,69 @@ def build_timeline(
         cluster_window_chars=cluster_window_chars,
     )
 
-    # Build dated events, then partition into meta vs main by event
-    # kind. Provisional event_ids are replaced in _finalise_track
-    # after we know the final order per track.
-    meta_events: list[TimelineEvent] = []
-    main_events: list[TimelineEvent] = []
+    # Collect METADATA entities surfaced by the cluster pre-pass —
+    # these are entities the locator placed near a date in the
+    # source. They may overlap with ``record.metadata`` (typical
+    # for a judge mentioned in the preamble); the header builder
+    # dedupes by (type, text).
+    header_extra: list[ExtractedEntity] = []
+    for cluster in dated_clusters:
+        for le in cluster.members:
+            if le.entity.type in METADATA_TYPES:
+                header_extra.append(le.entity)
+    for le in ambient.members:
+        if le.entity.type in METADATA_TYPES:
+            header_extra.append(le.entity)
+
+    events: list[TimelineEvent] = []
     for cluster in dated_clusters:
         ev = _build_event(
             cluster=cluster,
             source_text=nfc_source,
             event_id="__pending__",
-            track="main",  # placeholder; corrected immediately below
             is_ambient=False,
         )
-        track = track_for_kind(ev.kind)
-        ev.track = track
-        if track == "meta":
-            meta_events.append(ev)
-        else:
-            main_events.append(ev)
+        if ev is None:
+            continue
+        events.append(ev)
 
-    meta_ambient, main_ambient = _split_ambient_by_section(ambient)
+    events.sort(key=lambda e: (
+        e.when.sort_key if e.when else _UNRESOLVED_SORT_KEY,
+        e.char_start if e.char_start is not None else 1 << 30,
+    ))
+    for idx, ev in enumerate(events):
+        ev.event_id = f"{record.doc_name}:E{idx:03d}"
 
-    meta_track = _finalise_track(
-        track="meta",
-        dated_events=meta_events,
-        ambient_cluster=meta_ambient,
-        source_text=nfc_source,
-        doc_name=record.doc_name,
-    )
-    main_track = _finalise_track(
-        track="main",
-        dated_events=main_events,
-        ambient_cluster=main_ambient,
-        source_text=nfc_source,
-        doc_name=record.doc_name,
-    )
+    main_ambient_cluster = _filter_ambient_to_maindata(ambient)
+    ambient_event: TimelineEvent | None = None
+    if main_ambient_cluster.members:
+        ambient_event = _build_event(
+            cluster=main_ambient_cluster,
+            source_text=nfc_source,
+            event_id=f"{record.doc_name}:EA00",
+            is_ambient=True,
+        )
 
-    # Cross-link resolved relatives to their absolute anchor's
-    # final event id (now that the ids are stable).
     _patch_anchor_event_ids(
         located=located,
-        meta_track=meta_track,
-        main_track=main_track,
+        events=events,
     )
 
-    case_header = _build_case_header(record)
+    case_header = _build_case_header(
+        record=record,
+        extra_metadata_entities=header_extra,
+    )
     outcome = _build_outcome(record)
 
-    all_events: list[TimelineEvent] = []
-    all_events.extend(meta_track.events)
-    if meta_track.ambient is not None:
-        all_events.append(meta_track.ambient)
-    all_events.extend(main_track.events)
-    if main_track.ambient is not None:
-        all_events.append(main_track.ambient)
+    all_events: list[TimelineEvent] = list(events)
+    if ambient_event is not None:
+        all_events.append(ambient_event)
 
     _, n_unloc = location_stats(located)
     stats = TimelineStats(
         n_events=len(all_events),
-        n_dated=meta_track.n_dated + main_track.n_dated,
-        n_ambient=(
-            (1 if meta_track.ambient is not None else 0)
-            + (1 if main_track.ambient is not None else 0)
-        ),
-        n_meta_events=meta_track.n_events,
-        n_meta_dated=meta_track.n_dated,
-        n_main_events=main_track.n_events,
-        n_main_dated=main_track.n_dated,
+        n_dated=len(events),
+        n_ambient=1 if ambient_event is not None else 0,
         n_actors=sum(len(e.actors) for e in all_events),
         n_places=sum(len(e.places) for e in all_events),
         n_money=sum(len(e.money) for e in all_events),
@@ -753,8 +738,8 @@ def build_timeline(
         source_input_text_hash=record.input_text_hash,
         built_at=built_at or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         case=case_header,
-        meta=meta_track,
-        main=main_track,
+        events=events,
+        ambient=ambient_event,
         outcome=outcome,
         stats=stats,
     )

@@ -1,10 +1,21 @@
-# NER Model Roster
+# NER Model Roster — four NIM-hosted LLMs for the legal extractor
+
+> **Source of truth for** `packages/extractor/ner/client.py` and the
+> `model` block in
+> `packages/extractor/ner/configs/default.yaml`.
+> **Status**: pinned task-scoped short-list. Canonical model is
+> **`openai/gpt-oss-120b`**; the other three are reachable via the
+> same NIM endpoint for the `--compare` slice (§ 6).
+> **Siblings**: [`EXTRACTION.md`](EXTRACTION.md) (the procedure that
+> consumes this roster).
 
 Task-scoped short-list of LLMs evaluated on the Vietnamese legal NER
-task driven by `packages.extractor.ner` (see `wiki/EXTRACTION.md` for
-the procedure). This document is **not** a replacement for the global
-multi-tier roster in `docs/09-llm-integration.md`; it is a curated
-sub-list pinned for the NER extraction over `samplebanan.toaan.gov.vn`.
+task driven by `packages.extractor.ner` (see [`EXTRACTION.md`](EXTRACTION.md)
+for the procedure). This document is **not** a replacement for the
+global multi-tier roster in
+[`docs/09-llm-integration.md`](../docs/09-llm-integration.md); it is a
+curated sub-list pinned for the NER extraction over
+`samplebanan.toaan.gov.vn`.
 
 ## 1. Roster
 

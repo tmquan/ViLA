@@ -11,13 +11,18 @@ already been written under ``<output_root>/`` by
 Both shapes are auto-detected from the file extension.
 
 The output is a Mermaid ``timeline`` block — a **vertical**
-top-to-bottom flow of dates with text-annotated callouts, in the
-visual spirit of `jasonreisman/Timeline`_. Each track (procedural
-``meta`` and substantive ``main``) becomes a Mermaid ``section``;
-each event becomes a date label followed by one or more callout
-bullets chained with ``:``, so a single date can carry multiple
-annotations (the kind, the actor names, the sentence, …) the same
-way ``jasonreisman/Timeline`` stacks callouts at a tick mark.
+top-to-bottom flow with three sections:
+
+* ``Logistics`` — the static :class:`CaseHeader` roster (case
+  number, court, judges, prosecutors, lawyers, witnesses,
+  agencies). One bullet per row, no dates.
+* ``Development`` — the chronological events list, sorted by
+  ``when.sort_key``. Each event is a date label with chained
+  callouts (kind + crime / sentence / actor / money / statute /
+  term).
+* ``Ambient`` — present only when the timeline has an ambient
+  bucket of un-anchored maindata entities; renders as one summary
+  bullet line.
 
 Renderer output is byte-stable for byte-stable inputs. The CLI
 emits either a standalone ``.mmd`` file or a markdown document
@@ -26,8 +31,6 @@ inline on GitHub / Cursor / any markdown previewer.
 
 See ``wiki/TIMELINE.md § 9 / § 11`` for usage recipes and embedded
 sample renderings.
-
-.. _jasonreisman/Timeline: https://github.com/jasonreisman/Timeline
 """
 
 from __future__ import annotations
@@ -39,9 +42,9 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from packages.extractor.timeline.schema import (
+    CaseHeader,
     CaseTimeline,
     TimelineEvent,
-    TimelineTrack,
 )
 
 logger = logging.getLogger("packages.extractor.timeline.render")
@@ -117,9 +120,7 @@ def _event_callouts(ev: TimelineEvent) -> list[str]:
     follow in priority order — crimes → sentences → actors → money
     → statutes → legal terms — capped at
     :data:`_MAX_CALLOUTS_PER_EVENT` so every event stays a readable
-    vertical stack. This mirrors the multi-callout style of
-    ``jasonreisman/Timeline`` where one tick mark carries several
-    annotated bullets.
+    vertical stack.
     """
     out: list[str] = [ev.kind]
     for c in ev.crimes:
@@ -138,10 +139,6 @@ def _event_callouts(ev: TimelineEvent) -> list[str]:
     return [_safe_label(c, max_chars=48) for c in out]
 
 
-def _track_label(track: TimelineTrack) -> str:
-    return "Procedural (meta)" if track.track == "meta" else "Substantive (main)"
-
-
 def _case_title(timeline: CaseTimeline) -> str:
     """Compact one-line case title for the diagram title row."""
     bits = [timeline.doc_name]
@@ -150,6 +147,75 @@ def _case_title(timeline: CaseTimeline) -> str:
     if timeline.case.court:
         bits.append(timeline.case.court)
     return _safe_label(" — ".join(bits), max_chars=120)
+
+
+def _logistics_lines(case: CaseHeader) -> list[str]:
+    """Return the body lines for the ``Logistics`` mermaid section.
+
+    Each line is a ``Header : <bullet> : <bullet>`` row covering
+    one logical group (identifiers, panel, parties). Empty groups
+    are skipped so a header-light case (e.g. a stub) renders
+    cleanly.
+    """
+    lines: list[str] = []
+
+    ident_bits: list[str] = []
+    if case.case_number:
+        ident_bits.append(f"case_number {case.case_number}")
+    if case.court:
+        ident_bits.append(f"court {case.court}")
+    if case.case_type:
+        ident_bits.append(f"case_type {case.case_type}")
+    if case.primary_offence:
+        ident_bits.append(f"offence {case.primary_offence}")
+    if ident_bits:
+        lines.append(
+            "        Header : " + " : ".join(
+                _safe_label(b) for b in ident_bits
+            ),
+        )
+
+    panel_bits: list[str] = []
+    for j in case.judges:
+        panel_bits.append(f"judge {j}")
+    for p in case.prosecutors:
+        panel_bits.append(f"prosecutor {p}")
+    for ll in case.lawyers:
+        panel_bits.append(f"lawyer {ll}")
+    if panel_bits:
+        lines.append(
+            "        Header : " + " : ".join(
+                _safe_label(b) for b in panel_bits[:_MAX_CALLOUTS_PER_EVENT]
+            ),
+        )
+
+    witness_agency: list[str] = []
+    for w in case.witnesses:
+        witness_agency.append(f"witness {w.text}")
+    for ag in case.agencies:
+        witness_agency.append(f"agency {ag}")
+    if witness_agency:
+        lines.append(
+            "        Header : " + " : ".join(
+                _safe_label(b) for b in witness_agency[:_MAX_CALLOUTS_PER_EVENT]
+            ),
+        )
+
+    party_bits: list[str] = []
+    for d in case.parties.defendants:
+        party_bits.append(f"defendant {d.text}")
+    for p in case.parties.plaintiffs:
+        party_bits.append(f"plaintiff {p.text}")
+    for v in case.parties.victims:
+        party_bits.append(f"victim {v.text}")
+    if party_bits:
+        lines.append(
+            "        Header : " + " : ".join(
+                _safe_label(b) for b in party_bits[:_MAX_CALLOUTS_PER_EVENT]
+            ),
+        )
+
+    return lines
 
 
 # --------------------------------------------------------------------- timeline
@@ -161,10 +227,10 @@ def render_mermaid_timeline(timeline: CaseTimeline) -> str:
     Layout (top → bottom):
 
     * Title row — ``<doc> — <case_type> — <court>``.
-    * Section "Procedural (meta)" — meta-track dated events.
-    * Section "Substantive (main)" — main-track dated events.
-    * Section "Ambient (no date)" if either lane has un-anchored
-      entities; one summary bullet per side.
+    * Section ``Logistics`` — header roster as ``Header : ...`` rows.
+    * Section ``Development`` — dated events with chained callouts.
+    * Section ``Ambient`` — one summary bullet when the timeline
+      carries un-anchored maindata entities.
 
     Each event renders as a date label with chained callouts:
 
@@ -187,29 +253,31 @@ def render_mermaid_timeline(timeline: CaseTimeline) -> str:
     out.append("timeline")
     out.append(f"    title {_case_title(timeline)}")
 
-    for track in (timeline.meta, timeline.main):
-        out.append(f"    section {_track_label(track)}")
-        emitted_any = False
-        for ev in track.events:
-            when = ev.when
-            if when is None:
-                continue
-            stamp = when.iso or when.iso_partial
-            if stamp is None:
-                continue
-            callouts = _event_callouts(ev)
-            line = f"        {stamp} : " + " : ".join(callouts)
-            out.append(line)
-            emitted_any = True
-        if not emitted_any:
-            out.append("        — : (no dated events)")
+    logistics_lines = _logistics_lines(timeline.case)
+    out.append("    section Logistics")
+    if logistics_lines:
+        out.extend(logistics_lines)
+    else:
+        out.append("        Header : (no logistics on record)")
 
-    # Ambient — one summary bullet per lane that has anything.
-    ambient_lines: list[str] = []
-    for track in (timeline.meta, timeline.main):
-        amb = track.ambient
-        if amb is None:
+    out.append("    section Development")
+    emitted_any = False
+    for ev in timeline.events:
+        when = ev.when
+        if when is None:
             continue
+        stamp = when.iso or when.iso_partial
+        if stamp is None:
+            continue
+        callouts = _event_callouts(ev)
+        line = f"        {stamp} : " + " : ".join(callouts)
+        out.append(line)
+        emitted_any = True
+    if not emitted_any:
+        out.append("        — : (no dated events)")
+
+    amb = timeline.ambient
+    if amb is not None:
         bits: list[str] = []
         if amb.actors:
             bits.append(f"{len(amb.actors)} actors")
@@ -225,15 +293,11 @@ def render_mermaid_timeline(timeline: CaseTimeline) -> str:
             bits.append(f"{len(amb.crimes)} crimes")
         if amb.sentences:
             bits.append(f"{len(amb.sentences)} sentences")
-        if not bits:
-            continue
-        side = track.track
-        ambient_lines.append(
-            f"        {side} : " + _safe_label(", ".join(bits)),
-        )
-    if ambient_lines:
-        out.append("    section Ambient (no date)")
-        out.extend(ambient_lines)
+        if bits:
+            out.append("    section Ambient")
+            out.append(
+                "        development : " + _safe_label(", ".join(bits)),
+            )
 
     return "\n".join(out) + "\n"
 
