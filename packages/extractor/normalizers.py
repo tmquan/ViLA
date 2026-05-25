@@ -28,6 +28,7 @@ Site-specific normalizers register themselves on import — see
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
@@ -325,8 +326,134 @@ class VietnameseTextNormalizer:
         return df
 
 
+# Letter-spacing collapse. Background: pypdf renders letter-spaced
+# PDF glyph runs (XObject character placement, common in court
+# letterheads / titles) as
+#
+#     T h \u00f4 n g   t i n   b \u00e1 o
+#
+# i.e. each character becomes its own whitespace-bracketed token, with
+# 2+ horizontal-whitespace runs marking the original *word* boundary
+# and a single horizontal-whitespace run between glyphs *inside* one
+# word. The collapser walks line by line, splits each line into "word
+# groups" on the 2+-whitespace boundary signal, then joins single-
+# letter tokens back into the original word.
+#
+# Two evidence thresholds avoid false positives in natural Vietnamese
+# text (which has a few single-char particles like \u1edf / \u00e0 / \u01b0):
+#
+#   * Multi-group lines (2+ word groups separated by 2+ whitespace):
+#     only need 2+ single-letter tokens per group to collapse. The
+#     2+-whitespace boundary itself is the strong signal.
+#   * Single-group lines (one word group, no 2+-whitespace boundary):
+#     need 3+ single-letter tokens to collapse. A 2-char run on a
+#     standalone line ("a b") could be natural text.
+#
+# Token must be a single ``str.isalpha()`` Unicode codepoint -- digits
+# / punctuation never trigger the collapse so spaced numerals like
+# "S\u1ed1 1 2 3" stay intact.
+_LS_BOUNDARY_RE = re.compile(r"[ \t\u00a0\u2007\u202f]{2,}")
+_LS_INTRA_RE = re.compile(r"[ \u00a0\u2007\u202f]")
+
+
+def _is_single_letter(token: str) -> bool:
+    return len(token) == 1 and token.isalpha()
+
+
+def _collapse_line(line: str) -> str:
+    """Collapse letter-spaced word groups inside one already-split line."""
+    if not line.strip():
+        return line
+    # Split on 2+-whitespace boundary, preserving the boundary chunks
+    # so we can rebuild the line verbatim.
+    pieces = _LS_BOUNDARY_RE.split(line)
+    seps = _LS_BOUNDARY_RE.findall(line)
+    multi_group = len(pieces) > 1
+    threshold = 2 if multi_group else 3
+
+    new_pieces: list[str] = []
+    for piece in pieces:
+        if not piece:
+            new_pieces.append(piece)
+            continue
+        tokens = [t for t in _LS_INTRA_RE.split(piece) if t]
+        if (
+            len(tokens) >= threshold
+            and all(_is_single_letter(t) for t in tokens)
+        ):
+            new_pieces.append("".join(tokens))
+        else:
+            new_pieces.append(piece)
+
+    out: list[str] = []
+    for i, piece in enumerate(new_pieces):
+        out.append(piece)
+        if i < len(seps):
+            out.append(seps[i])
+    return "".join(out)
+
+
+def _collapse_letter_spaced(text: str) -> str:
+    """Collapse pypdf letter-spacing artefacts in ``text``.
+
+    ``T h \u00f4 n g  t i n`` becomes ``Th\u00f4ng  tin`` (the 2-space
+    word boundary survives; ``vietnamese_text`` collapses it later).
+    The collapser is idempotent: a re-run on the cleaned text is a
+    no-op because the surviving 2-space boundary still separates two
+    multi-character word groups, and multi-character groups never
+    match the all-single-letter predicate.
+    """
+    if not text or not isinstance(text, str):
+        return text
+    # ``splitlines(keepends=True)`` preserves \r\n / \n / \r terminators
+    # so the rebuilt text is byte-for-byte identical on lines that
+    # don't trigger the collapse.
+    lines = text.splitlines(keepends=True)
+    if not lines:
+        return text
+    out: list[str] = []
+    for raw in lines:
+        if raw.endswith("\r\n"):
+            body, term = raw[:-2], "\r\n"
+        elif raw.endswith("\n") or raw.endswith("\r"):
+            body, term = raw[:-1], raw[-1]
+        else:
+            body, term = raw, ""
+        out.append(_collapse_line(body) + term)
+    return "".join(out)
+
+
+@register_normalizer("letter_spaced_collapse")
+class LetterSpacedCollapseNormalizer:
+    """Collapse pypdf letter-spacing artefacts on the ``markdown`` column.
+
+    Place ahead of :class:`VietnameseTextNormalizer` in the chain --
+    Vietnamese text normalisation also collapses runs of horizontal
+    whitespace to a single space, which would erase the word-boundary
+    signal this normalizer relies on (``\\w \\w \\w  \\w \\w \\w`` ->
+    ``\\w \\w \\w \\w \\w \\w``).
+
+    Operates on the ``markdown`` column so it lives naturally between
+    :class:`packages.parser.stage.PdfParseStage` and the markdown
+    writer, but works just as well in the extractor chain when a site
+    skips the parser-side fix.
+    """
+
+    name: str = "letter_spaced_collapse"
+    columns: tuple[str, ...] = ("markdown",)
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if "markdown" not in df.columns:
+            return df
+        df["markdown"] = df["markdown"].map(
+            lambda v: _collapse_letter_spaced(v) if isinstance(v, str) and v else v,
+        )
+        return df
+
+
 __all__ = [
     "NORMALIZER_REGISTRY",
+    "LetterSpacedCollapseNormalizer",
     "Normalizer",
     "NormalizerChainStage",
     "VietnameseTextNormalizer",

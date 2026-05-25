@@ -68,6 +68,25 @@ parser:
   nim_tool: markdown_bbox         # markdown_bbox | markdown_no_bbox | detection_only
   nim_dpi: 150                    # PDF -> PNG raster resolution
   timeout_s: 120.0
+  # Declarative parser-side normalizer chain. Runs immediately after
+  # PdfParseStage on the in-memory ``markdown`` column, BEFORE the
+  # markdown is written to disk -- so ``data/<host>/md/*.md`` is
+  # already canonical and downstream consumers (extractor, embedder,
+  # ad-hoc readers) see the cleaned text without re-running this work.
+  #
+  # Order matters:
+  #   1. ``letter_spaced_collapse`` first -- relies on the 2+-space
+  #      word-boundary signal pypdf emits between letter-spaced glyphs
+  #      ("T h \u00f4 n g  t i n" -> "Th\u00f4ng tin").
+  #   2. ``vietnamese_text`` second -- ftfy + NFC + tone-mark + final
+  #      whitespace cleanup (collapses the 2-space boundaries to one).
+  #
+  # Reuses the same registry-backed chain stage the extractor uses,
+  # so each name resolves via packages.extractor.normalizers.NORMALIZER_REGISTRY.
+  # An empty list explicitly disables parser-side normalisation.
+  normalizers:
+    - letter_spaced_collapse
+    - vietnamese_text
 
 extractor:
   # Declarative normalizer chain (wiki/DATASITES.md §3.5). congbobanan ships

@@ -58,12 +58,18 @@ class MarkdownPerDocWriter(ProcessingStage[DocumentBatch, FileGroupTask]):
     Non-JSON-serialisable cells fall back to ``str(value)`` via
     ``json.dumps(..., default=str)``. Binary columns (e.g. ``pdf_bytes``)
     are dropped entirely to keep the meta sidecar small and greppable.
+
+    ``skip_existing`` (default True) makes the writer idempotent: rows
+    whose ``<doc_name>.md`` is already on disk are passed over without
+    rewriting either the body or the meta sidecar. Disable it when the
+    parser has been upgraded and you want every md re-emitted.
     """
 
     path: str
     doc_name_field: str = "doc_name"
     markdown_field: str = "markdown"
     drop_fields: tuple[str, ...] = ("pdf_bytes",)
+    skip_existing: bool = True
     name: str = "markdown_per_doc_writer"
     resources: Resources = field(default_factory=lambda: Resources(cpus=0.5))
     batch_size: int = 1
@@ -90,6 +96,16 @@ class MarkdownPerDocWriter(ProcessingStage[DocumentBatch, FileGroupTask]):
                     self.doc_name_field,
                 )
                 continue
+            md_path = Path(self.path) / f"{doc_name}{MARKDOWN_EXTENSION}"
+            meta_path = Path(self.path) / f"{doc_name}{META_EXTENSION}"
+            if self.skip_existing and md_path.exists():
+                # Idempotent resume: leave the existing md untouched.
+                # We still report the path in the FileGroupTask so
+                # downstream stages can address the row.
+                written.append(str(md_path))
+                if meta_path.exists():
+                    written.append(str(meta_path))
+                continue
             markdown = str(row.get(self.markdown_field) or "")
             # Contract: upstream drops empty-markdown rows (see
             # PdfParseStage). Defensive: never write a 0-byte <doc>.md
@@ -100,8 +116,6 @@ class MarkdownPerDocWriter(ProcessingStage[DocumentBatch, FileGroupTask]):
                     doc_name, self.markdown_field,
                 )
                 continue
-            md_path = Path(self.path) / f"{doc_name}{MARKDOWN_EXTENSION}"
-            meta_path = Path(self.path) / f"{doc_name}{META_EXTENSION}"
 
             md_path.write_text(markdown, encoding="utf-8")
             meta = {k: _jsonable(v) for k, v in row.items() if k not in drop}

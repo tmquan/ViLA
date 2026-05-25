@@ -255,6 +255,21 @@ class ParserCfg:
     # metadata into ``md/<scope>/<id>.meta.json`` without nuking the
     # markdown cache.
     force: bool = False
+    #: Declarative parser-side normalizer list (mirrors
+    #: :attr:`ExtractorCfg.normalizers`). Each entry is the registered
+    #: name of a Curator-stage normalizer in
+    #: :mod:`packages.extractor.normalizers`. The chain runs
+    #: immediately after :class:`packages.parser.stage.PdfParseStage`
+    #: on the in-memory ``markdown`` column, BEFORE the markdown
+    #: writer commits it to disk -- so ``data/<host>/md/*.md`` is
+    #: already canonical and downstream consumers (extractor,
+    #: embedder, ad-hoc readers) see the cleaned text without
+    #: re-running this work. Order matters: place
+    #: ``letter_spaced_collapse`` before ``vietnamese_text`` because
+    #: the latter collapses the 2-space word-boundary signal the
+    #: former relies on. Empty list (the default) keeps the parser
+    #: writing whatever pypdf / nemoretriever-parse emit verbatim.
+    normalizers: list[str] = field(default_factory=list)
 
 
 @dataclass

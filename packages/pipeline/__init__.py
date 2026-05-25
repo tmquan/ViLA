@@ -17,6 +17,7 @@ from packages.pipeline.factories import (
     build_extract_pipeline,
     build_reduce_pipeline,
 )
+from packages.pipeline.filters import SkipExistingMarkdownFilter
 from packages.pipeline.io import (
     JSONL_EXTENSION,
     MARKDOWN_EXTENSION,
@@ -41,6 +42,7 @@ __all__ = [
     "MarkdownReader",
     "MarkdownReaderStage",
     "ParquetPerDocWriter",
+    "SkipExistingMarkdownFilter",
     "build_embed_pipeline",
     "build_executor",
     "build_extract_pipeline",
