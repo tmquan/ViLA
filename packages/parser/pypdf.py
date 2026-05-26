@@ -107,23 +107,63 @@ class PypdfParser(ParserAlgorithm):
                 "falling back to raw bytes", type(exc).__name__, exc,
             )
             healed, patches = data, []
-        if patches:
-            logger.debug(
-                "PypdfParser: healed %d Vietnamese CMap entries", len(patches),
-            )
+        logger.debug(
+            "PypdfParser HEAL_PROBE: in=%d out=%d patches=%d",
+            len(data), len(healed), len(patches),
+        )
 
-        reader = pypdf.PdfReader(io.BytesIO(healed))
+        # ``pypdf.PdfReader`` raises on malformed PDFs (missing
+        # startxref, truncated streams, invalid xref tables, ...).
+        # A few thousand of those exist in the congbobanan corpus.
+        # Without this guard the exception propagates up through
+        # ``parse() -> PdfParseStage.process() -> Ray worker`` and
+        # eventually crashes the pipeline supervisor. Return an empty
+        # result with a ``parse_error`` metadata flag instead so the
+        # downstream stage (MarkdownPerDocWriter) drops the row
+        # cleanly and the run keeps going. Mode A/B/C/D defects of
+        # readable PDFs are handled inside the page loop's
+        # per-page try/except below; this guard is strictly for the
+        # "PDF cannot even be opened" case.
+        try:
+            reader = pypdf.PdfReader(io.BytesIO(healed))
+        except Exception as exc:
+            logger.warning(
+                "PypdfParser: pypdf failed to open PDF (%s: %s); "
+                "returning empty markdown", type(exc).__name__, exc,
+            )
+            result = {
+                "pages": [],
+                "markdown": "",
+                "confidence": None,
+                "parse_error": f"{type(exc).__name__}: {exc}",
+            }
+            if patches:
+                result["cmap_patches"] = len(patches)
+            return result
+
         pages: list[dict[str, Any]] = []
         md_parts: list[str] = []
-        for i, page in enumerate(reader.pages, start=1):
-            try:
-                text = page.extract_text() or ""
-            except Exception:
-                text = ""
-            md = text.strip()
-            pages.append({"page_number": i, "markdown": md, "blocks": []})
-            if md:
-                md_parts.append(f"## Page {i}\n\n{md}")
+        # Iterating ``reader.pages`` can also raise on partially-
+        # corrupted xref tables (the open succeeded but a later page
+        # lookup blows up). Catch defensively so we degrade to a
+        # partial result with whatever pages we managed to read.
+        try:
+            page_iter = enumerate(reader.pages, start=1)
+            for i, page in page_iter:
+                try:
+                    text = page.extract_text() or ""
+                except Exception:
+                    text = ""
+                md = text.strip()
+                pages.append({"page_number": i, "markdown": md, "blocks": []})
+                if md:
+                    md_parts.append(f"## Page {i}\n\n{md}")
+        except Exception as exc:
+            logger.warning(
+                "PypdfParser: page iteration failed after %d pages "
+                "(%s: %s); returning partial result",
+                len(pages), type(exc).__name__, exc,
+            )
         result = {
             "pages": pages,
             "markdown": "\n\n".join(md_parts),
