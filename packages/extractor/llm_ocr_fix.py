@@ -5,26 +5,33 @@ Sends parsed markdown to a NIM-hosted LLM (default
 *edits* (small substring substitutions) for OCR-typo slips that the
 regex/dictionary-level normalizers cannot resolve. Each proposed edit
 is then validated against a stack of *shape* guardrails before being
-applied to the source markdown:
+applied -- with ``str.replace`` semantics -- to the source markdown:
 
-1. ``old`` must appear in the source EXACTLY ONCE (forces the model to
-   include enough surrounding context to disambiguate).
-2. ``old`` and ``new`` must have the SAME number of whitespace-
+1. ``old`` and ``new`` must have the SAME number of whitespace-
    separated tokens. This is the load-bearing rule -- in smoke tests
    the model sometimes hallucinates word insertions
    (e.g. ``"Viên kiêm sát"`` -> ``"Viên chức kiểm sát"`` instead of
    ``"Viện kiểm sát"``); the token-count check rejects such cases.
-3. Title-case tokens (proper nouns) must be character-identical
+2. Title-case tokens (proper nouns) must be character-identical
    between ``old`` and ``new`` -- prevents corruption of person /
    place names like ``Nguyễn Văn A``.
-4. All-uppercase tokens (acronyms / headings like ``TÒA ÁN``) must
+3. All-uppercase tokens (acronyms / headings like ``TÒA ÁN``) must
    also be character-identical.
-5. ``|len(new) - len(old)|`` <= ``MAX_LEN_DIFF_CHARS`` (5 default).
-6. ``old`` (and ``new``) must not contain digits -- protects case
+4. ``|len(new) - len(old)|`` <= ``MAX_LEN_DIFF_CHARS`` (5 default).
+5. ``old`` (and ``new``) must not contain digits -- protects case
    IDs, dates, statute numbers, money amounts.
-7. Per-document caps: at most ``MAX_EDITS_PER_DOC`` (30) edits applied
-   and at most ``MAX_CHANGE_RATIO`` (5%) of the source characters
-   touched in total.
+6. Per-document caps: at most ``MAX_EDITS_PER_DOC`` (30) distinct
+   edit *kinds* applied and at most ``MAX_CHANGE_RATIO`` (5%) of the
+   source characters touched in total (summed across all
+   occurrences of every edit).
+
+Edits are applied with ``str.replace(old, new)`` -- every occurrence
+of ``old`` in the document is corrected. The token-count + proper-
+noun + acronym + length guardrails make this safe: a purely
+diacritic / single-character substitution that survives them is
+correct everywhere it appears (Vietnamese OCR slips like
+``"Hùynh"`` -> ``"Huỳnh"`` or ``"ỉnh"`` -> ``"tỉnh"`` typically
+recur 20-50 times in a single judgment).
 
 The normalizer is **opt-in** via the declarative chain
 (``cfg.extractor.normalizers: [..., llm_ocr_fix]``) because each call
@@ -110,11 +117,45 @@ MAX_PER_EDIT_CHARS = 80
 MAX_LEN_DIFF_CHARS = 5
 
 
+#: Common Vietnamese single-syllable words that have OCR-confusable
+#: homophones. A bare-syllable edit (token count == 1) where ``old`` is
+#: in this set is REJECTED -- the LLM must use multi-token context to
+#: avoid global corruption of the legitimate sense. Example: the model
+#: keeps proposing ``"tình" -> "tỉnh"`` (correct in ``"tình Đồng Nai"``
+#: but wrong in ``"tình tiết"`` = "circumstances"). Multi-token form
+#: ``"tình Đồng Nai" -> "tỉnh Đồng Nai"`` is still allowed because the
+#: denylist only fires for solo edits.
+#:
+#: NFC-cased (lowered for the lookup); curated from real failures on
+#: the congbobanan corpus. Add entries here when a new false-positive
+#: is observed in production.
+_AMBIGUOUS_BARE_SYLLABLES: frozenset[str] = frozenset({
+    # tình (feeling) <-> tỉnh (province) <-> tịnh (peaceful)
+    "tình", "tỉnh", "tịnh", "tinh",
+    # toa (carriage) <-> tòa (court)
+    "toa", "tòa",
+    # lê (pear) <-> lẽ (reason) <-> lý (principle)
+    "lê", "lẽ", "lý",
+    # ban (board / give) <-> bản (copy / version) <-> bãn (dialect mark)
+    "ban", "bản",
+    # thuần (pure) <-> thuận (smooth)
+    "thuần", "thuận",
+    # quan (official) <-> quản (manage)
+    "quan", "quản",
+    # qua (cross / through) <-> quá (excess)
+    "qua", "quá",
+    # cao (tall) <-> cáo (report)
+    "cao", "cáo",
+})
+
+
 SYSTEM_PROMPT = """You correct OCR-typo slips in Vietnamese legal-text markdown produced by an OCR pipeline. The text is mostly clean; only fix the obvious slips.
 
 Output ONLY a JSON object of this exact shape, with no prose, no code fences, no commentary:
 
-{"edits": [{"old": "<verbatim substring including 3-5 chars of left+right context so it appears in the input EXACTLY ONCE>", "new": "<corrected version>"}]}
+{"edits": [{"old": "<verbatim substring of the OCR slip>", "new": "<corrected version>"}]}
+
+Each edit is applied as a word-boundary anchored regex replacement -- so EVERY whole-word occurrence of `old` in the document is corrected at once.
 
 HARD RULES (violations cause your output to be discarded):
 1. NEVER change proper nouns: person names, place names, organisation names, statute names.
@@ -122,17 +163,42 @@ HARD RULES (violations cause your output to be discarded):
 3. NEVER add or remove whole words. The number of whitespace-separated tokens in `old` and `new` MUST be equal.
 4. NEVER change document structure or whitespace.
 5. ONLY change a token if >99% confident it is a Vietnamese OCR typo (wrong / missing tone marks, single-letter substitutions producing the contextually wrong word).
-6. `old` MUST appear in the input EXACTLY ONCE; include surrounding context to make it unique.
-7. If you are unsure, OUTPUT NO EDIT for that span. Prefer empty `edits` over guesses.
+6. If you are unsure, OUTPUT NO EDIT for that span. Prefer empty `edits` over guesses.
 
-Vietnamese legal-text examples (these are the kinds of slips to fix):
-- "phiên toa" -> "phiên tòa"
-- "Toà án" -> "Tòa án"
-- "chỉ toạ" -> "chủ tọa"
-- "kiêm sát" -> "kiểm sát"
-- "viên kiêm sát" -> "viện kiểm sát"   (NOT "viên chức kiểm sát" -- that adds a word and is forbidden by rule 3)
-- "Bo luat hinh su" -> "Bộ luật hình sự"   (only when fully accentless)
-- "phiên toà" -> "phiên tòa"   (orthography update is OK)
+CRITICAL: bare-syllable vs multi-token context
+
+Bare-syllable fixes (single-token `old`) are applied to EVERY occurrence in the document. They are ONLY safe when the OLD form is itself NOT a valid Vietnamese word -- otherwise you will corrupt legitimate uses of the word elsewhere in the document.
+
+OK to fix as a bare syllable (the slip is not a real Vietnamese word):
+- "Hùynh" -> "Huỳnh"
+- "ỉnh" -> "tỉnh"
+- "khỏan" -> "khoản"
+- "tòan" -> "toàn"
+- "khỏang" -> "khoảng"
+- "mói" -> "mới"
+- "Đòan" -> "Đoàn"
+- "Tồa" -> "Tòa"
+
+FORBIDDEN as bare syllables -- use multi-token context only (the OLD form is a real Vietnamese word that appears legitimately elsewhere):
+- "tình" vs "tỉnh"   ("tình" = feeling, "tỉnh" = province; only fix in `<phrase> tỉnh + <PlaceName>`)
+  ✓ "tình Đồng Nai" -> "tỉnh Đồng Nai"
+  ✓ "tình Bến Tre" -> "tỉnh Bến Tre"
+  ✗ "tình" -> "tỉnh"   (would corrupt "tình tiết" = "circumstances", "tình cảm" = "feelings", etc.)
+- "toa" vs "tòa"   ("toa" = carriage, "tòa" = court)
+  ✓ "phiên toa" -> "phiên tòa"
+  ✗ "toa" -> "tòa"
+- "lê" vs "lẽ" / "lý"   ("lê" = pear; "lẽ" = reason; "lý" = principle)
+  ✓ "vì các lê trên" -> "vì các lẽ trên"
+  ✗ "lê" -> "lẽ"
+- "tinh" vs "tỉnh" / "tình"
+  ✗ "tinh" -> "tỉnh"   (use multi-token form)
+- Any single-syllable that is itself a common Vietnamese word: only fix in multi-token context.
+
+Examples of FORBIDDEN edits (will be rejected):
+- "viên kiêm sát" -> "viên chức kiểm sát"   (rule 3: adds a token)
+- "Nguyễn Văn A" -> "Nguyên Văn A"   (rule 1: proper-noun corruption)
+- "Điều 134" -> "Điều 13"   (rule 2: contains digits)
+- "Th" -> "Thúy"   (rule 5: stem rewrite, not a typo)
 
 Output the JSON object, nothing else."""
 
@@ -140,7 +206,19 @@ Output the JSON object, nothing else."""
 # --------------------------------------------------------- guardrails
 
 
-_TITLECASE_RE = re.compile(r".+")  # placeholder; we use char checks below
+def _base_letters(s: str) -> str:
+    """Return ``s`` with all combining marks stripped (NFD).
+
+    Two strings with the same base letters differ only in their
+    Vietnamese tone marks / vowel modifiers. ``"Hùynh"`` and
+    ``"Huỳnh"`` both reduce to ``"Huynh"``; ``"Th"`` and ``"Thúy"``
+    reduce to ``"Th"`` and ``"Thuy"`` respectively (different).
+    Used to gate solo-title-case edits to pure diacritic fixes,
+    which prevents hallucinated stem rewrites like the
+    ``"Th" -> "Thúy"`` bug observed against qwen3.5-122b-a10b.
+    """
+    nfd = unicodedata.normalize("NFD", s)
+    return "".join(c for c in nfd if not unicodedata.combining(c))
 
 
 def _is_titlecase_word(w: str) -> bool:
@@ -241,7 +319,57 @@ def is_safe_edit(old: str, new: str) -> tuple[bool, str | None]:
             if ot != nt:
                 return False, "acronym_change"
 
+    # Solo title-case edit: a SINGLE-token edit where the (only)
+    # token is title-case (e.g. ``"Hùynh"`` -> ``"Huỳnh"``,
+    # ``"Toà"`` -> ``"Tòa"``). These slip past the multi-word
+    # proper-noun guard but are highly susceptible to LLM stem
+    # hallucinations like ``"Th"`` -> ``"Thúy"`` (passes token
+    # count and len-diff but cascades into ``"Thẩm" -> "Thúyẩm"``
+    # under replace-all). For these we require base-letter
+    # equality (same letters after stripping combining marks),
+    # which permits diacritic / tone fixes but rejects stem
+    # rewrites.
+    if (
+        len(old_toks) == 1
+        and (_is_titlecase_word(old_toks[0]) or _is_titlecase_word(new_toks[0]))
+    ):
+        if _base_letters(old_toks[0]).lower() != _base_letters(new_toks[0]).lower():
+            return False, "solo_titlecase_stem_change"
+
+    # Solo edit where the OLD side is a real Vietnamese single-
+    # syllable word with known OCR-confusable homophones (curated in
+    # :data:`_AMBIGUOUS_BARE_SYLLABLES`). Reject -- the LLM must use
+    # multi-token context to disambiguate so we don't corrupt the
+    # legitimate sense globally. Example: ``"tình" -> "tỉnh"`` would
+    # corrupt ``"tình tiết"`` (= "details / circumstances") while
+    # only being correct in ``"tình + <PlaceName>"``.
+    #
+    # We deliberately check only the OLD side: if OLD is itself a
+    # corrupt non-word (e.g. ``"ỉnh"``), it's safe to apply globally
+    # even when NEW is a real word like ``"tỉnh"``.
+    if (
+        len(old_toks) == 1
+        and old_toks[0].lower() in _AMBIGUOUS_BARE_SYLLABLES
+    ):
+        return False, "ambiguous_bare_syllable"
+
     return True, None
+
+
+def _word_boundary_replace(text: str, old: str, new: str) -> tuple[str, int]:
+    """Replace ``old`` with ``new`` only at word-boundary aligned matches.
+
+    Returns ``(new_text, count)``. Anchors with ``\\b`` on both ends,
+    which is Unicode-aware in Python 3 -- so ``"ỉnh" -> "tỉnh"``
+    matches the standalone slip ``"ỉnh Đồng Nai"`` but does NOT
+    match the inner substring of ``"tỉnh Đồng Nai"`` (the leading
+    ``t`` is a word character, no boundary between it and ``ỉ``).
+    Multi-token edits like ``"phiên toa" -> "phiên tòa"`` still
+    work because the inner whitespace is matched literally.
+    """
+    pattern = r"\b" + re.escape(old) + r"\b"
+    new_text, n = re.subn(pattern, lambda _m: new, text)
+    return new_text, n
 
 
 def apply_edits(text: str, edits: Iterable[dict]) -> tuple[str, dict[str, int]]:
@@ -249,17 +377,28 @@ def apply_edits(text: str, edits: Iterable[dict]) -> tuple[str, dict[str, int]]:
 
     Returns the (possibly) corrected text plus a stats dict tracking
     how many edits were applied and how many were rejected (and why).
-    Each edit replaces only the FIRST match of ``edit["old"]``;
-    duplicate-match edits are rejected outright (the model is asked
-    to include unique context).
+    Each edit replaces ALL occurrences of ``edit["old"]`` (via
+    ``str.replace``) -- the model is asked to either pick a bare
+    typo that is unambiguously corrupt or include enough context
+    to disambiguate, and our shape guardrails (token count, proper
+    noun, acronym, length, no-digits) make global replacement safe.
+
+    Caps:
+
+    * ``MAX_EDITS_PER_DOC`` distinct ``(old, new)`` *kinds* applied;
+      this counts unique edits, not occurrences.
+    * ``MAX_CHANGE_RATIO`` of source characters touched in total --
+      this is computed as ``n_occurrences * |len(new) - len(old)|``
+      summed across all applied edits, so a high-frequency 1-char
+      slip in a long document still respects the budget.
     """
     stats = {
         "applied": 0,
         "rejected_unsafe": 0,
-        "rejected_not_unique": 0,
         "rejected_not_found": 0,
         "rejected_cap_count": 0,
         "rejected_cap_ratio": 0,
+        "occurrences": 0,
         "chars_changed": 0,
     }
     if not isinstance(text, str) or not text:
@@ -271,6 +410,10 @@ def apply_edits(text: str, edits: Iterable[dict]) -> tuple[str, dict[str, int]]:
     chars_changed = 0
     max_chars = max(1, int(len(text) * MAX_CHANGE_RATIO))
 
+    # De-duplicate identical edits so the model returning the same
+    # ``(old, new)`` pair twice doesn't burn our edits-per-doc cap.
+    seen: set[tuple[str, str]] = set()
+
     for e in edits:
         if stats["applied"] >= MAX_EDITS_PER_DOC:
             stats["rejected_cap_count"] += 1
@@ -280,23 +423,27 @@ def apply_edits(text: str, edits: Iterable[dict]) -> tuple[str, dict[str, int]]:
             continue
         old = e.get("old") or ""
         new = e.get("new") or ""
+        if (old, new) in seen:
+            continue
+        seen.add((old, new))
         ok, _reason = is_safe_edit(old, new)
         if not ok:
             stats["rejected_unsafe"] += 1
             continue
-        n = out.count(old)
+        # Probe count under the same word-boundary anchored regex
+        # we'll use to apply, so the budget check matches reality.
+        candidate, n = _word_boundary_replace(out, old, new)
         if n == 0:
             stats["rejected_not_found"] += 1
             continue
-        if n > 1:
-            stats["rejected_not_unique"] += 1
-            continue
-        delta = abs(len(new) - len(old))
+        per_occurrence_delta = abs(len(new) - len(old))
+        delta = n * per_occurrence_delta
         if chars_changed + delta > max_chars:
             stats["rejected_cap_ratio"] += 1
             continue
-        out = out.replace(old, new, 1)
+        out = candidate
         stats["applied"] += 1
+        stats["occurrences"] += n
         chars_changed += delta
 
     stats["chars_changed"] = chars_changed
@@ -637,8 +784,9 @@ class LlmOcrFixNormalizer:
         agg_stats = {
             "rows_called": 0, "rows_changed": 0,
             "applied": 0, "rejected_unsafe": 0,
-            "rejected_not_unique": 0, "rejected_not_found": 0,
+            "rejected_not_found": 0,
             "rejected_cap_count": 0, "rejected_cap_ratio": 0,
+            "occurrences": 0,
             "chars_changed": 0,
         }
         with ThreadPoolExecutor(max_workers=self._concurrency) as pool:
@@ -662,8 +810,9 @@ class LlmOcrFixNormalizer:
                     agg_stats["rows_changed"] += 1
                 for key in (
                     "applied", "rejected_unsafe",
-                    "rejected_not_unique", "rejected_not_found",
+                    "rejected_not_found",
                     "rejected_cap_count", "rejected_cap_ratio",
+                    "occurrences",
                     "chars_changed",
                 ):
                     agg_stats[key] += int(stats.get(key, 0))
@@ -674,12 +823,12 @@ class LlmOcrFixNormalizer:
                 df.at[idx, "markdown"] = new_text
 
         logger.info(
-            "llm_ocr_fix: %d/%d rows touched, %d edits applied "
-            "(%d unsafe, %d not-unique, %d not-found, %d cap-count, "
+            "llm_ocr_fix: %d/%d rows touched, %d edit-kinds applied "
+            "across %d occurrences (%d unsafe, %d not-found, %d cap-count, "
             "%d cap-ratio); %d chars changed",
             agg_stats["rows_changed"], agg_stats["rows_called"],
-            agg_stats["applied"], agg_stats["rejected_unsafe"],
-            agg_stats["rejected_not_unique"], agg_stats["rejected_not_found"],
+            agg_stats["applied"], agg_stats["occurrences"],
+            agg_stats["rejected_unsafe"], agg_stats["rejected_not_found"],
             agg_stats["rejected_cap_count"], agg_stats["rejected_cap_ratio"],
             agg_stats["chars_changed"],
         )

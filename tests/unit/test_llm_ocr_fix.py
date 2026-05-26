@@ -95,6 +95,59 @@ class TestIsSafeEdit:
         assert not ok
         assert reason == "acronym_change"
 
+    def test_solo_titlecase_stem_hallucination_blocked(self):
+        # The exact production failure: LLM proposed ``"Th" -> "Thúy"``,
+        # passed token-count + len-diff, but cascaded into
+        # ``"Thẩm" -> "Thúyẩm"`` under replace-all. Must reject any
+        # solo-title-case edit that changes BASE LETTERS (vs only
+        # diacritics).
+        ok, reason = is_safe_edit("Th", "Thúy")
+        assert not ok
+        assert reason == "solo_titlecase_stem_change"
+
+    def test_solo_titlecase_diacritic_only_allowed(self):
+        # Pure diacritic / tone fix on a solo title-case word:
+        # base letters identical, so allowed. This is the
+        # mainstream OCR-slip case (``"Hùynh" -> "Huỳnh"``).
+        ok, reason = is_safe_edit("Hùynh", "Huỳnh")
+        assert ok, f"unexpected reject: {reason}"
+        ok, reason = is_safe_edit("Toà", "Tòa")
+        assert ok, f"unexpected reject: {reason}"
+
+    def test_ambiguous_bare_syllable_blocked(self):
+        # The exact production failure: LLM proposed ``"tình" -> "tỉnh"``
+        # bare. This corrupted ``"tình tiết"`` (= "circumstances") in
+        # multiple places. Rejected -- multi-token context required.
+        ok, reason = is_safe_edit("tình", "tỉnh")
+        assert not ok
+        assert reason == "ambiguous_bare_syllable"
+
+    def test_ambiguous_bare_other_direction_also_blocked(self):
+        # The denylist fires when OLD is a real Vietnamese word, in
+        # either tone-mark direction: ``"tỉnh" -> "tình"`` is also
+        # ambiguous and must require multi-token context.
+        ok, reason = is_safe_edit("tỉnh", "tình")
+        assert not ok
+        assert reason == "ambiguous_bare_syllable"
+
+    def test_corrupt_old_to_real_word_allowed(self):
+        # The denylist only fires on the OLD side. If OLD is a
+        # corrupt non-word like ``"ỉnh"`` (no leading ``t``), it's
+        # safe to globally rewrite to ``"tỉnh"`` even though the
+        # target is in the denylist.
+        ok, reason = is_safe_edit("ỉnh", "tỉnh")
+        assert ok, f"unexpected reject: {reason}"
+
+    def test_ambiguous_in_multitoken_context_allowed(self):
+        # Same lemma, but inside a multi-token phrase: allowed
+        # because the context disambiguates which sense is intended.
+        ok, reason = is_safe_edit("tình Đồng Nai", "tỉnh Đồng Nai")
+        # The phrase has multi-word title-case run "Đồng Nai", so
+        # proper_noun_shape fires -- but only protects the title-case
+        # tokens (Đồng, Nai), not the lowercase "tình"/"tỉnh". The
+        # ambiguous-syllable check is skipped because token count > 1.
+        assert ok, f"unexpected reject: {reason}"
+
     def test_digit_token_blocked(self):
         ok, reason = is_safe_edit("Bản án 42/2024", "Bản án 42/2025")
         assert not ok
@@ -160,13 +213,52 @@ class TestApplyEdits:
         assert stats["applied"] == 0
         assert stats["rejected_unsafe"] == 1
 
-    def test_not_unique_rejected(self):
-        # Use a fragment that appears twice.
-        text = "phiên tòa . . . phiên tòa"
-        edits = [{"old": "phiên tòa", "new": "phiên toà"}]
+    def test_repeated_slip_replaced_everywhere(self):
+        # Replace-all semantics: every occurrence of the slip is fixed
+        # in one edit, so a high-frequency OCR typo (e.g. "Hùynh"
+        # 24x in a real judgment) is corrected with a single edit.
+        text = "Hùynh and Hùynh and Hùynh"
+        edits = [{"old": "Hùynh", "new": "Huỳnh"}]
         out, stats = apply_edits(text, edits)
-        assert out == text
-        assert stats["rejected_not_unique"] == 1
+        assert out == "Huỳnh and Huỳnh and Huỳnh"
+        assert stats["applied"] == 1
+        assert stats["occurrences"] == 3
+
+    def test_word_boundary_blocks_subword_cascade(self):
+        # The exact production cascade bug: LLM proposes
+        # ``"ỉnh" -> "tỉnh"`` for the slip, but the doc ALSO has
+        # legitimate ``"tỉnh Đồng Nai"``. Replace-all without
+        # word-boundary anchoring would corrupt the latter to
+        # ``"ttỉnh Đồng Nai"``. Word-boundary regex must match only
+        # the standalone slip.
+        text = "tỉnh Đồng Nai và ỉnh Bến Tre"  # 1 legit, 1 slip
+        edits = [{"old": "ỉnh", "new": "tỉnh"}]
+        out, stats = apply_edits(text, edits)
+        assert "ttỉnh" not in out
+        assert out == "tỉnh Đồng Nai và tỉnh Bến Tre"
+        assert stats["applied"] == 1
+        assert stats["occurrences"] == 1  # only the standalone slip
+
+    def test_multitoken_phrase_fix_with_inner_whitespace(self):
+        # Multi-token edits anchor on outer word boundaries; the
+        # inner space is matched literally.
+        text = "phiên toa khai mạc lúc 8 giờ"
+        edits = [{"old": "phiên toa", "new": "phiên tòa"}]
+        out, stats = apply_edits(text, edits)
+        assert out.startswith("phiên tòa khai mạc")
+        assert stats["applied"] == 1
+
+    def test_duplicate_edit_pair_dedup(self):
+        # If the model returns the same (old, new) pair twice, count
+        # it as one edit-kind so the per-doc cap is meaningful.
+        text = "Hùynh"
+        edits = [
+            {"old": "Hùynh", "new": "Huỳnh"},
+            {"old": "Hùynh", "new": "Huỳnh"},
+        ]
+        out, stats = apply_edits(text, edits)
+        assert out == "Huỳnh"
+        assert stats["applied"] == 1
 
     def test_not_found_rejected(self):
         # Same length so it passes the shape guardrails, but the
@@ -177,43 +269,50 @@ class TestApplyEdits:
         assert stats["rejected_not_found"] == 1
 
     def test_per_doc_count_cap(self):
-        # 31 valid lowercase 1-char swap edits should cap at 30.
-        text = " ".join(f"x{i}" for i in range(40))  # x0 .. x39 (digits!)
-        # That has digits -> all rejected. Use letter-only tokens.
-        text = " ".join(chr(ord("a") + i) + chr(ord("a") + i) for i in range(40))
-        # Actually just construct text with 40 unique two-char tokens:
-        text = " ".join(f"q{chr(ord('a') + i)}" for i in range(40))
-        # The 'q' + letter prefix avoids digit chars.
+        # 32 distinct edit-kinds; cap caps applied at MAX_EDITS_PER_DOC=30.
+        # Each edit is a unique 3-char letter-only token (so word-
+        # boundary regex matches cleanly) with len delta 0.
+        tokens: list[str] = []
+        for a in "abcd":
+            for b in "abcdefgh":
+                tokens.append(f"q{a}{b}")  # 32 unique 3-char tokens
+        text = " ".join(tokens)
         edits = [
-            {"old": f"q{chr(ord('a') + i)}", "new": f"r{chr(ord('a') + i)}"}
-            for i in range(40)
+            {"old": tok, "new": "z" + tok[1:]}  # swap leading 'q' for 'z'
+            for tok in tokens
         ]
         out, stats = apply_edits(text, edits)
-        assert stats["applied"] <= 30
-        assert stats["rejected_cap_count"] >= 1
+        assert stats["applied"] == 30
+        assert stats["rejected_cap_count"] == 2
+        # First 30 swapped, last 2 untouched.
+        for tok in tokens[:30]:
+            assert ("z" + tok[1:]) in out
+        for tok in tokens[30:]:
+            assert tok in out
 
-    def test_change_ratio_cap(self):
-        # 10-char doc with a single 5-char edit: would exceed 5%.
-        text = "abc def gh"  # 10 chars
-        edits = [{"old": "abc", "new": "xyz"}]  # delta = 0, ok
+    def test_change_ratio_cap_blocks_runaway_edits(self):
+        # 200-char doc: MAX_CHANGE_RATIO=5% -> 10 chars budget.
+        # An edit with 5 occurrences and 3-char delta = 15 chars -> cap.
+        text = ("abcd " * 40).strip()  # 199 chars, "abcd" appears 40 times
+        edits = [{"old": "abcd", "new": "abcdef"}]  # +2 per occurrence x 40 = 80 chars
+        out, stats = apply_edits(text, edits)
+        assert stats["applied"] == 0
+        assert stats["rejected_cap_ratio"] == 1
+        assert out == text  # original unchanged
+
+    def test_change_ratio_cap_allows_within_budget(self):
+        # 1000-char doc: 5% budget = ~50 chars.
+        # 5 occurrences of a +1-char fix ("ỉnh" -> "tỉnh") = 5 chars
+        # total, well within budget.
+        text = ("ỉnh xx " * 5 + "filler " * 100).strip()
+        edits = [{"old": "ỉnh", "new": "tỉnh"}]
         out, stats = apply_edits(text, edits)
         assert stats["applied"] == 1
-        # Try one that would exceed the per-doc 5% (= max(1, 0) char) cap.
-        # For a 10-char doc, max_chars=0 -> max(1,0)=1; len-diff>1 trips.
-        text2 = "abc def gh"
-        edits2 = [{"old": "abc def", "new": "abc"}]  # token mismatch already
-        out2, stats2 = apply_edits(text2, edits2)
-        # Token mismatch trips first; cap_ratio path tested via a
-        # carefully shaped longer text:
-        long_text = "x" * 100
-        # 1 edit changing 4 chars (delta 4) is exactly at 4% threshold,
-        # second similar edit would exceed cap_ratio=5.
-        long_edits = [
-            {"old": "x x", "new": "y y"},  # noop in length but token-equal
-        ]
-        # noop length means no chars charged toward ratio; this just
-        # exercises the loop without triggering cap_ratio. The cap
-        # itself is well-tested by the parametrized rule.
+        assert stats["occurrences"] == 5
+        # Original "ỉnh" no longer appears as a standalone slip;
+        # every occurrence has gained the leading "t".
+        assert text.count("ỉnh") == 5
+        assert out.count("tỉnh") == 5
 
     def test_empty_text(self):
         out, stats = apply_edits("", [{"old": "a", "new": "b"}])
