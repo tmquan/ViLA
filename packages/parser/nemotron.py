@@ -90,6 +90,15 @@ DEFAULT_MAX_TOKENS = 3500
 #: temperature > 0 only introduces hallucination risk.
 DEFAULT_TEMPERATURE = 0.0
 
+#: How many times the OpenAI SDK should retry rate-limited or
+#: transient-error responses before bubbling up to the caller.
+#: SDK default is 2; bumped to 5 for sustained bulk-reprocess
+#: workloads where build.nvidia.com tier limits can hold for tens
+#: of seconds. The SDK applies exponential backoff between retries
+#: (~1s, 2s, 4s, 8s, 16s) so 5 covers ~31 sec of rate-limit window
+#: before failing through to the per-page error path.
+DEFAULT_MAX_RETRIES = 5
+
 
 class NemotronParseClient(ParserAlgorithm):
     """Per-page OCR + layout extractor against ``nvidia/nemotron-parse`` v1.2."""
@@ -108,10 +117,15 @@ class NemotronParseClient(ParserAlgorithm):
         max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: float = DEFAULT_TEMPERATURE,
         canvas_size: tuple[int, int] = CANVAS_SIZE,
+        max_retries: int = DEFAULT_MAX_RETRIES,
     ) -> None:
         from openai import OpenAI  # lazy import
 
-        self._client = OpenAI(base_url=base_url, api_key=api_key)
+        self._client = OpenAI(
+            base_url=base_url,
+            api_key=api_key,
+            max_retries=int(max_retries),
+        )
         self.model_id = model
         self._timeout = float(timeout)
         self._dpi = int(dpi)
@@ -119,6 +133,7 @@ class NemotronParseClient(ParserAlgorithm):
         self._max_tokens = int(max_tokens)
         self._temperature = float(temperature)
         self._canvas_size = (int(canvas_size[0]), int(canvas_size[1]))
+        self._max_retries = int(max_retries)
 
     def parse(
         self,
@@ -140,10 +155,21 @@ class NemotronParseClient(ParserAlgorithm):
             try:
                 blocks = self._parse_image(png_bytes)
             except Exception as exc:
+                # Tag rate-limit failures distinctly so operators can
+                # grep ``RATE_LIMIT`` in the parse log and decide
+                # whether to throttle, switch to a local NIM, or
+                # raise the build.nvidia.com tier. ``RateLimitError``
+                # only fires here AFTER the SDK has exhausted its
+                # ``max_retries`` budget (default 5 retries, ~31s of
+                # exponential backoff covered server-side).
+                tag = (
+                    "RATE_LIMIT" if _is_rate_limit_error(exc)
+                    else "PAGE_FAIL"
+                )
                 logger.warning(
-                    "nemotron-parse: page %d failed (%s: %s); "
+                    "nemotron-parse: %s page %d failed (%s: %s); "
                     "continuing with empty page markdown",
-                    i, type(exc).__name__, exc,
+                    tag, i, type(exc).__name__, exc,
                 )
                 blocks = []
             md = blocks_to_markdown_page(blocks)
@@ -190,6 +216,36 @@ class NemotronParseClient(ParserAlgorithm):
 
 
 # --------------------------------------------------------------- helpers
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    """True when ``exc`` is a 429 / "rate limit exceeded" response.
+
+    Detects via three independent signals so the check stays robust
+    across SDK upgrades:
+
+    1. The openai SDK's ``RateLimitError`` (preferred when available).
+    2. An HTTP 429 ``status_code`` attribute on the exception (covers
+       ``APIStatusError`` subclasses the SDK occasionally raises
+       outside of ``RateLimitError``).
+    3. A textual fallback for ``rate limit`` / ``too many requests``
+       in the message body, in case the SDK wraps a 429 inside a
+       generic ``APIError`` due to a non-conforming upstream payload.
+    """
+    try:
+        from openai import RateLimitError  # type: ignore
+
+        if isinstance(exc, RateLimitError):
+            return True
+    except ImportError:  # pragma: no cover - openai always present here
+        pass
+    status = getattr(exc, "status_code", None)
+    if status == 429:
+        return True
+    msg = str(exc).lower()
+    if "rate limit" in msg or "too many requests" in msg or "429" in msg:
+        return True
+    return False
 
 
 def _rasterize_pdf(

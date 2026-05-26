@@ -98,6 +98,13 @@ parser:
   # Deterministic decoding. v1.2 is a structured-extraction task;
   # leave at 0.0 unless you're A/B-testing sampling.
   nim_temperature: 0.0
+  # Rate-limit retry budget (OpenAI SDK exponential backoff:
+  # 1s, 2s, 4s, 8s, 16s). 5 covers ~31s of build.nvidia.com 429
+  # windows before the per-page handler logs ``RATE_LIMIT`` and
+  # moves on. Bump to 8-10 if you see frequent RATE_LIMIT lines
+  # in the parse log; drop to 2 only if rate limits aren't a
+  # concern (e.g. local NIM deployment).
+  nim_max_retries: 5
   timeout_s: 120.0
   # Declarative parser-side normalizer chain. Runs immediately after
   # PdfParseStage on the in-memory ``markdown`` column, BEFORE the
@@ -123,12 +130,24 @@ parser:
   # Reuses the same registry-backed chain stage the extractor uses,
   # so each name resolves via packages.extractor.normalizers.NORMALIZER_REGISTRY.
   # An empty list explicitly disables parser-side normalisation.
+  #
+  # ``llm_ocr_fix`` runs LAST: it sees the most-cleaned text (after the
+  # five deterministic stages) and only fires its NIM call when the
+  # regex layer leaves residual Vietnamese OCR slips. Each call hits
+  # the paid build.nvidia.com tier (~3-5s + ~1k tokens per doc); cost
+  # is bounded by SkipExistingMarkdownFilter -- only docs WITHOUT a
+  # cached .md (the 162k v1.2-fallback cohort plus future crawls)
+  # actually traverse the parse chain. Edit shape is enforced by
+  # token-count + proper-noun + len + digit guardrails (see
+  # packages/extractor/llm_ocr_fix.py); hallucinated word-insertion
+  # corrections are rejected automatically.
   normalizers:
     - letter_spaced_collapse
     - congbobanan_join_word_breaks
     - vietnamese_text
     - congbobanan_join_soft_wraps
     - congbobanan_strip_page_noise
+    - llm_ocr_fix
 
 extractor:
   # Declarative normalizer chain (wiki/DATASITES.md §3.5). congbobanan ships
@@ -140,6 +159,22 @@ extractor:
   # ``run_text_normalization: false`` because the chain already owns
   # normalization; leaving the inline ``normalize_text`` on would
   # double-normalize ``markdown`` (idempotent but wasteful).
+  #
+  # OPT-IN: ``llm_ocr_fix`` (NIM-hosted Qwen3.5-122B-A10B) catches
+  # OCR-typo slips that v1.2 leaves behind ("phien toa" -> "phien
+  # toa", "chi toa" -> "chu toa", "Vien kiem sat" -> "Vien kiem
+  # sat", missing tone marks, etc). Each call hits the paid
+  # build.nvidia.com tier and adds ~3-5s per doc; only enable for
+  # bulk passes you actually want to LLM-clean. Append it AFTER
+  # ``vietnamese_text`` so the deterministic layer fixes the easy
+  # cases first; the LLM only sees what regex couldn't resolve.
+  # Edit shape is enforced by guardrails (token count, proper-noun
+  # protection, len cap, no-digit, per-doc caps) -- see
+  # packages/extractor/llm_ocr_fix.py for the rules.
+  #
+  #   normalizers:
+  #     - vietnamese_text
+  #     - llm_ocr_fix
   normalizers:
     - vietnamese_text
   run_text_normalization: false

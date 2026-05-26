@@ -25,6 +25,7 @@ from packages.parser.nemotron import (
     NemotronParser,
     _extract_blocks,
     _extract_page_markdown,
+    _is_rate_limit_error,
     blocks_to_markdown_page,
 )
 
@@ -294,6 +295,84 @@ def test_parse_tolerates_per_page_failures(
     assert out["pages"][0]["markdown"] == "OK."
     assert out["pages"][1]["markdown"] == ""
     assert out["pages"][2]["markdown"] == "OK."
+
+
+def test_is_rate_limit_error_detects_openai_class() -> None:
+    """``openai.RateLimitError`` is the canonical 429 signal."""
+    try:
+        from openai import RateLimitError
+    except ImportError:
+        pytest.skip("openai not installed")
+    # RateLimitError requires a response; build a minimal mock.
+    mock_response = MagicMock()
+    mock_response.status_code = 429
+    err = RateLimitError("rate limited", response=mock_response, body=None)
+    assert _is_rate_limit_error(err) is True
+
+
+def test_is_rate_limit_error_detects_status_code_attr() -> None:
+    """An exception with ``status_code=429`` should also trip."""
+    err = RuntimeError("upstream rejected")
+    err.status_code = 429  # type: ignore[attr-defined]
+    assert _is_rate_limit_error(err) is True
+
+
+def test_is_rate_limit_error_detects_textual_signals() -> None:
+    """Fallback path: SDK wrapped a 429 inside generic APIError."""
+    assert _is_rate_limit_error(RuntimeError("Rate limit exceeded")) is True
+    assert _is_rate_limit_error(RuntimeError("HTTP 429: too many"))  is True
+    assert _is_rate_limit_error(RuntimeError("Too Many Requests")) is True
+
+
+def test_is_rate_limit_error_negative_cases() -> None:
+    """Non-rate-limit exceptions must not be misclassified."""
+    assert _is_rate_limit_error(RuntimeError("502 bad gateway")) is False
+    assert _is_rate_limit_error(ValueError("malformed json")) is False
+    assert _is_rate_limit_error(TimeoutError("upstream slow")) is False
+
+
+def test_parse_logs_rate_limit_distinctly(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A rate-limited page surfaces with the ``RATE_LIMIT`` tag in the
+    log (so operators can grep ``RATE_LIMIT`` in the parse log)."""
+    parser = NemotronParseClient.__new__(NemotronParseClient)
+    parser.model_id = "nvidia/nemotron-parse"
+    parser._timeout = 1.0
+    parser._dpi = 300
+    parser._tool = "markdown_bbox"
+    parser._max_tokens = 3500
+    parser._temperature = 0.0
+    parser._max_retries = 5
+    parser._canvas_size = (1536, 2048)
+
+    rate_limited = RuntimeError("HTTP 429: rate limit exceeded")
+
+    def _create(**_kwargs: Any) -> Any:
+        raise rate_limited
+
+    parser._client = MagicMock()
+    parser._client.chat.completions.create = _create
+
+    monkeypatch.setattr(
+        "packages.parser.nemotron._rasterize_pdf",
+        lambda pdf_bytes, *, dpi, canvas_size: [b"p1"],
+    )
+
+    import logging
+    with caplog.at_level(logging.WARNING, logger="packages.parser.nemotron"):
+        out = parser.parse(b"%PDF-1.4 fake")
+
+    # Page got logged with the RATE_LIMIT tag (not PAGE_FAIL).
+    assert any("RATE_LIMIT" in rec.message for rec in caplog.records), (
+        f"expected RATE_LIMIT log; got: {[r.message for r in caplog.records]}"
+    )
+    assert not any(
+        "PAGE_FAIL" in rec.message for rec in caplog.records
+    ), "rate-limit error must not be logged as a generic PAGE_FAIL"
+    # And the doc still came back with empty markdown for that page.
+    assert len(out["pages"]) == 1
+    assert out["pages"][0]["markdown"] == ""
 
 
 def test_parse_passes_max_tokens_and_temperature_to_nim(

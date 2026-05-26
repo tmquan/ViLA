@@ -34,6 +34,9 @@ from packages.parser.nemotron import (
     DEFAULT_DPI as _NIM_DEFAULT_DPI,
 )
 from packages.parser.nemotron import (
+    DEFAULT_MAX_RETRIES as _NIM_DEFAULT_MAX_RETRIES,
+)
+from packages.parser.nemotron import (
     DEFAULT_MAX_TOKENS as _NIM_DEFAULT_MAX_TOKENS,
 )
 from packages.parser.nemotron import (
@@ -72,6 +75,9 @@ def _build_nemotron(cfg: Any) -> NemotronParseClient:
         ),
         temperature=float(
             cfg.parser.get("nim_temperature", _NIM_DEFAULT_TEMPERATURE)
+        ),
+        max_retries=int(
+            cfg.parser.get("nim_max_retries", _NIM_DEFAULT_MAX_RETRIES)
         ),
     )
 

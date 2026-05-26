@@ -281,6 +281,16 @@ class ParserCfg:
     nim_dpi: int = 300
     nim_max_tokens: int = 3500
     nim_temperature: float = 0.0
+    # Rate-limit-aware retry budget. The OpenAI SDK applies
+    # exponential backoff between retries (~1s, 2s, 4s, 8s, 16s);
+    # the default of 5 covers ~31 sec of build.nvidia.com 429s
+    # before the page raises. After SDK retries exhaust, the
+    # per-page exception handler in :class:`NemotronParseClient`
+    # logs ``RATE_LIMIT page N failed`` (greppable in the parse
+    # log) and continues with empty markdown for that page.
+    # Bump to 8-10 for sustained bulk reprocesses on a low NIM
+    # tier; drop to 2 only if you want fast-fail on transient errors.
+    nim_max_retries: int = 5
     # Override the default ``md/<scope>/<id>.md`` resume guard so the
     # parse stage re-emits every row from a refreshed ``docs.jsonl``.
     # Used after ``--pipeline rebuild_docs`` to propagate new sidebar

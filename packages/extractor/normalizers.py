@@ -461,3 +461,21 @@ __all__ = [
     "register_normalizer",
     "resolve_normalizer_names",
 ]
+
+
+# Cross-corpus opt-in normalizer: NIM-hosted LLM OCR-typo fixer. Imported
+# at module load so its ``@register_normalizer("llm_ocr_fix")`` side
+# effect fires before any pipeline tries to resolve names. Cheap when
+# unused (no NIM call until ``apply`` runs on a non-empty markdown
+# column). Failures here would mean the optional ``openai`` SDK is
+# missing -- that's fine, just leave the entry unregistered and let
+# ``_resolve`` log a clear "not registered" warning if anyone tries
+# to use it.
+try:
+    from packages.extractor import llm_ocr_fix as _llm_ocr_fix  # noqa: F401
+except Exception as _exc:  # noqa: BLE001
+    logger.debug(
+        "llm_ocr_fix not registered (%s: %s); add `openai` to install"
+        " or remove `llm_ocr_fix` from cfg.extractor.normalizers.",
+        type(_exc).__name__, _exc,
+    )
