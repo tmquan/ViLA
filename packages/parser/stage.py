@@ -34,33 +34,45 @@ from packages.parser.nemotron import (
     DEFAULT_DPI as _NIM_DEFAULT_DPI,
 )
 from packages.parser.nemotron import (
-    NemoretrieverParser,
+    DEFAULT_MAX_TOKENS as _NIM_DEFAULT_MAX_TOKENS,
+)
+from packages.parser.nemotron import (
+    DEFAULT_TEMPERATURE as _NIM_DEFAULT_TEMPERATURE,
+)
+from packages.parser.nemotron import (
+    NemotronParseClient,
 )
 from packages.parser.pypdf import PypdfParser
 
 logger = logging.getLogger(__name__)
 
 
-def _build_nemotron(cfg: Any) -> NemoretrieverParser:
+def _build_nemotron(cfg: Any) -> NemotronParseClient:
     api_key = os.environ.get("NVIDIA_API_KEY") or os.environ.get(
         "NVIDIA_NIM_API_KEY"
     )
     if not api_key:
         raise RuntimeError(
             "NVIDIA_API_KEY (or NVIDIA_NIM_API_KEY) is required for the "
-            "nemoretriever-parse NIM endpoint. Export it, or set "
+            "nemotron-parse NIM endpoint. Export it, or set "
             "cfg.parser.runtime=local to skip the NIM fallback."
         )
     base_url = str(cfg.parser.nim_base_url)
     if base_url.startswith("${") and base_url.endswith("}"):
         base_url = _NIM_DEFAULT_BASE_URL
-    return NemoretrieverParser(
+    return NemotronParseClient(
         api_key=api_key,
         base_url=base_url,
         model=str(cfg.parser.model_id),
         timeout=float(cfg.parser.timeout_s),
         dpi=int(cfg.parser.get("nim_dpi", _NIM_DEFAULT_DPI)),
         tool=str(cfg.parser.get("nim_tool", "markdown_bbox")),
+        max_tokens=int(
+            cfg.parser.get("nim_max_tokens", _NIM_DEFAULT_MAX_TOKENS)
+        ),
+        temperature=float(
+            cfg.parser.get("nim_temperature", _NIM_DEFAULT_TEMPERATURE)
+        ),
     )
 
 
@@ -71,10 +83,10 @@ def build_parser(cfg: Any) -> ParserAlgorithm:
 
     * ``"local"``   -- pypdf / docx2txt only. Empty output on
       image-only PDFs; downstream drops those rows.
-    * ``"nim"``     -- nemotron-parse NIM only. Requires
+    * ``"nim"``     -- nemotron-parse v1.2 NIM only. Requires
       ``NVIDIA_API_KEY``.
-    * ``"hybrid"``  (default) -- pypdf first, nemotron-parse fallback
-      on either of two failure modes:
+    * ``"hybrid"``  (default) -- pypdf first, nemotron-parse v1.2
+      fallback on either of two failure modes:
         (a) local output below ``cfg.parser.min_local_chars`` chars
             (image-only / scan-only PDFs), or
         (b) ``lossy_score`` above ``cfg.parser.max_local_lossy_score``

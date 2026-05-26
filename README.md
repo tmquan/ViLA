@@ -38,8 +38,9 @@ Specification frozen (ontology v1.2.0). Implementation under way:
     Ray backends (`XennaExecutor`, `RayActorPoolExecutor`,
     `RayDataExecutor`).
 - **Parsing backends (Phase 4)**: `PdfParseStage` runs with either
-  the NIM `nvidia/nemoretriever-parse` endpoint (cloud — the older
-  `nvidia/nemotron-parse` slug 404s) or a local `pypdf` fallback,
+  the NIM `nvidia/nemotron-parse` endpoint (v1.2 as of 2026-02; the
+  `nemoretriever-parse` slug still works and points at the older
+  v1.0 NeMo Retriever Parse) or a local `pypdf` fallback,
   with a hybrid runtime that routes image-only scans to the NIM.
   OCR + cuDF feature frame + section tagger are spec-only.
 - **Test suite**: `pytest -q` — 157 tests, all in-process (no live

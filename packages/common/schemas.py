@@ -214,22 +214,27 @@ class ParserCfg:
 
     * ``"local"``   -- pure-Python pypdf / docx2txt. Fast + free, but
       blind on image-only scans.
-    * ``"nim"``     -- nemotron-parse NIM only. OCR + layout built in.
-      Requires ``NVIDIA_API_KEY``.
+    * ``"nim"``     -- nemotron-parse v1.2 NIM only. OCR + layout
+      built in. Requires ``NVIDIA_API_KEY``.
     * ``"hybrid"``  (default) -- pypdf first; on empty / near-empty
       output (fewer than ``min_local_chars`` chars) falls back to
-      nemotron-parse. Right trade-off for a corpus that mixes digital
-      and scanned PDFs.
+      nemotron-parse v1.2. Right trade-off for a corpus that mixes
+      digital and scanned PDFs.
 
     nemotron-parse processes whole PDF pages; per-page input is bounded
-    by the page image/text, not by a token budget. No seq-length knob.
+    by the page image, not by a token budget. No seq-length knob, but
+    ``nim_max_tokens`` caps the generated layout JSON.
     """
 
-    # Cloud NIM model slug. The underlying service is
-    # ``nvidia/nemoretriever-parse`` (OpenAI-compatible
-    # chat-completions over image input). Do NOT use the older
-    # ``nvidia/nemotron-parse`` name -- it 404s on the public NIM.
-    model_id: str = "nvidia/nemoretriever-parse"
+    # Cloud NIM model slug. ``nvidia/nemotron-parse`` is the canonical
+    # NIM endpoint name (per NVIDIA's NIM OpenAPI spec for
+    # nvidia-nemotron-parse-infer, which declares it as the default
+    # ``model`` value). Auto-routes to the latest deployed revision;
+    # as of 2026-02 that is v1.2 (HF: nvidia/NVIDIA-Nemotron-Parse-v1.2).
+    # The older ``nvidia/nemoretriever-parse`` slug refers to the v1.0
+    # NeMo Retriever Parse model and is preserved only for back-compat
+    # of pre-2026 manifest entries.
+    model_id: str = "nvidia/nemotron-parse"
     num_workers: int = 4
     runtime: str = "hybrid"           # local | nim | hybrid
     nim_base_url: str = (
@@ -258,13 +263,24 @@ class ParserCfg:
     #   (legacy VnTime / VNI fonts). Healer cannot fix it; needs OCR.
     max_local_lossy_score: float = 0.05
     preserve_tables: bool = True
-    # nemoretriever-parse knobs. ``nim_tool`` is one of
+    # nemotron-parse v1.2 knobs. ``nim_tool`` is one of
     # ``markdown_bbox`` (default, best fidelity), ``markdown_no_bbox``
     # (no layout), or ``detection_only`` (bboxes only). ``nim_dpi`` is
-    # the raster resolution for PDF -> PNG before upload; 150 balances
-    # OCR accuracy against payload size.
+    # the source raster resolution for the PDF -> PNG pipeline; each
+    # page is then thumbnailed onto a fixed 1536x2048 white canvas
+    # matching v1.2's training input geometry, so 300 DPI gives crisp
+    # glyph edges before the downscale step (preserves Vietnamese
+    # tone-mark fidelity better than rasterizing directly at canvas
+    # resolution). ``nim_max_tokens`` (default 3500) caps per-page
+    # layout-JSON generation -- enough for a dense Vietnamese court
+    # page; bump to 5000-6000 if multi-page tables get truncated.
+    # ``nim_temperature`` should stay at 0.0; nemotron-parse is a
+    # structured-extraction task and any positive temperature only
+    # introduces hallucination risk.
     nim_tool: str = "markdown_bbox"
-    nim_dpi: int = 150
+    nim_dpi: int = 300
+    nim_max_tokens: int = 3500
+    nim_temperature: float = 0.0
     # Override the default ``md/<scope>/<id>.md`` resume guard so the
     # parse stage re-emits every row from a refreshed ``docs.jsonl``.
     # Used after ``--pipeline rebuild_docs`` to propagate new sidebar
@@ -284,7 +300,7 @@ class ParserCfg:
     #: ``letter_spaced_collapse`` before ``vietnamese_text`` because
     #: the latter collapses the 2-space word-boundary signal the
     #: former relies on. Empty list (the default) keeps the parser
-    #: writing whatever pypdf / nemoretriever-parse emit verbatim.
+    #: writing whatever pypdf / nemotron-parse emit verbatim.
     normalizers: list[str] = field(default_factory=list)
 
 

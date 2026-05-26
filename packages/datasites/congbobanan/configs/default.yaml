@@ -54,14 +54,16 @@ scraper:
     Accept-Language: "vi-VN,vi;q=0.9,en;q=0.8"
 
 parser:
-  # Cloud NIM chat model (OpenAI-compatible); do NOT use the old
-  # ``nvidia/nemotron-parse`` slug -- that path 404s.
-  model_id: nvidia/nemoretriever-parse
-  # hybrid: pypdf first, nemoretriever-parse fallback on either
+  # Cloud NIM chat model (OpenAI-compatible). ``nvidia/nemotron-parse``
+  # is the canonical NIM endpoint slug per NVIDIA's NIM OpenAPI spec;
+  # it auto-routes to the latest deployed revision (currently v1.2,
+  # HF: nvidia/NVIDIA-Nemotron-Parse-v1.2, released 2026-02).
+  model_id: nvidia/nemotron-parse
+  # hybrid: pypdf first, nemotron-parse v1.2 fallback on either
   # (a) image-only scans (gated by min_local_chars) or
   # (b) catastrophic font corruption (gated by max_local_lossy_score).
   # Requires NVIDIA_API_KEY. Switch to `local` if you only have
-  # pypdf, or `nim` to force every PDF through nemoretriever-parse.
+  # pypdf, or `nim` to force every PDF through nemotron-parse.
   runtime: hybrid
   min_local_chars: 50
   # Second hybrid fallback gate. ``lossy_score`` (in packages/parser/
@@ -84,7 +86,18 @@ parser:
   num_workers: 4
   nim_base_url: "${oc.env:NIM_BASE_URL,https://integrate.api.nvidia.com/v1}"
   nim_tool: markdown_bbox         # markdown_bbox | markdown_no_bbox | detection_only
-  nim_dpi: 150                    # PDF -> PNG raster resolution
+  # Source-side raster DPI. The NemotronParseClient renders at this
+  # DPI, then thumbnails each page onto a fixed 1536x2048 white
+  # canvas matching v1.2's training geometry. 300 DPI gives crisp
+  # tone-mark glyph edges before the downscale step.
+  nim_dpi: 300
+  # Per-page generation cap on the v1.2 layout-JSON output. 3500
+  # matches the v1.1 cookbook default; bump to 5000-6000 if you see
+  # multi-page tables being truncated mid-row.
+  nim_max_tokens: 3500
+  # Deterministic decoding. v1.2 is a structured-extraction task;
+  # leave at 0.0 unless you're A/B-testing sampling.
+  nim_temperature: 0.0
   timeout_s: 120.0
   # Declarative parser-side normalizer chain. Runs immediately after
   # PdfParseStage on the in-memory ``markdown`` column, BEFORE the

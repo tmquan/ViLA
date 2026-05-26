@@ -57,8 +57,8 @@ remains in Vietnamese.
   `nvidia/nemotron-3-nano-30b-a3b` (fast / bulk extraction).
   Embeddings: `nvidia/llama-nemotron-embed-1b-v2` (the slug the
   shipped datasite configs default to under `embedder.model_id`).
-  PDF parsing: `nvidia/nemoretriever-parse` (the older
-  `nvidia/nemotron-parse` slug 404s on the public NIM).
+  PDF parsing: `nvidia/nemotron-parse` (v1.2; the older
+  `nemoretriever-parse` slug still resolves and points at v1.0).
 
 ## Reading order
 
