@@ -18,12 +18,14 @@ from packages.parser.nemotron import (
     NemotronParseClient,
     NemotronParser,
 )
+from packages.parser.nemotron_omni import NemotronOmniClient
 from packages.parser.pypdf import PypdfParser
 from packages.parser.stage import PdfParseStage, build_parser
 
 __all__ = [
     "HybridParser",
     "NemoretrieverParser",  # back-compat alias for NemotronParseClient
+    "NemotronOmniClient",
     "NemotronParseClient",
     "NemotronParser",  # back-compat alias for NemotronParseClient
     "ParserAlgorithm",

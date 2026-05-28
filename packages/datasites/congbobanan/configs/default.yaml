@@ -58,13 +58,25 @@ parser:
   # is the canonical NIM endpoint slug per NVIDIA's NIM OpenAPI spec;
   # it auto-routes to the latest deployed revision (currently v1.2,
   # HF: nvidia/NVIDIA-Nemotron-Parse-v1.2, released 2026-02).
+  # Only consumed when ``runtime`` is ``hybrid`` or ``nim`` -- the
+  # ``nemotron_omni`` runtime uses ``omni_model`` below.
   model_id: nvidia/nemotron-parse
-  # hybrid: pypdf first, nemotron-parse v1.2 fallback on either
-  # (a) image-only scans (gated by min_local_chars) or
-  # (b) catastrophic font corruption (gated by max_local_lossy_score).
-  # Requires NVIDIA_API_KEY. Switch to `local` if you only have
-  # pypdf, or `nim` to force every PDF through nemotron-parse.
-  runtime: hybrid
+  # Active runtime. Defaults (since the 2026-05 cutover) to the
+  # self-hosted Qwen3.6-27B-FP8 vLLM container (single-pass VLM at
+  # http://localhost:8000/v1, no API key). Override via PARSER_RUNTIME
+  # env var or ``--override parser.runtime=hybrid`` to fall back to
+  # the cloud nemotron-parse + pypdf pipeline; or
+  # ``parser.runtime=nemotron_omni`` to roll back to the prior
+  # nemotron-3-nano-omni-30b NIM (still wired in
+  # ``packages/parser/stage.py`` for that purpose).
+  #
+  # Runtimes:
+  # * ``local``         -- pypdf only (image-only scans yield empty).
+  # * ``nim``           -- cloud nemotron-parse v1.2; needs NVIDIA_API_KEY.
+  # * ``hybrid``        -- pypdf + cloud nemotron-parse fallback.
+  # * ``nemotron_omni`` -- self-hosted nemotron-3-nano-omni-30b VLM (rollback).
+  # * ``qwen3_6_omni``  -- self-hosted Qwen3.6-27B-FP8 vLLM (default).
+  runtime: "${oc.env:PARSER_RUNTIME,qwen3_6_omni}"
   min_local_chars: 50
   # Second hybrid fallback gate. ``lossy_score`` (in packages/parser/
   # hybrid.py) measures the fraction of lowercase 1-2-char ASCII
@@ -105,6 +117,51 @@ parser:
   # in the parse log; drop to 2 only if rate limits aren't a
   # concern (e.g. local NIM deployment).
   nim_max_retries: 5
+  # Wire protocol for the NIM client; see schemas.ParserCfg.nim_protocol.
+  # ``nim_tools`` for cloud (build.nvidia.com), ``vllm_decoder_prompt`` for
+  # a self-hosted vLLM serving ``nvidia/NVIDIA-Nemotron-Parse-v1.2``.
+  # Overrides via NIM_PROTOCOL env var.
+  nim_protocol: "${oc.env:NIM_PROTOCOL,nim_tools}"
+  # Self-hosted Nemotron-3 Nano Omni endpoint (used when
+  # ``runtime: nemotron_omni``). Single-pass VLM that handles
+  # OCR + layout-preserving markdown for Vietnamese court documents
+  # without the pypdf -> nemotron-parse -> llm_ocr_fix chain.
+  # No NVIDIA_API_KEY required (local NIM).
+  omni_base_url: "${oc.env:NEMOTRON_OMNI_BASE_URL,http://localhost:8000/v1}"
+  omni_model: "${oc.env:NEMOTRON_OMNI_MODEL,nvidia/nemotron-3-nano-omni-30b-a3b-reasoning}"
+  # Per-page generation cap for the Omni VLM (free-form markdown
+  # output; covers a dense Vietnamese court page including headers,
+  # body paragraphs, evidence table, signatories).
+  omni_max_tokens: 8192
+  # Low non-zero temperature + client-side top_k=1 (near-greedy with a
+  # small entropy floor; matches NVIDIA's reference OCR notebook).
+  omni_temperature: 0.2
+  # Per-page HTTP read timeout (seconds). Generous because page 1 of
+  # a session pays the vLLM warmup cost (CUDA graph capture).
+  omni_timeout_s: 180.0
+  omni_max_retries: 5
+  # Self-hosted Qwen3.6-27B-FP8 endpoint (used when
+  # ``runtime: qwen3_6_omni`` -- the default since the 2026-05
+  # cutover from ``nemotron_omni``). Single-pass multimodal VLM
+  # (arch ``Qwen3_5ForConditionalGeneration``) serving Vietnamese
+  # OCR + layout-preserving markdown for court documents.
+  # No NVIDIA_API_KEY required (local vLLM at
+  # http://localhost:8000/v1; ``--served-model-name qwen3.6-27b``
+  # in vllm/qwen3.6-omni/scripts/launch.sh becomes the model id
+  # clients send).
+  qwen3_6_omni_base_url: "${oc.env:QWEN3_6_OMNI_BASE_URL,http://localhost:8000/v1}"
+  qwen3_6_omni_model: "${oc.env:QWEN3_6_OMNI_MODEL,qwen3.6-27b}"
+  # Per-page generation cap. Same shape as the omni knobs above; 8192
+  # comfortably covers a dense Vietnamese court page within
+  # vLLM's --max-model-len 32768 budget.
+  qwen3_6_omni_max_tokens: 8192
+  # Qwen3.6 Instruct-mode recommended sampling (temperature 0.7 +
+  # top_p 0.8 + top_k 20, per the model card). Drop to 0.0 / top_k 1
+  # if smoke shows hallucination on long documents.
+  qwen3_6_omni_temperature: 0.7
+  qwen3_6_omni_top_p: 0.8
+  qwen3_6_omni_timeout_s: 180.0
+  qwen3_6_omni_max_retries: 5
   timeout_s: 120.0
   # Declarative parser-side normalizer chain. Runs immediately after
   # PdfParseStage on the in-memory ``markdown`` column, BEFORE the
@@ -131,23 +188,18 @@ parser:
   # so each name resolves via packages.extractor.normalizers.NORMALIZER_REGISTRY.
   # An empty list explicitly disables parser-side normalisation.
   #
-  # ``llm_ocr_fix`` runs LAST: it sees the most-cleaned text (after the
-  # five deterministic stages) and only fires its NIM call when the
-  # regex layer leaves residual Vietnamese OCR slips. Each call hits
-  # the paid build.nvidia.com tier (~3-5s + ~1k tokens per doc); cost
-  # is bounded by SkipExistingMarkdownFilter -- only docs WITHOUT a
-  # cached .md (the 162k v1.2-fallback cohort plus future crawls)
-  # actually traverse the parse chain. Edit shape is enforced by
-  # token-count + proper-noun + len + digit guardrails (see
-  # packages/extractor/llm_ocr_fix.py); hallucinated word-insertion
-  # corrections are rejected automatically.
+  # ``llm_ocr_fix`` was removed in the nemotron_omni cutover (2026-05):
+  # the self-hosted Nemotron-3 Nano Omni VLM already produces clean
+  # diacritic-aware Vietnamese transcriptions, so the paid
+  # build.nvidia.com OCR-fix call no longer pays its weight. Re-add
+  # it tail-of-chain only if you flip ``runtime`` back to hybrid /
+  # nim and start seeing OCR-typo regressions in the parsed markdown.
   normalizers:
     - letter_spaced_collapse
     - congbobanan_join_word_breaks
     - vietnamese_text
     - congbobanan_join_soft_wraps
     - congbobanan_strip_page_noise
-    - llm_ocr_fix
 
 extractor:
   # Declarative normalizer chain (wiki/DATASITES.md §3.5). congbobanan ships

@@ -1,605 +1,495 @@
-# Vietnamese PDF parsing — encodings, ToUnicode CMaps, and the heal layer
+# Parsing pipeline — PDF/DOCX types and routing cases
 
-> **Source of truth for** `packages/parser/cmap_healer.py`,
-> `packages/parser/pypdf.py` (CMap heal hook + lossy-glyph artefacts),
-> `packages/parser/hybrid.py` (`lossy_score` detector + NIM OCR
-> routing), and the site-specific PDF normalizers under
-> `packages/datasites/congbobanan/normalizers.py`.
-> **Status**: stable. CMap healer landed May 2026 after a 500-doc
-> survey of `data/congbobanan.toaan.gov.vn/` showed ~3.4% of digital
-> PDFs ship with corrupted Vietnamese-CID ToUnicode entries (§ 5.1).
-> **Siblings**: [`DATASITES.md § 4.2`](DATASITES.md) (where
-> `PdfParseStage` sits in the five-pipeline chain),
-> [`EXTRACTION.md § 4`](EXTRACTION.md) (the downstream normalizer
-> chain that consumes our markdown).
+> **Source of truth for**
+> `packages/parser/stage.py` (runtime selector, `PdfParseStage`),
+> `packages/parser/hybrid.py` (`HybridParser`, `lossy_score`),
+> `packages/parser/pypdf.py` (magic-byte dispatch, DOCX / DOC handlers,
+> `cmap_healer` hook),
+> `packages/parser/nemotron.py` (NIM nemotron-parse v1.2 client),
+> `packages/datasites/congbobanan/components/downloader.py`
+> (`ACCEPTED_BODY_EXTENSIONS`), and the parser-side normalizer chain
+> declared in `packages/datasites/congbobanan/configs/default.yaml`.
+> **Audience:** operators and future engineers who need to know what
+> the parser accepts, what it does with each format, and how the
+> hybrid backend routes between local pypdf and NIM
+> nemotron-parse v1.2.
+> **Siblings:** [`DATASITES.md`](DATASITES.md) — where `PdfParseStage`
+> sits in the five-pipeline chain. [`EXTRACTION.md`](EXTRACTION.md) —
+> the downstream normalizer chain that consumes our markdown.
 
-Vietnamese-language PDFs are a heterogeneous corpus on the wire.
-Three font-encoding ecosystems coexist in Vietnamese-government PDFs
-(`congbobanan.toaan.gov.vn`, `vbpl.vn`, the Án lệ portal), each with
-its own failure mode under text extraction. This document is the
-field guide for which ecosystem each PDF belongs to, what artefacts
-it produces in our extracted markdown, and which layer of the parser
-stack (`cmap_healer` / `HybridParser` OCR fallback / site
-normalizer) repairs it.
+Pipeline shape per `packages/datasites/congbobanan/parse.py:5-12`:
 
-The conventions used throughout this doc:
+```text
+FilePartitioningStage(pdf_dir, ext=[.pdf,.docx,.doc,.rtf])
+  → DocumentIterateExtractStage(<site> iterator + extractor)
+  → SkipExistingMarkdownFilter      # short-circuits cached docs
+  → PdfParseStage                   # this document's scope
+  → NormalizerChainStage            # cfg.parser.normalizers
+  → MarkdownPerDocWriter            # idempotent per-doc writer
+```
 
-* **CID** = a 16-bit integer that names a glyph inside a CIDFont.
-  Stored in PDF content streams as a hex byte pair (`<04A9>`).
-* **codepoint** = a Unicode scalar (`U+1EA5`). Always rendered in
-  the standard four/five hex form.
-* **ToUnicode CMap** = the PDF font resource that maps CID -> codepoint
-  for text extraction. See § 3.
-* **glyph drop** = a single CID extracts to `U+0020` (space) when it
-  should have extracted to a Vietnamese precomposed vowel (§ 4 / § 5.1).
+Everything below describes what happens inside `PdfParseStage`
+(`packages/parser/stage.py:125-219`) and the normalizer chain that
+runs immediately after it but before the markdown hits disk.
 
 ---
 
-## 1. Why this doc exists
+## 1. Accepted file types
 
-The Vietnamese government corpus we ingest predates Unicode by a
-decade. Internal authoring on TCVN3 / VPS / VNI-Times fonts was the
-norm into the early 2000s; even today many ban-án PDFs are exported
-from Word documents whose embedded fonts still carry legacy
-non-Unicode encodings, or carry Unicode-compatible encodings whose
-`ToUnicode` CMap has been damaged in transit. Visually the PDFs look
-fine in a viewer — the glyph at the right position is the right shape
-— but **the text-extraction layer reads CIDs through the embedded
-CMap, not pixels through OCR**, so any defect in that map silently
-corrupts every downstream stage of the pipeline.
+The downloader sniffs four body formats by magic header and writes
+the matching extension; the parser stage reads back exactly those
+extensions. The list is exported as a single tuple so the two stages
+stay in sync (`packages/datasites/congbobanan/components/downloader.py:97-100`):
 
-Four distinct failure modes show up in our corpus (§ 4):
+```python
+ACCEPTED_BODY_EXTENSIONS: tuple[str, ...] = (".pdf", ".docx", ".doc", ".rtf")
+```
 
-| Mode | Artefact in extracted markdown | Frequency | Root cause | Repair layer (§ 5) |
-|---|---|---|---|---|
-| **A** | `"ng ười"`, `"hu yện"` — single-space mid-word splits | very common | pypdf kerning threshold | `congbobanan_join_word_breaks` |
-| **B** | `"đội tuyển Anh với đội\ntuyển Iceland"` — paragraph reflowed as wrap | universal | pypdf preserves PDF visual line breaks | `congbobanan_join_soft_wraps` |
-| **C** | `"QU N LÊ CHÂNẬ"`, `"T H GIA"` — catastrophic garble | ~6% | font has no usable `ToUnicode` CMap (legacy VnTime / VNI / corrupted) | `HybridParser` -> NIM OCR (§ 5.2) |
-| **D** | `"đấu"` -> `"đ u"`, `"tổ chức"` -> `"t  chức"` — selective tone-mark drops | ~3.4% | `ToUnicode` CMap has `<CID> <0020>` entries in Adobe's Vietnamese precomposed-vowel block | `cmap_healer` (§ 5.1) |
+| Ext     | Magic                            | Parser backend (local) | Notes |
+|---------|----------------------------------|------------------------|-------|
+| `.pdf`  | `%PDF`                           | `pypdf` via `PypdfParser._parse_pdf` (`packages/parser/pypdf.py:87-177`) | ~99.97% of the congbobanan corpus. Hybrid backend may route to NIM. |
+| `.docx` | `PK\x03\x04` (it is a ZIP)       | `docx2txt` via `PypdfParser._parse_docx` (`packages/parser/pypdf.py:179-197`) | Pure-Python; one logical page. |
+| `.doc`  | `\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1` (OLE2) | Subprocess chain via `PypdfParser._parse_doc` (`packages/parser/pypdf.py:199-241`) | Tries `antiword` → `catdoc` → `soffice/libreoffice`. Dropped if none on `PATH`. |
+| `.rtf`  | `{\rtf`                          | **None** — falls through `parse()`'s magic dispatch and returns empty markdown with a `unrecognized magic` warning (`packages/parser/pypdf.py:81-85`). | Downloader accepts and saves the file but the parser stage drops the row downstream. See § 8. |
 
-Modes A and B are string-shape artefacts of pypdf's layout-to-text
-decoder and are repaired downstream by normalizers (§ 5.3). Modes C
-and D are upstream encoding defects: no amount of string normalization
-can recover the dropped information, so they need a heal layer
-operating on the PDF *bytes* (Mode D) or a re-extraction through OCR
-(Mode C).
+DOCX / DOC / RTF are in scope because the congbobanan portal
+occasionally serves a judgment in one of those formats instead of
+PDF (~0.03% of the corpus per `packages/datasites/congbobanan/parse.py:15-19`).
+Reading all four extensions also matches the `anle` datasite, which
+keeps the same dispatch logic.
+
+The local-PDF path additionally invokes `cmap_healer.heal_pdf_bytes`
+on the raw bytes *before* `pypdf.PdfReader` opens them
+(`packages/parser/pypdf.py:93-113`). It rewrites `<CID> <0020>`
+entries in the Adobe Vietnamese precomposed-vowel CID block
+`[0x04A4, 0x04F5]` to their correct codepoints. No-op on clean
+PDFs; ~30-80 ms of `pikepdf` inspection overhead. See
+`packages/parser/cmap_healer.py` and Case B below.
 
 ---
 
-## 2. Vietnamese on the page: three encoding ecosystems
+## 2. Parser runtimes
 
-### 2.1 Unicode NFC (the canonical surface)
+`build_parser` (`packages/parser/stage.py:85-122`) selects one of
+three backends by `cfg.parser.runtime`:
 
-The pipeline's contract is that **every markdown row stored on disk
-is Vietnamese in Unicode NFC**, validated by
-`packages.extractor.normalizers.VietnameseTextNormalizer` (the
-`vietnamese_text` chain step,
-[`DATASITES.md § 4.3`](DATASITES.md)). The relevant Unicode blocks:
+| Runtime  | Class                       | Behaviour |
+|----------|-----------------------------|-----------|
+| `local`  | `PypdfParser`               | Pure-Python: pypdf (+ `cmap_healer`) for PDFs, `docx2txt` for DOCX, subprocesses for DOC. No NIM. Empty output on image-only PDFs; downstream drops those rows. |
+| `nim`    | `NemotronParseClient`       | Every byte payload is rasterised page-by-page and sent to NVIDIA `nemotron-parse` v1.2 over the OpenAI-compatible chat API. Requires `NVIDIA_API_KEY` (or `NVIDIA_NIM_API_KEY`). Each page is a paid build.nvidia.com call. |
+| `hybrid` | `HybridParser`              | **Default for congbobanan.** Tries `PypdfParser` first; routes the same `pdf_bytes` to NIM on either of two failure modes (§ 3). Operationally cheapest setting that still recovers the ~6% of PDFs pypdf cannot read. |
 
-| Block | Range | Role |
-|---|---|---|
-| Basic Latin | `U+0020..U+007E` | unaccented Vietnamese consonants + base vowels |
-| Latin-1 Supplement | `U+00C0..U+00FF` | `Đ`, `đ`, plus 6 of the 12 base-vowel tone forms (`á à ã ạ ả`) |
-| Latin Extended-A | `U+0100..U+017F` | none used by Vietnamese, but legacy converters sometimes route through here |
-| Latin Extended-B | `U+01A0..U+01B0` | `Ơ ơ Ư ư` — the two extra vowels Vietnamese adds to the Latin alphabet |
-| **Latin Extended Additional** | **`U+1EA0..U+1EF9`** | **the precomposed Vietnamese vowel-with-tone forms — `Ạ ạ Ầ ầ Ấ ấ … Ỹ ỹ`** |
-
-The `U+1EA0..U+1EF9` block (122 codepoints, 61 letter pairs) is the
-one that matters most: it carries every Vietnamese vowel × tone
-combination as a single NFC codepoint, and it is also the block where
-the `cmap_healer` (§ 5.1) does its work because the Adobe CID layout
-for Vietnamese precomposed vowels sits in an arithmetic-friendly
-correspondence with it.
-
-**NFC vs NFD.** Some PDF extractors emit decomposed sequences (`a` +
-`U+0301` combining acute) instead of the precomposed `á` (`U+00E1`).
-`vietnamese_text` runs `unicodedata.normalize("NFC", …)` so the on-disk
-representation is always precomposed. Anything that ships in NFD at
-the parser stage gets folded before it reaches the extractor.
-
-**Tone-mark canonicalisation.** Vietnamese has two long-running
-disputes about tone placement (`hoà` vs `hòa`, `thuý` vs `thúy`). The
-NFC canonical form is the **modern style** (`hòa`, `thúy`):
-tone goes on the *main vowel of the syllable*, not on the second
-element of a diphthong. `vietnamese_text` rewrites the legacy
-variants to the modern form so every downstream regex / KB lookup
-keys off one canonical spelling.
-
-### 2.2 TCVN3 / VnTime — the 8-bit legacy family
-
-* **Font names you'll see**: `.VnTime`, `.VnTimeH`, `.VnArial`,
-  `.VnArialH`, `.VnArialNarrow`, `VNI-Times-NoCS`, `VniTimes`, and
-  variants prefixed `.Vn…` (the dot is from the Vietnamese
-  Professional Publishing standard, "VPS").
-* **Encoding**: TCVN 5712:1993 (a.k.a. **TCVN3**, sometimes called
-  **VPS** colloquially). A single-byte encoding that overloads the
-  `0x80..0xFE` range with composed-glyph forms (a base letter +
-  tone-mark variants) plus a handful of standalone tone-mark
-  combining glyphs in the lower control region.
-* **The trick**: tones are expressed as *separate glyphs* placed
-  before/over the base letter. To render `ấ` the document writes
-  the byte for `â` (`0xC2` in TCVN3) followed by the byte for the
-  acute mark (`0xB5`). The viewer draws both glyphs at the same
-  position. There is no precomposed `ấ` byte at all.
-* **Why extraction breaks**: PDF text extractors map each rendered
-  glyph through the font's `ToUnicode` CMap. VnTime fonts ship without
-  a usable `ToUnicode` (because the on-page byte values were never
-  Unicode in the first place — they are arbitrary indices into a
-  legacy 8-bit codepage that has no canonical Unicode mapping). The
-  result is total garble: pypdf reads `0xC2 0xB5` and emits whatever
-  the default fallback says, which is usually `µ` or nothing.
-
-In our corpus, **legacy VnTime PDFs land in Mode C** (catastrophic
-garble) and are routed to NIM OCR by `HybridParser` (§ 5.2).
-String-level normalization cannot recover them.
-
-### 2.3 VNI-Times — the legacy custom 2-byte family
-
-* **Font names you'll see**: `VNI-Times`, `VNI-Helve`, `VNI-Aptima`,
-  `VNI-Times-NoCS`, `VNI-Avo`, `VNI-`anything.
-* **Encoding**: VNI Encoding (Vietnam News Inc, a Westminster, CA
-  publisher). Like TCVN3 it uses combining glyphs placed adjacent to
-  base letters, but expressed as **two-byte sequences** that map into
-  a custom CID space.
-* **The trick**: `ấ` is encoded as `0xE2 0xAA` (base `â` glyph then
-  the VNI acute combining-mark glyph). The CIDs themselves do not
-  align with any standard Unicode block, and the PDFs almost never
-  ship a `ToUnicode` CMap (the publisher's tools never produced one).
-* **Why extraction breaks**: identical to TCVN3 — without a
-  `ToUnicode` map the extractor has nothing to convert glyph indices
-  to characters, and the fallback is garbage.
-
-In our corpus, **VNI PDFs also land in Mode C** and go to NIM OCR.
-
-A note on detection: TCVN3 and VNI PDFs are not actually *broken*
-in the sense of "the file is corrupt". They are *visually correct*
-because rendering only needs glyph IDs and positions, not Unicode.
-The brokenness is purely in the text-extraction path. This is why
-OCR (which works on rendered pixels, not byte streams) succeeds where
-pypdf fails.
-
-### 2.4 Times New Roman + embedded ToUnicode CMap — the right way
-
-The modern Vietnamese authoring workflow (Word 2010+, Google Docs,
-modern PDF exporters) uses Times New Roman, Arial, or Calibri with:
-
-1. A standard Unicode encoding tag in the font dictionary
-   (`/Encoding /WinAnsiEncoding` or `/Encoding /Identity-H` for
-   CID-keyed fonts).
-2. An explicit `/ToUnicode` stream that maps every CID used in the
-   document to its Unicode codepoint.
-
-When both are present and correct, `pypdf` extracts perfect NFC
-Vietnamese text out of the box. The vast majority (~94% of
-congbobanan) of our corpus is in this regime.
-
-**But two non-obvious things can still go wrong:**
-
-* **Mode A — single-space mid-word splits.** pypdf decides where to
-  insert a space between adjacent glyphs based on the horizontal
-  offset between them, expressed as a fraction of the character
-  width. PDFs authored with non-standard kerning ("expand-tracking"
-  for visual emphasis) trip this threshold inside one word, producing
-  `"ng ười"` from `người`. The glyphs are correct, the encoding is
-  correct, the CMap is correct — pypdf's heuristic is just wrong.
-  Repaired by `congbobanan_join_word_breaks` (§ 5.3).
-* **Mode D — corrupted ToUnicode entries.** Some authoring chain (a
-  specific Word export path? a PDF "optimizer"? — the corpus survey
-  could not pin down a single root cause) drops a handful of CIDs in
-  the Adobe Vietnamese precomposed-vowel block to `U+0020`. The PDF
-  still **renders** correctly because the glyph table is intact; only
-  the `ToUnicode` mapping is wrong. Repaired by `cmap_healer`
-  (§ 5.1). See § 4.4 for the bit pattern.
+`cfg.parser.runtime: hybrid` is declared in
+`packages/datasites/congbobanan/configs/default.yaml:67`. The factory
+raises `ValueError` for any other runtime string
+(`packages/parser/stage.py:119-122`).
 
 ---
 
-## 3. The PDF text-extraction model — what pypdf actually sees
+## 3. Hybrid routing decision tree
 
-Text extraction from a PDF is a four-step pipeline at the byte level.
-Each step has a well-defined failure mode that bears on the heal
-layer:
+`HybridParser.parse` (`packages/parser/hybrid.py:126-192`) is the
+load-bearing entry point. It runs the local parser, computes two
+signals on the local markdown, and decides on each call whether to
+keep pypdf or fall back to NIM.
 
-```
-┌────────────────────────────────────────────────────────────────────┐
-│  PDF content stream: BT /F0 12 Tf [<04A9>] TJ ET                   │
-│                              │   │                                 │
-│                        font  │   └─ CID 0x04A9 in font /F0         │
-│                       resource                                     │
-└──────────────────────────────┬─────────────────────────────────────┘
-                               ▼
-            ┌─────-───────────────────────────────────┐
-            │  Font dictionary /F0 in /Resources/Font │
-            │   /Subtype  Type0 (CID-keyed)           │
-            │   /Encoding Identity-H                  │
-            │   /ToUnicode <stream>          ◄────────┼──── this is the
-            │   /DescendantFonts [<CIDFont>]          │     CMap we patch
-            └────────────────┬───────────────────────-┘
-                             ▼
-            ┌────────────────────────────────────────-┐
-            │  ToUnicode CMap (PostScript dialect)    │
-            │   bfchar                                │
-            │   <04A4> <1EA0>     (CID 0x04A4 -> Ạ)   │
-            │   <04A5> <1EA1>     (CID 0x04A5 -> ạ)   │
-            │   <04A9> <0020>     ◄── BUG: should be  │
-            │       ...                  <1EA5> (ấ)   │
-            │   endbfchar                             │
-            └────────────────┬───────────────────────-┘
-                             ▼
-                 extracted character: " "  ◄── glyph drop
+```python
+local_result = self.local.parse(pdf_bytes, preserve_tables=...)
+local_md = str(local_result.get("markdown") or "").strip()
+local_len = len(local_md)
+local_score = lossy_score(local_md)
+long_enough = local_len >= self._min_chars          # default 50
+below_lossy = local_score <= self._max_lossy_score  # default 0.05
+if long_enough and below_lossy:
+    return local_result          # keep pypdf, no NIM call
+# else: try NIM; on NIM exception, fall back to local
 ```
 
-`pypdf` and `pikepdf` (and every other extractor) all funnel through
-the `ToUnicode` stream at the last step. The healer (§ 5.1) operates
-directly on the bytes of this stream, rewriting the broken `<04A9>
-<0020>` line to `<04A9> <1EA5>` before pypdf reads it.
+### 3.1 Keep pypdf
 
-**Three classes of `ToUnicode` defect** in our corpus:
+When **both** `long_enough` *and* `below_lossy` hold the local result
+is returned verbatim with `parser_backend = "local"` and
+`local_lossy_score = <float>` annotated for downstream auditing
+(`packages/parser/hybrid.py:143-148`). This is the ~94% case on
+congbobanan: a native digital PDF with a healthy `ToUnicode` CMap
+that pypdf decodes cleanly.
 
-1. **Stream absent.** Legacy VnTime / VNI PDFs (§ 2.2 / § 2.3) ship
-   without a `ToUnicode` at all. pypdf falls back to the font's
-   `/Encoding` (which for these fonts is also broken) and produces
-   garble. No string-level fix is possible — Mode C, route to OCR.
-2. **Stream present but mostly empty / wrong.** Some Word exports
-   emit a stub `ToUnicode` that maps only ASCII. Identical observable
-   effect to (1) — garble — also Mode C.
-3. **Stream present and *mostly* correct, with selective Vietnamese
-   CIDs mapping to `<0020>`.** Mode D. This is the case the
-   `cmap_healer` repairs deterministically.
+### 3.2 Route to NIM — `local_len < min_local_chars` (default 50)
 
----
+Image-only / pure-scan PDFs (or PDFs whose page tree is so damaged
+pypdf cannot extract a single line) return empty or near-empty
+markdown. Anything below 50 chars after stripping is treated as
+"pypdf saw nothing". A stray header / footer like `"Page 1 of 3"`
+deliberately does not count as real content (the threshold
+docstring at `packages/parser/hybrid.py:5-9` calls this out).
 
-## 4. The four observed failure modes (corpus survey)
+### 3.3 Route to NIM — `lossy_score > max_local_lossy_score` (default 0.05)
 
-A random sample of 500 PDFs from
-`data/congbobanan.toaan.gov.vn/pdf/` (May 2026) gave the following
-distribution. The samples are documented under
-`packages/parser/cmap_healer.py:6-16` and informed the
-`lossy_score` thresholds in `packages/parser/hybrid.py:67-103`.
+`lossy_score` (`packages/parser/hybrid.py:67-102`) is the fraction
+of word tokens that are lowercase 1-2-character ASCII fragments
+sandwiched between non-whitespace neighbours:
 
-| Mode | Affected fraction | Detection signal | Repair |
-|---|---|---|---|
-| A — mid-word splits | ~all docs, ~3-15 sites / doc | shape: a Vietnamese-syllable predicate matches the join | `congbobanan_join_word_breaks` |
-| B — soft-wrap line breaks | ~all docs, every paragraph | structural: line has no terminal punctuation and next line is not a header / list | `congbobanan_join_soft_wraps` |
-| C — catastrophic garble | ~6% of corpus | metric: `lossy_score > 0.05` (frac of lowercase 1-2 char ASCII fragments in body) | `HybridParser` -> NIM nemoretriever-parse |
-| D — selective glyph drops | ~3.4% of corpus | byte: `<XXXX> <0020>` in `ToUnicode` where `0x04A4 ≤ XXXX ≤ 0x04F5` | `cmap_healer` |
-
-### 4.1 Mode A — single-space mid-word splits
-
-Pure shape artefact:
-
-```
-"... hu yện Ph úc Th ọ ng ười phạm tội ..."
-       │      │   │   │   │  │
-       └──────┴───┴───┴───┴──┴── pypdf kerning threshold tripped here
+```python
+_LOSSY_FRAGMENT_RE = re.compile(r"(?<=\S)\s+([a-z]{1,2})\s+(?=\S)")
+# score = len(_LOSSY_FRAGMENT_RE.findall(md)) / len(_WORD_TOKEN_RE.findall(md))
 ```
 
-The split positions are *consistent within one document* (same
-kerning, same trigger) but vary *across documents*. There is no
-defect in the PDF; it is a heuristic mismatch in pypdf. We rebuild
-the words via the Vietnamese-syllable phonotactic predicate in
-`packages/datasites/congbobanan/normalizers.py:_should_join`
-(§ 5.3).
+This is the signature of catastrophic font corruption — embedded
+subset fonts without a usable `ToUnicode` CMap. Pypdf extracts
+*something* (`local_len` is large) but most syllables drop their
+tone-marked vowels and the body decays to short orphan fragments
+like `"do an"`, `"t  chức"`, `"đ u giá"`. Anchoring on **lowercase**
+keeps legitimate anonymised legal initials ("Đặng Đức H", always
+uppercase) out of the score.
 
-### 4.2 Mode B — PDF soft-wraps
-
-The PDF lays out paragraphs at a fixed visual line width (~80 chars
-in legal PDFs); pypdf emits one `\n` per visual line. A four-line
-paragraph in the PDF becomes four rows of markdown. The semantic
-paragraph still ends at the *next* blank line in the PDF, but every
-clause break inside the paragraph is now a hard newline.
-
-Without reflow this is mostly cosmetic but it actively defeats the
-NER stage's sentence-tokenization regex (which splits on `.?!` +
-capital): a sentence split across two wrapped lines reads as two
-truncated sentences, both flagged as malformed. `congbobanan_join_soft_wraps`
-(§ 5.3) folds continuation lines back into their paragraph.
-
-### 4.3 Mode C — catastrophic glyph drop (no usable ToUnicode)
-
-Whole-document garble. Examples directly out of pypdf:
-
-```
-"QU N LÊ CHÂNẬ"        # should be "QUẬN LÊ CHÂN"
-"T H GIA"              # should be "TỔ CHỨC THỪA HÀNH" or similar
-"do an"                # should be "đối án" or "đoạn"
-"Vô T C TUY N"         # should be "Vô Tổ Chức Tuyển"
-```
-
-The signal is statistically robust: short lowercase ASCII fragments
-(`"do"`, `"an"`, `"a"`, `"v"`) dominate the body. The
-`lossy_score` metric in `packages/parser/hybrid.py:67-103` measures
-the fraction of word tokens that are lowercase 1-2-character ASCII
-fragments sandwiched in body context (anchored on lowercase to skip
-anonymized initials like `"H"`, `"M"`, which are legitimate in
-Vietnamese legal docs).
-
-Calibration on the 500-doc sample:
+Calibration percentiles on a 500-doc sample of
+`data/congbobanan.toaan.gov.vn/md/` (verbatim from the docstring):
 
 | Percentile | `lossy_score` | Regime |
-|---|---|---|
-| p50 | 0.016 | healthy |
-| p75 | 0.022 | healthy |
-| p90 | 0.031 | healthy / mildly noisy |
-| p95 | 0.088 | catastrophic |
-| p99 | 0.227 | total garble |
+|------------|---------------|--------|
+| p50  | 0.016 | healthy |
+| p75  | 0.022 | healthy |
+| p90  | 0.031 | healthy / mildly noisy |
+| p95  | 0.088 | catastrophic |
+| p99  | 0.227 | total garble |
 | p100 | 0.303 | unreadable |
 
-The default threshold `cfg.parser.max_local_lossy_score = 0.05`
-cleanly partitions the corpus and is the routing knob for the
-hybrid backend (§ 5.2).
+`0.05` cleanly separates the ~94% healthy tail from the ~6%
+catastrophic regime; setting `max_local_lossy_score = 1.0` disables
+this branch entirely (the doc note at
+`packages/parser/hybrid.py:17-19`).
 
-### 4.4 Mode D — Vietnamese-CID glyph drops
+### 3.4 NIM call itself fails — fall back to pypdf
 
-The interesting case, and the reason `cmap_healer` exists. The PDF
-otherwise looks healthy (lossy_score in the p50 range), but a small
-number of specific tone-marked vowels drop to spaces:
-
-```
-input PDF rendered as:   "Huỳnh Tấn Cường tham gia tổ chức đấu giá"
-pypdf extracts:          "Huỳnh T n Cường tham gia t  chức đ u giá"
-                                │ │              │           │
-                                ấ → U+0020       ổ → U+0020   ấ → U+0020
-```
-
-Looking at the `ToUnicode` stream with `pikepdf`:
-
-```
-30 beginbfchar
-<0003> <0020>     ← legitimate: CID 3 is the space glyph
-<0011> <0021>
-<0017> <0027>
-...
-<04A4> <1EA0>     ← good: CID 0x04A4 -> Ạ
-<04A5> <1EA1>     ← good: CID 0x04A5 -> ạ
-<04A8> <1EA4>     ← good: CID 0x04A8 -> Ấ
-<04A9> <0020>     ← BUG: CID 0x04A9 should be U+1EA5 (ấ), maps to space
-<04AB> <1EA7>     ← good: CID 0x04AB -> ầ
-<04D5> <1ED1>     ← good: CID 0x04D5 -> ố
-<04D9> <0020>     ← BUG: CID 0x04D9 should be U+1ED5 (ổ), maps to space
-<04DB> <1ED7>     ← good: CID 0x04DB -> ỗ
-...
-endbfchar
-```
-
-The corruption pattern is consistent across affected PDFs:
-
-* Only CIDs in the Adobe Vietnamese precomposed-vowel block
-  `[0x04A4, 0x04F5]` are affected.
-* The bad target is always `<0020>` (not some other wrong codepoint).
-* Adobe's CID-Identity-UCS layout makes the correct codepoint
-  algorithmically recoverable:
-  `correct = U+1EA0 + (CID - 0x04A4)`
-  (verified against the surviving correct entries in the same
-  CMap and against multiple PDFs).
-* No single CID is affected in more than ~1% of corpus PDFs — the
-  bug is spread across the whole vowel block, suggesting some
-  upstream tool walks the table and occasionally clobbers an entry.
-
-The arithmetic relation only holds for the **contiguous** portion of
-Adobe's layout, `[0x04A4, 0x04F5]` (corresponding to `U+1EA0`
-through `U+1EF1`, i.e. `Ạ` through `ự`). CIDs `0x04F6..0x04F9`
-(`Ỳ ỳ Ỵ ỵ Ỷ ỷ Ỹ ỹ`) sit in a non-contiguous gap in Adobe's table
-and the formula gives wrong codepoints there. The corpus survey saw
-only 2/500 docs affected at `0x04F9` (< 0.5%) — the safer engineering
-choice is to leave Y-tone corruptions un-healed rather than emit
-wrong codepoints. This is the `_VN_CID_HI = 0x04F5` constant in
-`packages/parser/cmap_healer.py:62-64`.
+When NIM raises (rate-limit exhausted, network error, malformed
+response), `HybridParser.parse` swallows the exception and returns
+the local result instead of bubbling up
+(`packages/parser/hybrid.py:167-182`). The local result is
+annotated with `nim_fallback_error = "<ExcType>: <msg>"` so a later
+re-run can target the affected rows. A NIM outage therefore
+degrades the ~6% NIM-routed cohort to local output rather than
+crashing the pipeline. `PdfParseStage` still drops any row whose
+markdown is empty after this fallback
+(`packages/parser/stage.py:191-211`).
 
 ---
 
-## 5. The heal-layer architecture
+## 4. PDF case taxonomy
 
-```
-   ┌─────────────────────────────────────────────────────────────┐
-   │  HybridParser.parse(pdf_bytes)                              │
-   │                                                             │
-   │   1.  local_result = PypdfParser.parse(pdf_bytes)           │
-   │                          │                                  │
-   │                          │ (5.1 inside)                     │
-   │                          ▼                                  │
-   │       ┌──────────────────────────────────┐                  │
-   │       │  cmap_healer.heal_pdf_bytes(...) │                  │
-   │       │   -> patches Mode D in-memory    │                  │
-   │       └────────────────┬─────────────────┘                  │
-   │                        │                                    │
-   │                        ▼                                    │
-   │       pypdf.PdfReader(healed_bytes)                         │
-   │                                                             │
-   │   2.  if local_md is < min_chars (Mode C empty)             │
-   │         or lossy_score(local_md) > max_lossy_score          │
-   │         (Mode C garble):                                    │
-   │            -> route to NIM nemoretriever-parse              │
-   │                                                             │
-   │   3.  emit markdown + cmap_patches + local_lossy_score      │
-   └─────────────────────────────────────────────────────────────┘
+Real-world inputs cluster into a small set of named cases. The
+~94% / ~6% split between native-handle and NIM-fallback (and the
+~162k cohort the v1.1 pass mis-routed and the v1.2 re-run cleaned
+up) is the corpus characteristic that motivated the hybrid runtime.
 
-       ┌────────────────────────────────────────────-──────────┐
-       │  PdfParseStage (per-row) applies the normalizer chain │
-       │                                                       │
-       │   letter_spaced_collapse   (universal)                │
-       │   congbobanan_join_word_breaks   (Mode A)             │
-       │   vietnamese_text   (NFC + ftfy + tone canonicalise)  │
-       │   congbobanan_join_soft_wraps   (Mode B)              │
-       │   congbobanan_strip_page_noise   (page furniture)     │
-       └─────────────────────────────────────────────-─────────┘
-```
+For each case below: what the input looks like, what the parser
+does, and what ends up in `data/<host>/md/<id>.md` +
+`<id>.meta.json`.
 
-### 5.1 `cmap_healer` — deterministic fix for Mode D
+### Case A — Native digital PDF, healthy font/CMap
 
-```62:64:packages/parser/cmap_healer.py
-_VN_CID_LO = 0x04A4
-_VN_CID_HI = 0x04F5    # ự (U+1EF1) -- top of the contiguous block
-_VN_UCS_BASE = 0x1EA0  # U+1EA0 == "Ạ"
-```
+* **Input.** Modern Word / Google Docs / LibreOffice export with
+  `/Encoding /Identity-H` plus a correct `/ToUnicode` stream.
+* **Routing.** pypdf reads clean Vietnamese NFC text → `lossy_score`
+  ~0.016 (p50), `local_len` ≫ 50 → kept locally (§ 3.1).
+* **Output.** `<id>.md` is the per-page markdown joined by
+  `## Page N` separators; `<id>.meta.json` records the configured
+  `parser_model` (see § 7 about that being the configured model,
+  not necessarily the backend that ran).
 
-The healer entry point is `heal_pdf_bytes(pdf_bytes)`. It uses
-`pikepdf` (a low-level PDF library, dependency declared in
-`packages/datasites/congbobanan/requirements.txt`) to walk every
-page's `/Resources /Font` dict, inspect each `/ToUnicode` stream,
-and rewrite any `<CID> <0020>` entry whose CID falls in
-`[_VN_CID_LO, _VN_CID_HI]` to the correct
-`<CID> <U+1EA0 + (CID - 0x04A4)>` byte sequence.
+### Case B — Native digital PDF with selective ToUnicode glyph drops
 
-Three properties matter:
+* **Input.** Otherwise-healthy PDF whose `/ToUnicode` has
+  `<CID> <0020>` entries in the Adobe Vietnamese vowel block. Pypdf
+  would drop tone-marked vowels to spaces (`"đấu" → "đ u"`,
+  `"tổ chức" → "t  chức"`).
+* **Routing.** `cmap_healer.heal_pdf_bytes` rewrites the broken
+  entries before pypdf opens the bytes (`packages/parser/pypdf.py:93-113`).
+  The extracted text is then correct, `lossy_score` stays healthy →
+  kept locally. No NIM call. The patch count is surfaced as
+  `cmap_patches` on the result dict.
+* **Output.** Markdown indistinguishable from Case A; `cmap_patches`
+  is the only diagnostic differentiator.
 
-* **Conservative.** The healer only touches entries that match the
-  exact `<XXXX> <0020>` byte pattern *and* have a CID in the
-  Vietnamese block. The very common `<0003> <0020>` (CID 3 is the
-  space glyph, mapping to ASCII space is correct) is preserved
-  because CID 3 is outside the Vietnamese range. Entries that map
-  to anything other than `<0020>` are also untouched.
-* **No-op on clean PDFs.** A PDF with no broken entries pays the
-  pikepdf open + stream-read cost (~30-80 ms on a typical 1-5 page
-  legal PDF) but skips serialisation. The healed-bytes object is
-  the original bytes object (identity), not a copy.
-* **Idempotent.** Running the healer on already-healed bytes finds
-  no Vietnamese-block `<XXXX> <0020>` entries and is a no-op.
+### Case B' — Native digital PDF with catastrophic ToUnicode corruption
 
-The healer is wired into `PypdfParser._parse_pdf` (`packages/parser/pypdf.py:88-137`)
-**before** `pypdf.PdfReader` opens the bytes, so any extraction call
-downstream of this point sees corrected text. The patch count is
-surfaced on the result dict as `cmap_patches` for downstream
-auditing.
+* **Input.** Legacy `.VnTime` / `VNI-Times`, or modern PDF whose
+  `/ToUnicode` is absent / stubbed / non-Vietnamese-block. Pypdf
+  extracts gibberish 1-2 letter fragments throughout the body.
+* **Routing.** `lossy_score > 0.05` → routed to NIM (§ 3.3).
+* **Output.** `<id>.md` is the NIM nemotron-parse v1.2
+  layout-aware markdown (Title → `#`, Section-header → `##`,
+  List-item → `-`, Table → HTML, Caption / Footnote preserved).
+  Result dict carries `parser_backend = "nim"` and
+  `local_lossy_score` for auditing.
 
-### 5.2 `HybridParser` + `lossy_score` — Mode C fallback to OCR
+### Case C — Image-only / scanned PDF
 
-When the CMap is missing entirely (Modes C — legacy VnTime / VNI /
-corrupted) the heal layer has nothing to patch and `pypdf` returns
-either an empty string or catastrophic garble. `HybridParser` watches
-for both failure shapes:
+* **Input.** Photocopier / scanner output; each page is a raster
+  image with no text layer.
+* **Routing.** pypdf returns ~empty → `local_len < 50` → NIM (§ 3.2).
+  The NIM client rasterises each page at `cfg.parser.nim_dpi`
+  (default 300) onto a 1536×2048 white canvas before the call.
+* **Output.** Same shape as Case B'.
 
-```141:142:packages/parser/hybrid.py
-long_enough = local_len >= self._min_chars
-below_lossy = local_score <= self._max_lossy_score
-```
+### Case D — Hybrid mixed-page PDFs (some scanned, some digital)
 
-When either condition fails, the parser dispatches the same
-`pdf_bytes` to NVIDIA's `nemoretriever-parse` NIM, which performs
-OCR over the rendered pages and bypasses the CMap question entirely.
-The hybrid runtime is the default (`cfg.parser.runtime: hybrid` in
-every datasite config) and OCR fallback fires on ~6% of the
-congbobanan corpus. See `wiki/DATASITES.md § 4.2` for the runtime
-selection contract.
+* **Input.** A digital PDF with 1-2 scanned attachment pages.
+* **Routing.** `lossy_score` and `local_len` are computed on the
+  **whole-document** markdown. A mostly-clean doc with one image
+  page does not trip either threshold, so pypdf is kept and the
+  image page emits an empty `pages[i].markdown`. Hybrid is
+  intentionally not surgical — see `packages/parser/hybrid.py:21-30`.
+* **Output.** Clean markdown for digital pages; image page appears
+  as `## Page N` with no body.
 
-**Why OCR is the right fix for Mode C and not Mode D.** OCR is
-expensive (slow, network-bound, costs NIM credits) and lossy
-(introduces its own confusion errors on similar-shaped characters).
-Mode D PDFs *have* a correct embedded glyph table — only the
-extraction-time index is wrong — so the CMap heal recovers exact
-authoritative text at zero quality loss. Routing Mode D through OCR
-would replace one defect with another. Mode C PDFs have no usable
-glyph index at all, so OCR is the only option that survives the
-encoding mess.
+### Case E — DOCX / DOC
 
-### 5.3 Site normalizers — shape-level fixes for Modes A / B
+* **Input.** Office Open XML (DOCX, ZIP-based) or legacy Word
+  97-2003 OLE compound binary (DOC). The downloader saves the
+  magic-sniffed extension; the parser dispatches by magic.
+* **DOCX routing.** `PypdfParser._parse_docx`
+  (`packages/parser/pypdf.py:179-197`) calls `docx2txt.process` on
+  the bytes. One logical page; emitted as `## Page 1\n\n<text>`.
+* **DOC routing.** `PypdfParser._parse_doc`
+  (`packages/parser/pypdf.py:199-241`) tries three subprocesses in
+  order, returning on the first non-empty result:
+  1. `antiword -m UTF-8.txt -w 0` — best Vietnamese tone
+     preservation (`_try_antiword`).
+  2. `catdoc -d utf-8 -w` — decent fallback (`_try_catdoc`).
+  3. `soffice --headless --convert-to "txt:Text (encoded):UTF8"` —
+     heaviest, most semantics-preserving (`_try_libreoffice`).
+  Subprocess output is decoded best-effort UTF-8 → CP1258 → Latin-1
+  (`_decode_best_effort`). 60-120 s timeout per call.
+* **Hybrid behaviour.** DOCX / DOC results still flow through
+  `HybridParser`, but `lossy_score` is normally low and `local_len`
+  is high, so they stay on the local backend.
 
-`packages/datasites/congbobanan/normalizers.py` ships three site-
-specific normalizers that the `parser.normalizers` chain consumes
-in the order pinned by `packages/datasites/congbobanan/configs/default.yaml`:
+### Case F — Encrypted / password-protected PDFs
+
+* **Input.** PDF with `/Encrypt` set; pypdf raises on `reader.pages`
+  access without a password.
+* **Behaviour.** No explicit decryption path. The bare-`except`
+  around `pypdf.PdfReader` (`packages/parser/pypdf.py:127-142`)
+  catches the encryption exception alongside other open-time
+  failures, logs the warning, returns
+  `{"markdown": "", "pages": [], "parse_error": "..."}`, and
+  `HybridParser` then routes to NIM. NIM rasterisation also fails
+  on encrypted bytes, so the row is ultimately dropped by
+  `PdfParseStage` (`packages/parser/stage.py:191-211`). Decrypt
+  upstream with `qpdf --decrypt` if you have the password.
+
+### Case G — Corrupted / malformed bytes
+
+* **Input.** Truncated PDF, missing `startxref`, broken xref table,
+  RAR / PE32 / HTML mistakenly saved as `.pdf`, etc.
+* **Behaviour.** Three defensive `try/except` layers in
+  `_parse_pdf` cover this: `cmap_healer` errors fall back to raw
+  bytes (`packages/parser/pypdf.py:102-109`); `pypdf.PdfReader`
+  failures return an empty record with `parse_error` set
+  (`packages/parser/pypdf.py:127-142`); mid-iteration
+  `reader.pages` failures return a partial result
+  (`packages/parser/pypdf.py:150-166`). `HybridParser` reads the
+  empty / short markdown and routes to NIM; if NIM also fails the
+  row is dropped. Garbage bytes never crash a Ray worker.
+
+---
+
+## 5. Post-parse normalizer chain
+
+`cfg.parser.normalizers` (`packages/datasites/congbobanan/configs/default.yaml:144-150`)
+declares the chain that `NormalizerChainStage` runs **between**
+`PdfParseStage` and `MarkdownPerDocWriter`, so the per-doc `.md`
+files on disk are already canonical and downstream consumers
+(extractor, embedder, ad-hoc readers) see the cleaned text without
+re-running the work.
 
 ```yaml
 parser:
   normalizers:
-    - letter_spaced_collapse            # universal (2+-space runs)
-    - congbobanan_join_word_breaks      # site   (Mode A: 1-space mid-word)
-    - vietnamese_text                   # universal (ftfy + NFC + tone)
-    - congbobanan_join_soft_wraps       # site   (Mode B: PDF line-wrap reflow)
-    - congbobanan_strip_page_noise      # site   (per-page bare-digit)
+    - letter_spaced_collapse
+    - congbobanan_join_word_breaks
+    - vietnamese_text
+    - congbobanan_join_soft_wraps
+    - congbobanan_strip_page_noise
+    - llm_ocr_fix
 ```
 
-The chain order is load-bearing:
+### 5.1 What each normalizer does
 
-* `letter_spaced_collapse` first — the universal 2+-space glyph-run
-  collapser (e.g. `T h ô n g  t i n` -> `Thông tin`) keys on a
-  whitespace pattern the later normalizers don't see, so it has to
-  run before they rewrite anything.
-* `congbobanan_join_word_breaks` next — rebuilds Mode A splits using
-  a Vietnamese-syllable predicate (onset + nucleus + coda, see
-  `packages/datasites/congbobanan/normalizers.py:91-130`). The
-  guard `_MIN_JOINED_LEN = 3` is what prevents lossy-glyph artefacts
-  (`đ u` from `đấu`) from being mis-joined into `đu`: a 2-char
-  joined form is rejected by the predicate, so Mode D artefacts
-  survive intact and can be detected by `lossy_score`.
-* `vietnamese_text` — runs ftfy + NFC + tone-mark canonicalisation
-  against the now-rebuilt words.
-* `congbobanan_join_soft_wraps` — Mode B reflow. Runs *after*
-  `vietnamese_text` so the terminal-punctuation tests (`. ? ! ; …`)
-  see canonical NFC output.
-* `congbobanan_strip_page_noise` — last. Removes the bare-digit body
-  line that pypdf emits after each `## Page N` header (the printed
-  page number glyph in the original PDF). Site furniture, not
-  content.
+| Name | Source | One-line summary |
+|------|--------|------------------|
+| `letter_spaced_collapse`         | `packages/extractor/normalizers.py:426-451` | Collapses pypdf letter-spaced glyph runs (`T h ô n g  t i n` → `Thông tin`) using a 2+-whitespace word-boundary signal and a single-`isalpha()`-codepoint predicate. Universal. |
+| `congbobanan_join_word_breaks`   | `packages/datasites/congbobanan/normalizers.py:263-291` | Rebuilds single-space mid-word splits using a Vietnamese onset-nucleus-coda syllable predicate. Guards with `min(len) ≤ 2` to avoid mis-joining glyph-drop artefacts. Site-specific. |
+| `vietnamese_text`                | `packages/extractor/normalizers.py:307-326` | ftfy + NFC + Vietnamese tone-mark canonicalisation (`hoà → hòa`, `thuý → thúy`) + PDF whitespace cleanup. Cross-corpus default. |
+| `congbobanan_join_soft_wraps`    | `packages/datasites/congbobanan/normalizers.py:411-443` | Folds pypdf's hard-newline-per-visual-line output back into logical paragraphs using a terminal-punctuation + structural-marker predicate. Site-specific. |
+| `congbobanan_strip_page_noise`   | `packages/datasites/congbobanan/normalizers.py:468-495` | Removes the bare-digit body line pypdf emits under each `## Page N` header (the printed page-number glyph). Site-specific. |
+| `llm_ocr_fix`                    | `packages/extractor/llm_ocr_fix.py` | NIM-hosted Qwen3.5-122B-A10B that proposes substring edits for residual Vietnamese OCR slips. Each call hits paid build.nvidia.com tier. **Must run LAST.** |
+
+### 5.2 `llm_ocr_fix` and its guardrails
+
+`llm_ocr_fix` runs after the five deterministic stages, sees the
+most-cleaned text, and only fires on residual slips. Every proposed
+edit must pass a stack of safety checks before being applied with
+`str.replace(old, new)` semantics
+(`packages/extractor/llm_ocr_fix.py:1-65, 110-117`):
+
+* **Token-count match** — `old` and `new` must have the same number
+  of whitespace-separated tokens (rejects hallucinated word
+  insertions like `"Viên kiêm sát" → "Viên chức kiểm sát"`).
+* **Proper-noun protection** — title-case tokens must be
+  character-identical between `old` and `new` (no corruption of
+  person/place names like `Nguyễn Văn A`).
+* **Acronym protection** — all-uppercase tokens (`TÒA ÁN`,
+  `HĐXX`) must be character-identical.
+* **Length cap** — `|len(new) - len(old)| ≤ MAX_LEN_DIFF_CHARS` (5).
+* **No-digits rule** — neither `old` nor `new` may contain digits
+  (protects case IDs, dates, statute numbers, money amounts).
+* **Ambiguous-bare-syllable denylist** — single-syllable Vietnamese
+  words with OCR-confusable homographs are blocked from solo edits.
+* **Base-letter equality for solo title-case** — a single title-case
+  token edit must keep the same accent-stripped base letter
+  (rejects `Phúc Thẳm → Phúc Thẩm` even when grammatically correct).
+* **Word-boundary anchored replace-all** — every occurrence of
+  `old` in the doc is corrected, not just the LLM's quoted span.
+* **Per-document caps** — at most `MAX_EDITS_PER_DOC = 30` distinct
+  edit kinds and at most `MAX_CHANGE_RATIO = 0.05` (5%) of the
+  source characters touched.
+
+See `packages/extractor/llm_ocr_fix.py` for the full guardrail
+implementation; the safety stack is intentionally not env-var-tunable.
+
+### 5.3 Why the chain order matters
+
+The order is load-bearing (annotated at
+`packages/datasites/congbobanan/configs/default.yaml:115-128`):
+
+1. `letter_spaced_collapse` first — keys on a 2+-whitespace boundary
+   pattern that later normalizers would collapse.
+2. `congbobanan_join_word_breaks` next — Vietnamese-syllable
+   predicate needs the original NFC tone marks, runs *before*
+   `vietnamese_text` rewrites them.
+3. `vietnamese_text` — ftfy + NFC + tone-mark canonicalisation on
+   the now-rebuilt words.
+4. `congbobanan_join_soft_wraps` *after* `vietnamese_text` so its
+   terminal-punctuation tests see canonical NFC quotes (`”`, `…`).
+5. `congbobanan_strip_page_noise` *before* `llm_ocr_fix` so the
+   LLM sees the page-furniture-stripped body.
+6. `llm_ocr_fix` LAST — only docs `SkipExistingMarkdownFilter` lets
+   through actually pay the NIM call.
 
 ---
 
-## 6. Diagnostic recipes
+## 6. Operational knobs
 
-A single workflow runs the full heal + extract over an arbitrary
-PDF for triage:
+The keys operators most often tune live under `cfg.parser` and
+`cfg.stage_overrides`. Defaults below are pinned from
+`packages/datasites/congbobanan/configs/default.yaml` and the
+constants in `packages/parser/`.
 
-```bash
-python -m packages.parser <pdf_path> --runtime local
-```
+| Key | Default | Tune this when… |
+|-----|---------|-----------------|
+| `parser.runtime` | `hybrid` | Set `local` for offline / air-gapped runs, `nim` for a full re-parse where you want every doc through nemotron-parse. |
+| `parser.min_local_chars` | `50` | Bump if pypdf is producing a noisy header-only output that still passes the gate; lower if you want fewer NIM fallbacks. |
+| `parser.max_local_lossy_score` | `0.05` | Bump (e.g. `0.10`) to be more tolerant of pypdf output and avoid NIM; drop (e.g. `0.03`) to send mildly-noisy docs to NIM. Set to `1.0` to disable the lossy branch entirely. |
+| `parser.nim_base_url` | `https://integrate.api.nvidia.com/v1` | Point at a self-hosted NIM (LAN deployment) to avoid build.nvidia.com rate limits. Reads `${oc.env:NIM_BASE_URL,...}` so an env var works. |
+| `parser.nim_dpi` | `300` | Lower (200) for faster but lossier OCR on cheap pages; raise (400+) only if tone marks look smeared in NIM output. |
+| `parser.nim_tool` | `markdown_bbox` | Use `markdown_no_bbox` for ~30% less tokens at the cost of layout; `detection_only` for layout-only debugging. |
+| `parser.nim_max_tokens` | `3500` | Raise to 5000-6000 if multi-page tables are being truncated mid-row. |
+| `parser.nim_temperature` | `0.0` | Leave at 0 for deterministic structured output; only change for sampling A/B tests. |
+| `parser.nim_max_retries` | `5` | Raise to 8-10 under sustained 429s on build.nvidia.com; drop to 2 on a local NIM where rate limits are not a concern. |
+| `parser.normalizers` | see § 5 | Set `[]` to disable all parser-side normalisation. Drop `llm_ocr_fix` for free / offline runs. Add site normalizers for new datasites. |
+| `stage_overrides.parse_files_per_partition` | `32` | Lower (8-16) on memory-constrained workers; raise (64-128) on big-memory hosts to reduce Ray scheduling overhead. |
 
-This prints the markdown, the page count, and (when patches fire)
-the `cmap_patches` count. The `--runtime nim` and
-`--runtime hybrid` flags route through the alternate backends.
-
-**Which mode am I looking at?**
-
-| Symptom | Likely mode | Quick check |
-|---|---|---|
-| Markdown is empty or < 50 chars | C (extreme) | `len(markdown) < 50` -> hybrid routes to OCR automatically |
-| Markdown is long but full of `"do"` `"an"` `"v"` short tokens | C | `lossy_score(markdown) > 0.05` |
-| Some Vietnamese words missing diacritics (`đ u`, `t  chức`); rest clean | D | inspect the PDF's ToUnicode CMap with `pikepdf` for `<XXXX> <0020>` in `[04A4, 04F5]` |
-| Words are split mid-syllable with single spaces (`hu yện`) | A | normalizer chain should clean it — check that `congbobanan_join_word_breaks` is registered (eager-imported in `packages/datasites/congbobanan/__init__.py`) |
-| Sentences end mid-clause with a newline | B | normalizer chain should clean it — check `congbobanan_join_soft_wraps` is in the chain |
-
-**Inspecting a single PDF's CMaps with pikepdf** (Mode D diagnosis):
-
-```python
-import pikepdf
-with pikepdf.open("suspect.pdf") as pdf:
-    for page in pdf.pages:
-        fonts = page.get("/Resources", {}).get("/Font", {})
-        for name, font in fonts.items():
-            if "/ToUnicode" in font:
-                stream = font["/ToUnicode"].read_bytes()
-                # Lines that look like `<04A9> <0020>` are Mode D candidates
-                print(name, stream.count(b"<0020>"))
-```
-
-If any CID in the Vietnamese block maps to `<0020>` the PDF is a
-Mode D candidate and the healer will fix it on next parse.
+`NVIDIA_API_KEY` (or `NVIDIA_NIM_API_KEY`) must be exported for any
+runtime that calls NIM (`hybrid` or `nim`); the factory raises a
+clear error message otherwise (`packages/parser/stage.py:54-62`).
 
 ---
 
-## 7. Known limitations + open work
+## 7. Expected outputs
 
-* **The lossy_score detector is binary.** It catches *catastrophic*
-  font corruption (a whole document garbled) but is blind to the
-  middle band: a document where two paragraphs out of fifty have
-  Mode D drops scores in the healthy range. The `cmap_healer`
-  covers that band deterministically, but a PDF whose CMap is
-  damaged in a way the healer doesn't recognise (non-Vietnamese
-  block; non-`<0020>` target) will neither be repaired nor routed
-  to OCR. See the docstring at `packages/parser/hybrid.py:21-30`.
-* **Y-tone corruptions are un-healed.** The 4 CIDs in `[0x04F6, 0x04F9]`
-  (the `Ỳ ỳ Ỵ ỵ Ỷ ỷ Ỹ ỹ` subseries) sit in a discontiguous gap in
-  Adobe's CID layout and the arithmetic formula would emit wrong
-  codepoints there. The corpus survey saw < 0.5% of docs hit this
-  edge; if the rate climbs we can extend `_vn_codepoint_for` with
-  an explicit table. See `packages/parser/cmap_healer.py:54-61`.
-* **Legacy `.doc` files** (Word 97-2003 OLE compound binary) take a
-  separate code path entirely — `PypdfParser._parse_doc` shells out
-  to `antiword` / `catdoc` / `libreoffice --headless`. None of these
-  share `pypdf`'s CMap problem because they decode the WordDocument
-  stream, not glyph IDs. See `packages/parser/pypdf.py:159-202`.
-* **vbpl** carries the same encoding ecosystems but at lower
-  incidence (~1% Mode D, ~3% Mode C in the May 2026 sample). The
-  same `cmap_healer` + `HybridParser` machinery covers it; vbpl has
-  no site-specific Mode A / B normalizers (it uses a Playwright-driven
-  parser path entirely, see [`DATASITES.md § 13.4`](DATASITES.md)).
-* **Other datasites** (`anle`, `pbgdpl`, `phapdien`, `thuvienphapluat_tnpl`)
-  consume HTML or already-clean exports and do not hit any of the
-  four failure modes. The heal layer is inert on their inputs.
+For each successfully parsed row, `MarkdownPerDocWriter` produces
+two files under `data/<host>/md/`:
+
+* `<doc_name>.md` — cleaned per-doc markdown, post-normalizer chain,
+  including any `llm_ocr_fix` edits that survived the guardrails.
+  Page boundaries are preserved as `## Page N` headers (originally
+  emitted by `PypdfParser._parse_pdf` at
+  `packages/parser/pypdf.py:159-160` and matched by the NIM
+  client's `blocks_to_markdown_page` assembler).
+* `<doc_name>.meta.json` — single-line JSON dump of the row's
+  metadata + the raw parser output. Schema as observed on
+  `data/congbobanan.toaan.gov.vn/md/1000432.meta.json`:
+
+| Key | Type | Origin |
+|-----|------|--------|
+| `doc_name`, `case_id` | string | Stable doc identifier (case_id for congbobanan). |
+| `source`              | string | `cfg.host`. |
+| `detail_url`, `pdf_path`, `pdf_filename` | string | Detail-page URL, local PDF path, portal-advertised filename. |
+| `doc_type`            | string | `"ban-an"` for congbobanan judgments. |
+| `ban_an_so`, `ngay`, `ten_ban_an`, `ngay_cong_bo`, `quan_he_phap_luat`, `cap_xet_xu`, `loai_vu_viec`, `toa_an_xet_xu`, `ap_dung_an_le`, `dinh_chinh`, `thong_tin_vu_viec`, `tong_binh_chon`, `luot_xem`, `luot_tai` | scalars | Sidebar metadata harvested by the extractor; any may be `null` when the detail panel is a ghost. |
+| `pages`               | array  | Per-page `{"page_number": int, "markdown": str, "blocks": list}`. For NIM-routed docs, `blocks` carries layout-aware nemotron-parse v1.2 output (`bbox` + `text` + `type` ∈ {`Section-header`, `Text`, `List-item`, `Caption`, `Table`, `Page-footer`, …}). For pypdf-routed docs, `blocks` is `[]`. |
+| `confidence`          | float \| null | Per-page mean confidence from nemotron-parse; `null` for pypdf. |
+| `num_pages`           | int    | `len(pages)` or `markdown.count("\f") + 1` fallback (`packages/parser/stage.py:175-177`). |
+| `parser_model`        | string | `cfg.parser.model_id` (the *configured* model — `nvidia/nemotron-parse` by default), **not** the backend that actually ran. The in-memory result dict's `parser_backend` records the actual backend but is not currently persisted. |
+| `parsed_at`           | string | UTC ISO-8601 timestamp from `PdfParseStage.process` (`packages/parser/stage.py:184`). |
+
+`HybridParser` also annotates the in-memory result with
+`local_lossy_score`, `parser_backend`, optional `nim_fallback_error`,
+and (from `_parse_pdf`) optional `cmap_patches`. Those keys are not
+currently serialised by `MarkdownPerDocWriter` but are available to
+custom writers that subclass it.
+
+---
+
+## 8. Known limitations
+
+* **RTF is accepted by the downloader but not parsed.** The
+  downloader sniffs `{\rtf` and saves the file
+  (`packages/datasites/congbobanan/components/downloader.py:90-95`),
+  but `PypdfParser.parse` has no `{\rtf` branch in its magic-byte
+  dispatch (`packages/parser/pypdf.py:69-85`). RTF bodies emit
+  the `unrecognized magic` warning and an empty record; the row is
+  dropped downstream. Add an `unrtf` / `soffice`-based `_parse_rtf`
+  if RTF judgments become non-trivial.
+* **DOC files require `antiword`, `catdoc`, or `libreoffice` on
+  `PATH`.** With none of the three CLIs installed, `_parse_doc`
+  logs a one-line install hint and returns an empty record; the
+  doc is then dropped. Install at least one
+  (`apt install antiword`) on every parser worker host.
+* **pypdf cannot OCR scanned PDFs at all.** Image-only PDFs always
+  route to NIM. A `runtime: local` deployment loses every scanned
+  document by design — local-only is the offline / air-gapped path,
+  not the recovery path.
+* **`lossy_score` is global per-doc, not per-page.** A mostly
+  digital PDF with one or two scanned pages stays on pypdf; the
+  scanned pages appear as empty `pages[i].markdown` blocks.
+  Fixing this would need a per-page hybrid decision or a
+  glyph-level signal pypdf does not expose; see
+  `packages/parser/hybrid.py:21-30`.
+* **NIM cost.** Every fallback call hits the paid
+  build.nvidia.com tier (one POST per page; ~3-5 s + a few
+  thousand tokens per page). For congbobanan this is ~6% of docs
+  × ~8 pages avg; bulk re-parses should budget accordingly.
+  `SkipExistingMarkdownFilter` short-circuits cached `.md` so
+  re-runs are cheap.
+* **`llm_ocr_fix` has a small false-negative rate.** Some
+  legitimate slips need multi-token context the model does not
+  always produce (e.g. `"tình + <Place>"` → `"tỉnh + <Place>"`,
+  where only the surrounding place name disambiguates). They
+  survive the chain unfixed.
+* **`llm_ocr_fix` has a small false-positive *blocked* rate.**
+  Guardrails (proper-noun protection, ambiguous-bare-syllable
+  denylist) reject a handful of legitimate fixes — e.g. a real
+  `Phúc Thẳm → Phúc Thẩm` is blocked as multi-word title-case
+  proper-noun corruption. Conservative trade-off; loosening lets
+  through hallucinated word-insertion edits.
+* **`cmap_healer` only fixes `[0x04A4, 0x04F5]`.** The Y-tone CIDs
+  `[0x04F6, 0x04F9]` (`Ỳ ỳ Ỵ ỵ Ỷ ỷ Ỹ ỹ`) sit in a discontiguous
+  gap in Adobe's table; <0.5% of the corpus hits this edge.
+  Defer the explicit lookup until the rate climbs
+  (`packages/parser/cmap_healer.py:54-64`).
+* **Encrypted PDFs.** No password handling. The encryption
+  exception is caught alongside other open-time failures; the row
+  routes to NIM (which also fails on encrypted bytes) and is
+  ultimately dropped. Decrypt upstream with `qpdf --decrypt`.

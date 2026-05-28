@@ -210,16 +210,28 @@ class ScraperCfg:
 class ParserCfg:
     """Parser-stage settings (stage 2).
 
-    Three runtimes:
+    Four runtimes:
 
-    * ``"local"``   -- pure-Python pypdf / docx2txt. Fast + free, but
-      blind on image-only scans.
-    * ``"nim"``     -- nemotron-parse v1.2 NIM only. OCR + layout
-      built in. Requires ``NVIDIA_API_KEY``.
-    * ``"hybrid"``  (default) -- pypdf first; on empty / near-empty
-      output (fewer than ``min_local_chars`` chars) falls back to
-      nemotron-parse v1.2. Right trade-off for a corpus that mixes
-      digital and scanned PDFs.
+    * ``"local"``           -- pure-Python pypdf / docx2txt. Fast +
+      free, but blind on image-only scans.
+    * ``"nim"``             -- nemotron-parse v1.2 NIM only. OCR +
+      layout built in. Requires ``NVIDIA_API_KEY``.
+    * ``"hybrid"``  (default for nemotron-parse pipelines) -- pypdf
+      first; on empty / near-empty output (fewer than
+      ``min_local_chars`` chars) falls back to nemotron-parse v1.2.
+      Right trade-off for a corpus that mixes digital and scanned
+      PDFs.
+    * ``"nemotron_omni"``   -- self-hosted ``nvidia/nemotron-3-nano-
+      omni-30b-a3b-reasoning`` NIM. Single-pass VLM that emits
+      Vietnamese-aware markdown directly. Retained post-2026-05
+      cutover for rollback; superseded by ``qwen3_6_omni`` below.
+      Endpoint configured via the ``omni_*`` keys below.
+    * ``"qwen3_6_omni"`` (default since 2026-05) -- self-hosted
+      ``Qwen/Qwen3.6-27B-FP8`` vLLM container. Same per-page
+      rasterize + POST + consolidate contract as ``nemotron_omni``,
+      different model + sampling profile (Qwen3.6 Instruct-mode
+      defaults). Endpoint configured via the ``qwen3_6_omni_*``
+      keys below.
 
     nemotron-parse processes whole PDF pages; per-page input is bounded
     by the page image, not by a token budget. No seq-length knob, but
@@ -291,6 +303,86 @@ class ParserCfg:
     # Bump to 8-10 for sustained bulk reprocesses on a low NIM
     # tier; drop to 2 only if you want fast-fail on transient errors.
     nim_max_retries: int = 5
+    # Wire-protocol for the NIM client. Two values:
+    #
+    # * ``"nim_tools"`` (default) -- the build.nvidia.com cloud NIM. Sends
+    #   ``tools=[{"type":"function","function":{"name":<nim_tool>}}]`` in the
+    #   chat-completion and parses ``tool_calls[0].function.arguments`` as
+    #   the layout JSON. NIM transparently routes the tool call to the
+    #   model's decoder prefix server-side.
+    # * ``"vllm_decoder_prompt"`` -- a self-hosted vLLM instance serving
+    #   ``nvidia/NVIDIA-Nemotron-Parse-v1.2`` directly. The model's HF
+    #   ``chat_template.jinja`` is a passthrough, so the client puts
+    #   ``</s><s><predict_bbox><predict_classes><output_markdown><predict_no_text_in_pic>``
+    #   in the user message text and reads the ``<x_><y_><class_>``-tagged
+    #   ``message.content`` (parsed via the vendored regex from the model
+    #   repo's ``postprocessing.extract_classes_bboxes``).
+    #
+    # Override at run time with ``NIM_PROTOCOL=vllm_decoder_prompt`` env
+    # var (mirrors the ``NIM_BASE_URL`` interpolation pattern), or via
+    # ``--override parser.nim_protocol=vllm_decoder_prompt``.
+    nim_protocol: str = (
+        "${oc.env:NIM_PROTOCOL,nim_tools}"
+    )
+    # Self-hosted Nemotron-3 Nano Omni endpoint knobs (used when
+    # ``runtime="nemotron_omni"``). The Omni client is a separate
+    # backend that hits a local NIM container running the BF16
+    # profile of ``nvidia/nemotron-3-nano-omni-30b-a3b-reasoning``;
+    # no NVIDIA_API_KEY is required (the OpenAI SDK still needs a
+    # non-empty placeholder, defaulted to ``"not-needed"``).
+    #
+    # ``omni_base_url`` and ``omni_model`` default to env-var
+    # interpolation so the launcher can override either without
+    # editing the YAML. ``omni_max_tokens=8192`` covers a dense
+    # Vietnamese court page comfortably while staying well under
+    # the NIM container's ``NIM_MAX_MODEL_LEN=32768`` cap.
+    # ``omni_temperature=0.2`` + the client-side ``top_k=1`` gives
+    # near-greedy sampling with a small entropy floor that
+    # smoothes degenerate confidence collapses on rare glyphs.
+    omni_base_url: str = (
+        "${oc.env:NEMOTRON_OMNI_BASE_URL,http://localhost:8000/v1}"
+    )
+    omni_model: str = (
+        "${oc.env:NEMOTRON_OMNI_MODEL,"
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning}"
+    )
+    omni_timeout_s: float = 180.0
+    omni_max_tokens: int = 8192
+    omni_temperature: float = 0.2
+    omni_max_retries: int = 5
+
+    # Self-hosted Qwen3.6-27B-FP8 endpoint knobs (used when
+    # ``runtime="qwen3_6_omni"``). The 2026-05 cutover from
+    # ``nemotron_omni`` after the latter's prompt-v1 profile dropped
+    # 7/20 pages on the largest reference PDF and missed Vietnamese
+    # OCR quality on diacritic-heavy court judgments. Qwen3.6-27B-FP8
+    # is a multimodal vLLM-served checkpoint (arch
+    # ``Qwen3_5ForConditionalGeneration``); the ``--served-model-name``
+    # on the launcher (``qwen3.6-27b``) becomes the value clients
+    # send in the ``model`` field. No API key required (local vLLM);
+    # the OpenAI SDK still needs a non-empty placeholder, defaulted
+    # to ``"not-needed"``.
+    #
+    # ``qwen3_6_omni_base_url`` and ``qwen3_6_omni_model`` default to
+    # env-var interpolation so the launcher can override either
+    # without editing YAML. Sampling defaults mirror Qwen3.6's
+    # Instruct-mode recommended profile (``temperature=0.7``,
+    # ``top_p=0.8``, ``top_k=20`` -- top_k passed via
+    # ``extra_body``). Operators who see hallucination on long
+    # documents can drop to greedy via
+    # ``qwen3_6_omni_temperature=0.0`` and a CLI override for
+    # ``extra_body``.
+    qwen3_6_omni_base_url: str = (
+        "${oc.env:QWEN3_6_OMNI_BASE_URL,http://localhost:8000/v1}"
+    )
+    qwen3_6_omni_model: str = (
+        "${oc.env:QWEN3_6_OMNI_MODEL,qwen3.6-27b}"
+    )
+    qwen3_6_omni_timeout_s: float = 180.0
+    qwen3_6_omni_max_tokens: int = 8192
+    qwen3_6_omni_temperature: float = 0.7
+    qwen3_6_omni_top_p: float = 0.8
+    qwen3_6_omni_max_retries: int = 5
     # Override the default ``md/<scope>/<id>.md`` resume guard so the
     # parse stage re-emits every row from a refreshed ``docs.jsonl``.
     # Used after ``--pipeline rebuild_docs`` to propagate new sidebar

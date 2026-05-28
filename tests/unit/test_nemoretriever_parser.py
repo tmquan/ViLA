@@ -20,10 +20,17 @@ from unittest.mock import MagicMock
 import pytest
 
 from packages.parser.nemotron import (
+    DEFAULT_PROTOCOL,
+    NEMOTRON_DECODER_PROMPT,
+    NEMOTRON_VLLM_EXTRA_BODY,
+    PROTOCOL_NIM_TOOLS,
+    PROTOCOL_VLLM_DECODER_PROMPT,
+    SUPPORTED_PROTOCOLS,
     NemoretrieverParser,
     NemotronParseClient,
     NemotronParser,
     _extract_blocks,
+    _extract_blocks_from_xy_text,
     _extract_page_markdown,
     _is_rate_limit_error,
     blocks_to_markdown_page,
@@ -186,6 +193,7 @@ def _make_parser_with_mock_client(
     parser._max_tokens = 3500
     parser._temperature = 0.0
     parser._canvas_size = (1536, 2048)
+    parser._protocol = PROTOCOL_NIM_TOOLS
 
     call_idx = {"i": 0}
 
@@ -265,6 +273,7 @@ def test_parse_tolerates_per_page_failures(
     parser._max_tokens = 3500
     parser._temperature = 0.0
     parser._canvas_size = (1536, 2048)
+    parser._protocol = PROTOCOL_NIM_TOOLS
 
     call_idx = {"i": 0}
 
@@ -345,6 +354,7 @@ def test_parse_logs_rate_limit_distinctly(
     parser._temperature = 0.0
     parser._max_retries = 5
     parser._canvas_size = (1536, 2048)
+    parser._protocol = PROTOCOL_NIM_TOOLS
 
     rate_limited = RuntimeError("HTTP 429: rate limit exceeded")
 
@@ -387,6 +397,7 @@ def test_parse_passes_max_tokens_and_temperature_to_nim(
     parser._max_tokens = 4096
     parser._temperature = 0.0
     parser._canvas_size = (1536, 2048)
+    parser._protocol = PROTOCOL_NIM_TOOLS
 
     captured: dict[str, Any] = {}
 
@@ -412,3 +423,288 @@ def test_parse_passes_max_tokens_and_temperature_to_nim(
     assert captured["max_tokens"] == 4096
     assert captured["temperature"] == 0.0
     assert captured["model"] == "nvidia/nemotron-parse"
+
+
+
+# ============================================================
+# vllm_decoder_prompt protocol -- added 2026-05 for self-hosted vLLM
+# ============================================================
+
+#: Realistic decoder-prompt content captured from the actual local-vLLM
+#: smoke run (``/home/quantm/vllm/nemotron-parse/logs/smoke.log``). Keep
+#: this verbatim so we exercise the same Vietnamese diacritics + soft-
+#: line-break (``<br>``) shape the live model emits.
+_VLLM_SMOKE_CONTENT = (
+    "<x_0.1943><y_0.0711>TÒA ÁN NHÂN DÂN TỈNH TÂY NINH"
+    "<x_0.3789><y_0.107><class_Section-header>\n\n"
+    "<x_0.4287><y_0.0695>CỘNG HÔA XÃ HỘI CHỦ NGHIĨA VIỆT NAM <br>\n"
+    "Độc lập - Tự do - Hạnh phúc"
+    "<x_0.8291><y_0.1062><class_Section-header>\n\n"
+    "<x_0.1855><y_0.1133>Bán án số: 32/2017/HS-PT <br>\n"
+    "Ngày: 07- 4-2017"
+    "<x_0.3799><y_0.1469><class_Text>\n\n"
+    "<x_0.2412><y_0.2906>Phòng giám định: ầ ô"
+    "<x_0.708><y_0.3375><class_Text>"
+)
+
+
+def test_protocol_constants_are_consistent() -> None:
+    """Sanity: the public constants line up with each other."""
+    assert PROTOCOL_NIM_TOOLS == "nim_tools"
+    assert PROTOCOL_VLLM_DECODER_PROMPT == "vllm_decoder_prompt"
+    assert DEFAULT_PROTOCOL == PROTOCOL_NIM_TOOLS
+    assert SUPPORTED_PROTOCOLS == (
+        PROTOCOL_NIM_TOOLS,
+        PROTOCOL_VLLM_DECODER_PROMPT,
+    )
+    # The decoder-prompt is what the model repo's vllm_example.py uses.
+    assert "<predict_bbox>" in NEMOTRON_DECODER_PROMPT
+    assert "<predict_classes>" in NEMOTRON_DECODER_PROMPT
+    assert "<output_markdown>" in NEMOTRON_DECODER_PROMPT
+    # skip_special_tokens=False is REQUIRED for the regex parser to
+    # see the <x_>/<y_>/<class_> boundary tokens in message.content.
+    assert NEMOTRON_VLLM_EXTRA_BODY["skip_special_tokens"] is False
+
+
+def test_extract_blocks_from_xy_text_parses_real_smoke_output() -> None:
+    """Realistic local-vLLM content: Section-header + Text with Vietnamese."""
+    blocks = _extract_blocks_from_xy_text(_VLLM_SMOKE_CONTENT)
+    # Four blocks: 2 Section-header, 2 Text.
+    assert len(blocks) == 4
+    types = [b["type"] for b in blocks]
+    assert types == ["Section-header", "Section-header", "Text", "Text"]
+
+    # First block: TÒA ÁN ... TÂY NINH, single-line.
+    assert blocks[0]["type"] == "Section-header"
+    assert "TÒA ÁN NHÂN DÂN TỈNH TÂY NINH" in blocks[0]["text"]
+    assert "<br>" not in blocks[0]["text"]
+
+    # bbox is normalised 0..1 with x1,y1,x2,y2 keys (matches markdown_bbox
+    # downstream shape).
+    bb = blocks[0]["bbox"]
+    assert set(bb) == {"x1", "y1", "x2", "y2"}
+    assert all(isinstance(v, float) for v in bb.values())
+    assert bb["x1"] == 0.1943 and bb["y1"] == 0.0711
+    assert bb["x2"] == 0.3789 and bb["y2"] == 0.107
+
+    # Vietnamese diacritics survived.
+    md = blocks_to_markdown_page(blocks)
+    assert "Đ" in md
+    assert "ầ" in md or "ô" in md  # smoke content has both
+
+
+def test_extract_blocks_from_xy_text_converts_br_to_newline() -> None:
+    """``<br>`` inside a block is the model's soft-line-break marker --
+    map it to ``\\n`` so the markdown layer doesn't render literal glyphs."""
+    content = (
+        "<x_0.1><y_0.1>line one<br>\nline two"
+        "<x_0.9><y_0.2><class_Text>"
+    )
+    blocks = _extract_blocks_from_xy_text(content)
+    assert len(blocks) == 1
+    text = blocks[0]["text"]
+    assert "<br>" not in text
+    assert "line one" in text and "line two" in text
+    assert "\n" in text
+
+
+def test_extract_blocks_from_xy_text_renames_inline_formula_to_formula() -> None:
+    """Model repo's postprocessing renames ``Inline-formula`` -> ``Formula``
+    so it matches the public taxonomy; we mirror that."""
+    content = (
+        "<x_0.1><y_0.1>$\\alpha$"
+        "<x_0.2><y_0.2><class_Inline-formula>"
+    )
+    blocks = _extract_blocks_from_xy_text(content)
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "Formula"
+    assert blocks[0]["text"] == "$\\alpha$"
+
+
+def test_extract_blocks_from_xy_text_handles_empty_and_unmatched() -> None:
+    assert _extract_blocks_from_xy_text("") == []
+    assert _extract_blocks_from_xy_text(None) == []  # type: ignore[arg-type]
+    # No <x_><y_><class_> match -> no blocks.
+    assert _extract_blocks_from_xy_text("hello world, no bboxes") == []
+
+
+def test_nemotron_init_rejects_unknown_protocol() -> None:
+    """``protocol="bogus"`` must fail loudly at construction time."""
+    with pytest.raises(ValueError, match="unknown nim_protocol"):
+        NemotronParseClient(
+            api_key="fake",
+            base_url="http://localhost:8001/v1",
+            protocol="bogus",
+        )
+
+
+def _make_parser_with_mock_completions(
+    protocol: str,
+    responder: Any,
+) -> NemotronParseClient:
+    """Build a parser that bypasses OpenAI client construction; install a
+    canned ``chat.completions.create`` directly.
+
+    ``responder`` is a callable that accepts ``**kwargs`` and returns a
+    ready-made completion mock (so each test can shape the response).
+    """
+    parser = NemotronParseClient.__new__(NemotronParseClient)
+    parser.model_id = "nvidia/nemotron-parse"
+    parser._timeout = 1.0
+    parser._dpi = 300
+    parser._tool = "markdown_bbox"
+    parser._max_tokens = 3500
+    parser._temperature = 0.0
+    parser._max_retries = 5
+    parser._canvas_size = (1536, 2048)
+    parser._protocol = protocol
+    parser._client = MagicMock()
+    parser._client.chat.completions.create = responder
+    return parser
+
+
+def test_parse_image_vllm_returns_v12_block_dicts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The local-vLLM ``_parse_image_vllm`` should produce the same
+    block-list shape the cloud ``markdown_bbox`` path returns."""
+    captured: dict[str, Any] = {}
+
+    def _create(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        message = MagicMock()
+        message.content = _VLLM_SMOKE_CONTENT
+        message.tool_calls = []
+        choice = MagicMock()
+        choice.message = message
+        completion = MagicMock()
+        completion.choices = [choice]
+        return completion
+
+    parser = _make_parser_with_mock_completions(
+        PROTOCOL_VLLM_DECODER_PROMPT, _create,
+    )
+    blocks = parser._parse_image_vllm(
+        "data:image/png;base64,Zm9vYmFy"
+    )
+
+    # Block-list shape matches the cloud NIM markdown_bbox contract.
+    assert len(blocks) >= 1
+    section_headers = [b for b in blocks if b["type"] == "Section-header"]
+    assert section_headers, "expected at least one Section-header"
+    assert "TÒA ÁN NHÂN DÂN" in section_headers[0]["text"]
+    bb = section_headers[0]["bbox"]
+    assert {"x1", "y1", "x2", "y2"}.issubset(bb)
+    assert all(isinstance(v, float) for v in bb.values())
+
+    # The wire-shape sent to vLLM uses the decoder-prompt prefix +
+    # extra_body sampling knobs.
+    assert "tools" not in captured  # vLLM path uses no tool calls
+    user_msg = captured["messages"][0]
+    assert user_msg["role"] == "user"
+    parts = user_msg["content"]
+    # First content part is the decoder-prompt text.
+    assert parts[0]["type"] == "text"
+    assert parts[0]["text"] == NEMOTRON_DECODER_PROMPT
+    # Second is the image_url with our data URL.
+    assert parts[1]["type"] == "image_url"
+    assert parts[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    # skip_special_tokens=False survived into extra_body.
+    assert captured["extra_body"]["skip_special_tokens"] is False
+
+
+def test_parse_dispatches_on_protocol_nim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end with ``protocol='nim_tools'``: should send tools=...
+    and parse tool_calls.arguments."""
+    args_payload = json.dumps(
+        [{"text": "Body of page one.", "type": "Text"}]
+    )
+    captured_calls: list[dict[str, Any]] = []
+
+    def _create(**kwargs: Any) -> Any:
+        captured_calls.append(kwargs)
+        tool_call = MagicMock()
+        tool_call.function.arguments = args_payload
+        message = MagicMock()
+        message.tool_calls = [tool_call]
+        # vLLM-style content also present but should be ignored for nim_tools.
+        message.content = "should not be parsed"
+        choice = MagicMock()
+        choice.message = message
+        completion = MagicMock()
+        completion.choices = [choice]
+        return completion
+
+    parser = _make_parser_with_mock_completions(PROTOCOL_NIM_TOOLS, _create)
+
+    monkeypatch.setattr(
+        "packages.parser.nemotron._rasterize_pdf",
+        lambda pdf_bytes, *, dpi, canvas_size: [b"\x89PNG-fake-1"],
+    )
+
+    out = parser.parse(b"%PDF-fake")
+    assert len(out["pages"]) == 1
+    assert "Body of page one." in out["pages"][0]["markdown"]
+    assert out["markdown"]  # consolidated non-empty
+
+    # Verify wire shape: ``tools`` present, no ``extra_body``.
+    assert "tools" in captured_calls[0]
+    assert "extra_body" not in captured_calls[0]
+
+
+def test_parse_dispatches_on_protocol_vllm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end with ``protocol='vllm_decoder_prompt'``: should send
+    decoder-prompt + extra_body and parse the ``<x_><y_><class_>`` text."""
+    captured_calls: list[dict[str, Any]] = []
+
+    def _create(**kwargs: Any) -> Any:
+        captured_calls.append(kwargs)
+        message = MagicMock()
+        message.content = _VLLM_SMOKE_CONTENT
+        message.tool_calls = []
+        choice = MagicMock()
+        choice.message = message
+        completion = MagicMock()
+        completion.choices = [choice]
+        return completion
+
+    parser = _make_parser_with_mock_completions(
+        PROTOCOL_VLLM_DECODER_PROMPT, _create,
+    )
+
+    monkeypatch.setattr(
+        "packages.parser.nemotron._rasterize_pdf",
+        lambda pdf_bytes, *, dpi, canvas_size: [b"\x89PNG-fake-1"],
+    )
+
+    out = parser.parse(b"%PDF-fake")
+    assert len(out["pages"]) == 1
+    assert out["pages"][0]["blocks"], "expected non-empty block list"
+    assert any(
+        b["type"] == "Section-header" and "TÒA ÁN" in b["text"]
+        for b in out["pages"][0]["blocks"]
+    )
+    # Consolidated full-doc markdown is non-empty and contains Vietnamese.
+    assert out["markdown"]
+    assert "TÒA ÁN" in out["markdown"]
+
+    # Wire shape: no tools, extra_body present and includes skip_special_tokens.
+    assert "tools" not in captured_calls[0]
+    assert captured_calls[0]["extra_body"]["skip_special_tokens"] is False
+
+
+def test_nemotron_init_accepts_known_protocols() -> None:
+    """Constructor smoke for both protocols (real openai client is built but
+    no requests are issued -- we just need the validation path to pass)."""
+    for proto in SUPPORTED_PROTOCOLS:
+        client = NemotronParseClient(
+            api_key="fake",
+            base_url="http://localhost:8001/v1",
+            protocol=proto,
+        )
+        assert client._protocol == proto
+

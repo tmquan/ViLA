@@ -31,6 +31,9 @@ from packages.parser.nemotron import (
     DEFAULT_BASE_URL as _NIM_DEFAULT_BASE_URL,
 )
 from packages.parser.nemotron import (
+    DEFAULT_PROTOCOL as _NIM_DEFAULT_PROTOCOL,
+)
+from packages.parser.nemotron import (
     DEFAULT_DPI as _NIM_DEFAULT_DPI,
 )
 from packages.parser.nemotron import (
@@ -45,7 +48,52 @@ from packages.parser.nemotron import (
 from packages.parser.nemotron import (
     NemotronParseClient,
 )
+from packages.parser.nemotron_omni import (
+    DEFAULT_BASE_URL as _OMNI_DEFAULT_BASE_URL,
+)
+from packages.parser.nemotron_omni import (
+    DEFAULT_MAX_RETRIES as _OMNI_DEFAULT_MAX_RETRIES,
+)
+from packages.parser.nemotron_omni import (
+    DEFAULT_MAX_TOKENS as _OMNI_DEFAULT_MAX_TOKENS,
+)
+from packages.parser.nemotron_omni import (
+    DEFAULT_MODEL as _OMNI_DEFAULT_MODEL,
+)
+from packages.parser.nemotron_omni import (
+    DEFAULT_TEMPERATURE as _OMNI_DEFAULT_TEMPERATURE,
+)
+from packages.parser.nemotron_omni import (
+    DEFAULT_TIMEOUT_S as _OMNI_DEFAULT_TIMEOUT_S,
+)
+from packages.parser.nemotron_omni import (
+    NemotronOmniClient,
+)
 from packages.parser.pypdf import PypdfParser
+from packages.parser.qwen3_6_omni import (
+    DEFAULT_BASE_URL as _QWEN36_DEFAULT_BASE_URL,
+)
+from packages.parser.qwen3_6_omni import (
+    DEFAULT_MAX_RETRIES as _QWEN36_DEFAULT_MAX_RETRIES,
+)
+from packages.parser.qwen3_6_omni import (
+    DEFAULT_MAX_TOKENS as _QWEN36_DEFAULT_MAX_TOKENS,
+)
+from packages.parser.qwen3_6_omni import (
+    DEFAULT_MODEL as _QWEN36_DEFAULT_MODEL,
+)
+from packages.parser.qwen3_6_omni import (
+    DEFAULT_TEMPERATURE as _QWEN36_DEFAULT_TEMPERATURE,
+)
+from packages.parser.qwen3_6_omni import (
+    DEFAULT_TIMEOUT_S as _QWEN36_DEFAULT_TIMEOUT_S,
+)
+from packages.parser.qwen3_6_omni import (
+    DEFAULT_TOP_P as _QWEN36_DEFAULT_TOP_P,
+)
+from packages.parser.qwen3_6_omni import (
+    Qwen36OmniClient,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +127,103 @@ def _build_nemotron(cfg: Any) -> NemotronParseClient:
         max_retries=int(
             cfg.parser.get("nim_max_retries", _NIM_DEFAULT_MAX_RETRIES)
         ),
+        protocol=str(
+            cfg.parser.get("nim_protocol", _NIM_DEFAULT_PROTOCOL)
+        ),
+    )
+
+
+def _build_nemotron_omni(cfg: Any) -> NemotronOmniClient:
+    """Build a client against a locally-hosted Nemotron-3 Nano Omni NIM.
+
+    Self-hosted, so no API key is required: the OpenAI SDK still needs
+    *some* string in the ``api_key`` slot (default ``"not-needed"``).
+    Endpoint and model id are pulled from ``cfg.parser`` first, then
+    fall back to ``NEMOTRON_OMNI_BASE_URL`` / ``NEMOTRON_OMNI_MODEL``
+    env vars inside the client itself.
+    """
+    base_url = str(
+        cfg.parser.get("omni_base_url", _OMNI_DEFAULT_BASE_URL)
+    )
+    if base_url.startswith("${") and base_url.endswith("}"):
+        base_url = _OMNI_DEFAULT_BASE_URL
+    model = str(cfg.parser.get("omni_model", _OMNI_DEFAULT_MODEL))
+    if model.startswith("${") and model.endswith("}"):
+        model = _OMNI_DEFAULT_MODEL
+    return NemotronOmniClient(
+        base_url=base_url,
+        model=model,
+        timeout=float(
+            cfg.parser.get("omni_timeout_s", _OMNI_DEFAULT_TIMEOUT_S)
+        ),
+        max_tokens=int(
+            cfg.parser.get("omni_max_tokens", _OMNI_DEFAULT_MAX_TOKENS)
+        ),
+        temperature=float(
+            cfg.parser.get(
+                "omni_temperature", _OMNI_DEFAULT_TEMPERATURE
+            )
+        ),
+        max_retries=int(
+            cfg.parser.get("omni_max_retries", _OMNI_DEFAULT_MAX_RETRIES)
+        ),
+    )
+
+
+def _build_qwen3_6_omni(cfg: Any) -> Qwen36OmniClient:
+    """Build a client against a locally-hosted Qwen3.6-27B-FP8 vLLM.
+
+    Self-hosted, so no API key is required: the OpenAI SDK still needs
+    *some* string in the ``api_key`` slot (default ``"not-needed"``).
+    Endpoint and model id are pulled from ``cfg.parser`` first, then
+    fall back to ``QWEN3_6_OMNI_BASE_URL`` / ``QWEN3_6_OMNI_MODEL``
+    env vars inside the client itself.
+
+    Replaced the prior nemotron-omni endpoint at the 2026-05 cutover
+    after an A/B run where nemotron-omni's prompt-v1 profile dropped
+    7/20 pages on the largest reference PDF; see
+    ``vllm/nemotron-omni/logs/ab/summary.json`` for the failing
+    baseline and ``packages/parser/qwen3_6_omni.py`` module docstring
+    for the rationale.
+    """
+    base_url = str(
+        cfg.parser.get("qwen3_6_omni_base_url", _QWEN36_DEFAULT_BASE_URL)
+    )
+    if base_url.startswith("${") and base_url.endswith("}"):
+        base_url = _QWEN36_DEFAULT_BASE_URL
+    model = str(
+        cfg.parser.get("qwen3_6_omni_model", _QWEN36_DEFAULT_MODEL)
+    )
+    if model.startswith("${") and model.endswith("}"):
+        model = _QWEN36_DEFAULT_MODEL
+    return Qwen36OmniClient(
+        base_url=base_url,
+        model=model,
+        timeout=float(
+            cfg.parser.get(
+                "qwen3_6_omni_timeout_s", _QWEN36_DEFAULT_TIMEOUT_S
+            )
+        ),
+        max_tokens=int(
+            cfg.parser.get(
+                "qwen3_6_omni_max_tokens", _QWEN36_DEFAULT_MAX_TOKENS
+            )
+        ),
+        temperature=float(
+            cfg.parser.get(
+                "qwen3_6_omni_temperature", _QWEN36_DEFAULT_TEMPERATURE
+            )
+        ),
+        top_p=float(
+            cfg.parser.get(
+                "qwen3_6_omni_top_p", _QWEN36_DEFAULT_TOP_P
+            )
+        ),
+        max_retries=int(
+            cfg.parser.get(
+                "qwen3_6_omni_max_retries", _QWEN36_DEFAULT_MAX_RETRIES
+            )
+        ),
     )
 
 
@@ -87,11 +232,11 @@ def build_parser(cfg: Any) -> ParserAlgorithm:
 
     Runtimes:
 
-    * ``"local"``   -- pypdf / docx2txt only. Empty output on
+    * ``"local"``          -- pypdf / docx2txt only. Empty output on
       image-only PDFs; downstream drops those rows.
-    * ``"nim"``     -- nemotron-parse v1.2 NIM only. Requires
+    * ``"nim"``            -- nemotron-parse v1.2 NIM only. Requires
       ``NVIDIA_API_KEY``.
-    * ``"hybrid"``  (default) -- pypdf first, nemotron-parse v1.2
+    * ``"hybrid"``         -- pypdf first, nemotron-parse v1.2
       fallback on either of two failure modes:
         (a) local output below ``cfg.parser.min_local_chars`` chars
             (image-only / scan-only PDFs), or
@@ -101,6 +246,20 @@ def build_parser(cfg: Any) -> ParserAlgorithm:
             corpus).
       Covers both failure modes without paying NIM on the ~94% of
       documents pypdf can handle natively.
+    * ``"nemotron_omni"``  -- self-hosted ``nvidia/nemotron-3-nano-omni-30b``
+      NIM (BF16, single GPU). Single-pass VLM that does OCR + layout
+      preservation directly into markdown. No upstream pypdf step,
+      no llm_ocr_fix tail; every page goes through the local NIM at
+      ``cfg.parser.omni_base_url`` (default ``http://localhost:8000/v1``).
+      Retained post-2026-05 cutover for rollback; the active runtime
+      is ``qwen3_6_omni`` below.
+    * ``"qwen3_6_omni"`` (default since 2026-05) -- self-hosted
+      ``Qwen/Qwen3.6-27B-FP8`` vLLM container. Same per-page
+      rasterize + POST + consolidate flow as ``nemotron_omni``,
+      different model + sampling profile (Qwen3.6 Instruct-mode
+      defaults). Endpoint at ``cfg.parser.qwen3_6_omni_base_url``
+      (default ``http://localhost:8000/v1``); model slug
+      ``qwen3.6-27b`` per the container's ``--served-model-name``.
     """
     runtime = str(cfg.parser.runtime).lower()
     if runtime == "local":
@@ -116,9 +275,14 @@ def build_parser(cfg: Any) -> ParserAlgorithm:
                 cfg.parser.get("max_local_lossy_score", 0.05),
             ),
         )
+    if runtime in ("nemotron_omni", "omni", "vlm_omni"):
+        return _build_nemotron_omni(cfg)
+    if runtime in ("qwen3_6_omni", "qwen36_omni", "qwen_omni"):
+        return _build_qwen3_6_omni(cfg)
     raise ValueError(
         f"unknown parser runtime: {runtime!r}; "
-        f"expected one of {{'local', 'nim', 'hybrid'}}"
+        f"expected one of {{'local', 'nim', 'hybrid', "
+        f"'nemotron_omni', 'qwen3_6_omni'}}"
     )
 
 

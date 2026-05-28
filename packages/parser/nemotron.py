@@ -99,6 +99,38 @@ DEFAULT_TEMPERATURE = 0.0
 #: before failing through to the per-page error path.
 DEFAULT_MAX_RETRIES = 5
 
+#: Wire protocols for the NIM client. The default ``"nim_tools"`` matches
+#: build.nvidia.com's cloud NIM (which translates ``tools=[markdown_bbox]``
+#: to the decoder prefix server-side). ``"vllm_decoder_prompt"`` is for
+#: self-hosted vLLM serving the raw v1.2 weights, where the chat template
+#: is a passthrough and the prefix tokens must be sent in the user message.
+DEFAULT_PROTOCOL = "nim_tools"
+PROTOCOL_NIM_TOOLS = "nim_tools"
+PROTOCOL_VLLM_DECODER_PROMPT = "vllm_decoder_prompt"
+SUPPORTED_PROTOCOLS = (PROTOCOL_NIM_TOOLS, PROTOCOL_VLLM_DECODER_PROMPT)
+
+#: Decoder-prompt prefix sent in the user message for the
+#: ``vllm_decoder_prompt`` protocol. Tracks the model repo's
+#: ``vllm_example.py`` verbatim. ``<predict_no_text_in_pic>`` opts out of
+#: text-inside-figure transcription -- court judgments rarely have legible
+#: text in pictures and including it produces noisy OCR of stamps / seals.
+NEMOTRON_DECODER_PROMPT = (
+    "</s><s><predict_bbox><predict_classes><output_markdown>"
+    "<predict_no_text_in_pic>"
+)
+
+#: Sampling kwargs for the ``vllm_decoder_prompt`` path, passed via
+#: ``extra_body``. ``skip_special_tokens=False`` is REQUIRED so the
+#: ``<x_>``/``<y_>``/``<class_>`` boundary tokens survive into
+#: ``message.content`` -- without it, the regex parser sees no bboxes and
+#: returns an empty block list. ``repetition_penalty=1.1`` and ``top_k=1``
+#: match the model repo's ``vllm_example.py`` defaults.
+NEMOTRON_VLLM_EXTRA_BODY: dict[str, Any] = {
+    "repetition_penalty": 1.1,
+    "top_k": 1,
+    "skip_special_tokens": False,
+}
+
 
 class NemotronParseClient(ParserAlgorithm):
     """Per-page OCR + layout extractor against ``nvidia/nemotron-parse`` v1.2."""
@@ -118,8 +150,16 @@ class NemotronParseClient(ParserAlgorithm):
         temperature: float = DEFAULT_TEMPERATURE,
         canvas_size: tuple[int, int] = CANVAS_SIZE,
         max_retries: int = DEFAULT_MAX_RETRIES,
+        protocol: str = DEFAULT_PROTOCOL,
     ) -> None:
         from openai import OpenAI  # lazy import
+
+        if protocol not in SUPPORTED_PROTOCOLS:
+            raise ValueError(
+                f"unknown nim_protocol: {protocol!r}; "
+                f"expected one of {SUPPORTED_PROTOCOLS}"
+            )
+        self._protocol = str(protocol)
 
         self._client = OpenAI(
             base_url=base_url,
@@ -186,9 +226,20 @@ class NemotronParseClient(ParserAlgorithm):
     # ------------------------------------------------------ internals
 
     def _parse_image(self, png_bytes: bytes) -> list[dict[str, Any]]:
+        """Dispatch to the configured wire protocol.
+
+        See :data:`SUPPORTED_PROTOCOLS` for the two paths. The byte-for-byte
+        request/response shape of the cloud NIM path is preserved -- only
+        the per-protocol logic lives in the dedicated helpers.
+        """
         b64 = base64.b64encode(png_bytes).decode("ascii")
         data_url = f"data:image/png;base64,{b64}"
+        if self._protocol == PROTOCOL_VLLM_DECODER_PROMPT:
+            return self._parse_image_vllm(data_url)
+        return self._parse_image_nim(data_url)
 
+    def _parse_image_nim(self, data_url: str) -> list[dict[str, Any]]:
+        """Cloud NIM path: ``tools=[markdown_bbox]``, parse ``tool_calls.arguments``."""
         completion = self._client.chat.completions.create(
             model=self.model_id,
             tools=[{"type": "function", "function": {"name": self._tool}}],
@@ -213,6 +264,33 @@ class NemotronParseClient(ParserAlgorithm):
         return _extract_blocks(
             tool_calls[0].function.arguments, tool=self._tool
         )
+
+    def _parse_image_vllm(self, data_url: str) -> list[dict[str, Any]]:
+        """Self-hosted vLLM path: decoder-prompt prefix, parse ``<x_><y_><class_>``."""
+        completion = self._client.chat.completions.create(
+            model=self.model_id,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": NEMOTRON_DECODER_PROMPT,
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": data_url},
+                        },
+                    ],
+                }
+            ],
+            max_tokens=self._max_tokens,
+            temperature=self._temperature,
+            timeout=self._timeout,
+            extra_body=NEMOTRON_VLLM_EXTRA_BODY,
+        )
+        content = completion.choices[0].message.content or ""
+        return _extract_blocks_from_xy_text(content)
 
 
 # --------------------------------------------------------------- helpers
@@ -341,6 +419,58 @@ def _extract_blocks(raw_arguments: str, *, tool: str) -> list[dict[str, Any]]:
             for b in blocks
             if isinstance(b, dict) and b.get("text")
         ]
+    return blocks
+
+
+#: Vendored from the v1.2 model repo's ``postprocessing.extract_classes_bboxes``.
+#: Source: https://huggingface.co/nvidia/NVIDIA-Nemotron-Parse-v1.2/blob/main/postprocessing.py
+#:
+#: Match ordered as ``<x_FLOAT><y_FLOAT>TEXT<x_FLOAT><y_FLOAT><class_NAME>``
+#: with the leading ``(x1,y1)`` being the top-left and trailing ``(x2,y2)``
+#: the bottom-right of the bbox (normalised 0..1). Class names follow
+#: the v1.2 taxonomy (``Title``, ``Section-header``, ``Text``,
+#: ``List-item``, ``Table``, ``Formula``, ``Picture``, ``Caption``,
+#: ``Footnote``, ``Page-header``, ``Page-footer``, ...).
+_VLLM_BBOX_RE = re.compile(
+    r"<x_(\d+(?:\.\d+)?)><y_(\d+(?:\.\d+)?)>"
+    r"(.*?)"
+    r"<x_(\d+(?:\.\d+)?)><y_(\d+(?:\.\d+)?)><class_([^>]+)>",
+    flags=re.DOTALL,
+)
+
+
+def _extract_blocks_from_xy_text(content: str) -> list[dict[str, Any]]:
+    """Parse the local-vLLM decoder output into our block-list shape.
+
+    Vendored from the model repo's ``postprocessing.extract_classes_bboxes``
+    plus a dict assembly that matches the cloud NIM's ``markdown_bbox``
+    block list (``[{bbox: {...}, text: str, type: str}, ...]``) so the
+    downstream ``blocks_to_markdown_page`` consumes both paths uniformly.
+
+    The model repo also applies a single class rename
+    (``Inline-formula -> Formula``); we mirror that here. ``<br>`` is the
+    model's soft-line-break marker inside a block; we map it to ``\n`` so
+    the markdown layer doesn't render a literal ``<br>`` glyph.
+    """
+    blocks: list[dict[str, Any]] = []
+    if not content:
+        return blocks
+    for match in _VLLM_BBOX_RE.finditer(content):
+        x1, y1, text, x2, y2, cls = match.groups()
+        cls = "Formula" if cls == "Inline-formula" else cls
+        text = text.replace("<br>", "\n")
+        blocks.append(
+            {
+                "bbox": {
+                    "x1": float(x1),
+                    "y1": float(y1),
+                    "x2": float(x2),
+                    "y2": float(y2),
+                },
+                "text": text,
+                "type": cls,
+            }
+        )
     return blocks
 
 
@@ -607,11 +737,17 @@ __all__ = [
     "DEFAULT_DPI",
     "DEFAULT_MAX_TOKENS",
     "DEFAULT_MODEL",
+    "DEFAULT_PROTOCOL",
     "DEFAULT_TEMPERATURE",
     "DEFAULT_TOOL",
+    "NEMOTRON_DECODER_PROMPT",
+    "NEMOTRON_VLLM_EXTRA_BODY",
     "NemoretrieverParser",
     "NemotronParseClient",
     "NemotronParser",
+    "PROTOCOL_NIM_TOOLS",
+    "PROTOCOL_VLLM_DECODER_PROMPT",
+    "SUPPORTED_PROTOCOLS",
     "blocks_to_markdown_page",
     "latex_table_to_html",
 ]
