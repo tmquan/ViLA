@@ -381,6 +381,73 @@ def _rasterize_pdf(
     return out
 
 
+def _rasterize_pdf_page(
+    pdf_bytes: bytes,
+    *,
+    page_index: int,
+    dpi: int,
+    canvas_size: tuple[int, int] = CANVAS_SIZE,
+) -> bytes:
+    """Render exactly one page of ``pdf_bytes`` to a PNG byte string.
+
+    Companion to :func:`_rasterize_pdf` for the
+    :class:`packages.parser.hybrid.HybridParser` per-page surgical
+    fallback path: when pypdf returns text for some pages of a Case-D
+    mixed digital/scanned PDF but leaves others empty, the hybrid
+    parser only needs OCR on the empty slots, not the whole document.
+    Loads the document with pypdfium2, renders just ``page_index``
+    onto the same fixed white canvas as :func:`_rasterize_pdf`, and
+    returns its PNG bytes.
+
+    Raises :class:`IndexError` if ``page_index`` is outside ``[0, n)``
+    so callers (the surgical splice loop) can log + skip the slot
+    cleanly without ambiguity. All other failures (corrupt PDF,
+    pypdfium error) propagate -- the surgical caller wraps the call
+    in ``try/except`` and degrades to leaving the page empty.
+    """
+    try:
+        import pypdfium2 as pdfium
+    except ImportError as exc:  # pragma: no cover - import-time check
+        raise RuntimeError(
+            "Per-page rasterization needs `pypdfium2`. "
+            "Install with `pip install pypdfium2`."
+        ) from exc
+    try:
+        import PIL.Image  # noqa: F401
+    except ImportError as exc:  # pragma: no cover - import-time check
+        raise RuntimeError(
+            "Per-page rasterization needs `Pillow` to encode the PNG. "
+            "Install with `pip install Pillow`."
+        ) from exc
+
+    from PIL import Image as PILImage
+
+    doc = pdfium.PdfDocument(pdf_bytes)
+    try:
+        n_pages = len(doc)
+        if page_index < 0 or page_index >= n_pages:
+            raise IndexError(
+                f"page_index={page_index} out of range for "
+                f"{n_pages}-page PDF"
+            )
+        page = doc[page_index]
+        try:
+            scale = dpi / 72.0
+            pil_image = page.render(scale=scale).to_pil()
+            canvas = PILImage.new("RGB", canvas_size, (255, 255, 255))
+            pil_image.thumbnail(canvas_size, PILImage.Resampling.LANCZOS)
+            offset_x = (canvas_size[0] - pil_image.width) // 2
+            offset_y = (canvas_size[1] - pil_image.height) // 2
+            canvas.paste(pil_image, (offset_x, offset_y))
+            buf = io.BytesIO()
+            canvas.save(buf, format="PNG", optimize=True)
+            return buf.getvalue()
+        finally:
+            page.close()
+    finally:
+        doc.close()
+
+
 def _extract_blocks(raw_arguments: str, *, tool: str) -> list[dict[str, Any]]:
     """Decode the NIM tool-call arguments into the v1.2 block list.
 

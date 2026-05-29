@@ -227,6 +227,37 @@ def _build_qwen3_6_omni(cfg: Any) -> Qwen36OmniClient:
     )
 
 
+def _build_hybrid_fallback(cfg: Any) -> ParserAlgorithm:
+    """Dispatch the hybrid runtime's OCR-fallback client by name.
+
+    Reads ``cfg.parser.hybrid_fallback_runtime`` (default
+    ``qwen3_6_omni``). Three valid values:
+
+    * ``"nim"``            -- cloud nemotron-parse v1.2 NIM
+                             (legacy; requires ``NVIDIA_API_KEY``).
+                             Does NOT support the per-page surgical
+                             splice path -- whole-doc fallback only.
+    * ``"nemotron_omni"``  -- self-hosted Nemotron-3 Nano Omni NIM
+                             (rollback target, supports
+                             ``parse_single_page``).
+    * ``"qwen3_6_omni"``   -- self-hosted Qwen3.6-27B-FP8 vLLM
+                             (default since 2026-05, supports
+                             ``parse_single_page``).
+    """
+    name = str(cfg.parser.get("hybrid_fallback_runtime", "qwen3_6_omni"))
+    name = name.strip().lower()
+    if name == "nim":
+        return _build_nemotron(cfg)
+    if name in ("nemotron_omni", "omni", "vlm_omni"):
+        return _build_nemotron_omni(cfg)
+    if name in ("qwen3_6_omni", "qwen36_omni", "qwen_omni"):
+        return _build_qwen3_6_omni(cfg)
+    raise ValueError(
+        f"unknown parser.hybrid_fallback_runtime: {name!r}; "
+        f"expected one of {{'nim', 'nemotron_omni', 'qwen3_6_omni'}}"
+    )
+
+
 def build_parser(cfg: Any) -> ParserAlgorithm:
     """Instantiate the configured :class:`ParserAlgorithm`.
 
@@ -236,16 +267,21 @@ def build_parser(cfg: Any) -> ParserAlgorithm:
       image-only PDFs; downstream drops those rows.
     * ``"nim"``            -- nemotron-parse v1.2 NIM only. Requires
       ``NVIDIA_API_KEY``.
-    * ``"hybrid"``         -- pypdf first, nemotron-parse v1.2
-      fallback on either of two failure modes:
+    * ``"hybrid"``         -- pypdf first, OCR fallback on three
+      failure modes (see :class:`HybridParser` docstring):
         (a) local output below ``cfg.parser.min_local_chars`` chars
-            (image-only / scan-only PDFs), or
+            (image-only / scan-only PDFs), whole-doc fallback,
         (b) ``lossy_score`` above ``cfg.parser.max_local_lossy_score``
             (catastrophic font corruption -- the document is long
             enough but mostly unreadable; ~6% of the congbobanan
-            corpus).
-      Covers both failure modes without paying NIM on the ~94% of
-      documents pypdf can handle natively.
+            corpus), whole-doc fallback,
+        (c) Case D mixed digital/scanned PDF (some pages empty,
+            others non-empty), per-page surgical fallback on the
+            empty pages only. Activates iff the fallback client
+            exposes ``parse_single_page``.
+      The fallback client is selected by
+      ``cfg.parser.hybrid_fallback_runtime`` (default
+      ``qwen3_6_omni``; see :func:`_build_hybrid_fallback`).
     * ``"nemotron_omni"``  -- self-hosted ``nvidia/nemotron-3-nano-omni-30b``
       NIM (BF16, single GPU). Single-pass VLM that does OCR + layout
       preservation directly into markdown. No upstream pypdf step,
@@ -269,10 +305,13 @@ def build_parser(cfg: Any) -> ParserAlgorithm:
     if runtime == "hybrid":
         return HybridParser(
             local=PypdfParser(),
-            nim=_build_nemotron(cfg),
+            nim=_build_hybrid_fallback(cfg),
             min_chars=int(cfg.parser.get("min_local_chars", 50)),
             max_lossy_score=float(
                 cfg.parser.get("max_local_lossy_score", 0.05),
+            ),
+            surgical_pages=bool(
+                cfg.parser.get("hybrid_surgical_pages", True),
             ),
         )
     if runtime in ("nemotron_omni", "omni", "vlm_omni"):

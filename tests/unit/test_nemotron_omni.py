@@ -397,3 +397,151 @@ def test_init_merges_caller_extra_body() -> None:
     assert client._extra_body["seed"] == 42
     # Default constant untouched.
     assert DEFAULT_EXTRA_BODY == default_eb_snapshot
+
+
+# -------------------------------------------------- parse_single_page (surgical)
+
+
+def test_parse_single_page_happy_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``parse_single_page(pdf_bytes, i)`` rasterizes ONLY page ``i``,
+    POSTs it to NIM, and returns ``{page_number, markdown}``.
+
+    The :class:`packages.parser.hybrid.HybridParser` Case-D surgical
+    path calls this with a zero-based index; the returned
+    ``page_number`` is one-based (matches the rest of the per-page
+    schema). Mirror of the qwen3_6_omni test suite -- both clients
+    are wired into the surgical hybrid path, so both have to honour
+    the contract identically (including for the
+    ``hybrid_fallback_runtime=nemotron_omni`` rollback)."""
+    captured: dict[str, Any] = {}
+
+    def _create(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return _completion_from_text("# Recovered\nOCR body for page 3.")
+
+    client = _make_client(_create)
+
+    raster_calls: list[dict[str, Any]] = []
+
+    def _fake_rasterize_page(
+        pdf_bytes: bytes,
+        *,
+        page_index: int,
+        dpi: int,
+        canvas_size: tuple[int, int],
+    ) -> bytes:
+        raster_calls.append(
+            {
+                "pdf_bytes": pdf_bytes,
+                "page_index": page_index,
+                "dpi": dpi,
+                "canvas_size": canvas_size,
+            }
+        )
+        return b"\x89PNG-page-3"
+
+    monkeypatch.setattr(
+        "packages.parser.nemotron_omni._rasterize_pdf_page",
+        _fake_rasterize_page,
+    )
+
+    out = client.parse_single_page(b"%PDF-1.4 fake", 2)
+
+    # Only the requested page was rasterized -- no whole-doc render.
+    assert len(raster_calls) == 1
+    assert raster_calls[0]["page_index"] == 2
+    assert raster_calls[0]["dpi"] == client._dpi
+    assert raster_calls[0]["canvas_size"] == client._canvas_size
+
+    # NIM was called exactly once with the per-page PNG.
+    image_url = captured["messages"][0]["content"][1]["image_url"]["url"]
+    assert image_url.startswith("data:image/png;base64,")
+
+    # Result schema: zero-based input -> one-based page_number.
+    assert out == {
+        "page_number": 3,
+        "markdown": "# Recovered\nOCR body for page 3.",
+    }
+
+
+def test_parse_single_page_propagates_rasterize_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If rasterization raises, the error propagates to the caller
+    -- the hybrid parser's surgical loop is responsible for catching
+    + logging + leaving the page empty. The NIM endpoint is NOT
+    touched on raster failure."""
+
+    def _create(**_kwargs: Any) -> Any:  # pragma: no cover - never called
+        raise AssertionError("NIM must not be invoked on raster failure")
+
+    client = _make_client(_create)
+
+    def _raise(
+        pdf_bytes: bytes,
+        *,
+        page_index: int,
+        dpi: int,
+        canvas_size: tuple[int, int],
+    ) -> bytes:
+        raise RuntimeError("Failed to load document (PDFium: Success).")
+
+    monkeypatch.setattr(
+        "packages.parser.nemotron_omni._rasterize_pdf_page", _raise,
+    )
+
+    with pytest.raises(RuntimeError, match="Failed to load document"):
+        client.parse_single_page(b"%PDF-1.4 truncated", 0)
+
+
+def test_parse_single_page_propagates_index_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An out-of-range page_index from the rasterizer must surface
+    as IndexError (not silently OCR a different page or hang)."""
+
+    def _create(**_kwargs: Any) -> Any:  # pragma: no cover - never called
+        raise AssertionError(
+            "NIM must not be invoked when page_index is out of range"
+        )
+
+    client = _make_client(_create)
+
+    def _raise_index(
+        pdf_bytes: bytes,
+        *,
+        page_index: int,
+        dpi: int,
+        canvas_size: tuple[int, int],
+    ) -> bytes:
+        raise IndexError(
+            f"page_index={page_index} out of range for 2-page PDF"
+        )
+
+    monkeypatch.setattr(
+        "packages.parser.nemotron_omni._rasterize_pdf_page", _raise_index,
+    )
+
+    with pytest.raises(IndexError, match="out of range"):
+        client.parse_single_page(b"%PDF-1.4 fake", 5)
+
+
+def test_parse_single_page_with_empty_response_returns_empty_markdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty NIM response -> ``markdown=""`` page record."""
+
+    def _create(**_kwargs: Any) -> Any:
+        return _completion_from_text("")
+
+    client = _make_client(_create)
+
+    monkeypatch.setattr(
+        "packages.parser.nemotron_omni._rasterize_pdf_page",
+        lambda pdf_bytes, *, page_index, dpi, canvas_size: b"\x89PNG",
+    )
+
+    out = client.parse_single_page(b"%PDF-1.4 fake", 0)
+    assert out == {"page_number": 1, "markdown": ""}

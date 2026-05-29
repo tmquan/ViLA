@@ -42,6 +42,7 @@ from packages.parser.base import ParserAlgorithm
 from packages.parser.nemotron import (
     _is_rate_limit_error,
     _rasterize_pdf,
+    _rasterize_pdf_page,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,15 +58,31 @@ DEFAULT_BASE_URL = "http://localhost:8000/v1"
 #: ``QWEN3_6_OMNI_MODEL`` env var or ``cfg.parser``.
 DEFAULT_MODEL = "qwen3.6-27b"
 
-#: Source rasterization DPI. Mirrors the nemotron-parse v1.2 path so
-#: the same 300 DPI -> 1536x2048 canvas-fit pipeline is reused; this
-#: preserves Vietnamese tone-mark glyph fidelity across the downscale
-#: step. Qwen3.6's vision encoder accepts arbitrary sizes but holding
-#: canvas constant keeps per-page token budgets stable.
-DEFAULT_DPI = 300
+#: Source rasterization DPI. Selected via 2026-05-29 canvas A/B
+#: against three baseline PDFs (short / medium / 20-pager); see
+#: ``/home/quantm/vllm/qwen3.6-omni/logs/ab_canvas/summary.json``.
+#: 145 DPI pairs with the 1176x1652 A4-aspect canvas below: the raw
+#: A4 raster (~1199x1697 px) maps near 1:1 onto the canvas with
+#: minimal downscale loss. Surprisingly, Qwen3.6-27B's wall-time
+#: per page is decode-bound (~11-14 tok/s on the FP8 deployment),
+#: NOT vision-encode-bound -- the 300 DPI / 1536x2048 baseline took
+#: the same per-page time on dense content. Smaller still wins
+#: because it materially reduces hallucination-loop incidents on
+#: sparse / stamped pages: 1449434.pdf p3 went from 183s/81 chars
+#: (300 DPI loop) to 84s/1852 chars (145 DPI clean), and the same
+#: page collapsed even worse at 170 DPI / 1372x1932 (547s/114
+#: chars). Smaller image -> less spurious "detail" for the model
+#: to spin on.
+DEFAULT_DPI = 145
 
-#: Canvas geometry. Matches :data:`packages.parser.nemotron.CANVAS_SIZE`.
-CANVAS_SIZE: tuple[int, int] = (1536, 2048)
+#: Canvas geometry. A4 portrait aspect (1:1.41) at 28-multiples
+#: (Qwen-VL family tokenizes images in 28x28 patches; misaligned
+#: dims get padded). 1176x1652 = 1.94 Mpx, 0.62x of the prior
+#: 1536x2048 = 3.15 Mpx canvas. Body text at 12pt on A4 lands at
+#: ~22 px tall here, comfortably above the ~18 px floor where
+#: Vietnamese tone marks (the dot below in `ợ`, `ụ`, `ự`, the hook
+#: `ỏ`, `ẳ`) start to blur. See A/B notes on DEFAULT_DPI above.
+CANVAS_SIZE: tuple[int, int] = (1176, 1652)
 
 #: Per-page generation cap. Free-form OCR markdown can run long on a
 #: dense court-judgment page (headers, body paragraphs, evidence
@@ -253,6 +270,49 @@ class Qwen36OmniClient(ParserAlgorithm):
             "pages": pages,
             "markdown": "\n\n".join(md_parts),
             "confidence": None,
+        }
+
+    def parse_single_page(
+        self,
+        pdf_bytes: bytes,
+        page_index: int,
+    ) -> dict[str, Any]:
+        """Rasterize and OCR exactly one page of ``pdf_bytes``.
+
+        Entry point for the
+        :class:`packages.parser.hybrid.HybridParser` per-page surgical
+        fallback (Case D in wiki/PARSING.md § 4 -- mixed
+        digital/scanned PDFs where pypdf extracts text from some
+        pages but leaves others empty). Renders only the requested
+        page via :func:`_rasterize_pdf_page`, POSTs it to the
+        configured vLLM endpoint, and returns a single-page record
+        that matches the per-page schema the rest of the parsing
+        chain emits::
+
+            {"page_number": page_index + 1, "markdown": "<ocr text>"}
+
+        ``page_index`` is **zero-based** to align with the
+        ``pages[i]`` indexing used by the splice loop in
+        :class:`HybridParser`. The returned ``page_number`` is
+        one-based to match the rest of the per-page schema (pypdf,
+        the omni clients' :meth:`parse`, etc.).
+
+        Raises:
+            IndexError: ``page_index`` is outside ``[0, n_pages)``.
+            Exception: any rasterization or vLLM error -- the surgical
+                caller catches these, logs a warning, and leaves the
+                page slot empty without failing the whole document.
+        """
+        png_bytes = _rasterize_pdf_page(
+            pdf_bytes,
+            page_index=int(page_index),
+            dpi=self._dpi,
+            canvas_size=self._canvas_size,
+        )
+        page_md = self._parse_image(png_bytes)
+        return {
+            "page_number": int(page_index) + 1,
+            "markdown": page_md,
         }
 
     # ------------------------------------------------------ internals

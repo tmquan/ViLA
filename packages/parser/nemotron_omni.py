@@ -38,6 +38,7 @@ from packages.parser.base import ParserAlgorithm
 from packages.parser.nemotron import (
     _is_rate_limit_error,
     _rasterize_pdf,
+    _rasterize_pdf_page,
 )
 
 logger = logging.getLogger(__name__)
@@ -228,6 +229,44 @@ class NemotronOmniClient(ParserAlgorithm):
             "pages": pages,
             "markdown": "\n\n".join(md_parts),
             "confidence": None,
+        }
+
+    def parse_single_page(
+        self,
+        pdf_bytes: bytes,
+        page_index: int,
+    ) -> dict[str, Any]:
+        """Rasterize and OCR exactly one page of ``pdf_bytes``.
+
+        Entry point for the
+        :class:`packages.parser.hybrid.HybridParser` per-page surgical
+        fallback (Case D in wiki/PARSING.md § 4). Retained on this
+        client (alongside the post-2026-05 :class:`Qwen36OmniClient`)
+        so the surgical hybrid path keeps working when an operator
+        rolls back to ``hybrid_fallback_runtime=nemotron_omni``.
+        Mirrors :meth:`Qwen36OmniClient.parse_single_page` exactly.
+
+        ``page_index`` is **zero-based** to align with the
+        ``pages[i]`` indexing used by the surgical splice loop. The
+        returned ``page_number`` is one-based to match the rest of
+        the per-page schema.
+
+        Raises:
+            IndexError: ``page_index`` is outside ``[0, n_pages)``.
+            Exception: rasterization / NIM errors propagate; the
+                surgical caller catches them and leaves the page
+                empty without failing the whole document.
+        """
+        png_bytes = _rasterize_pdf_page(
+            pdf_bytes,
+            page_index=int(page_index),
+            dpi=self._dpi,
+            canvas_size=self._canvas_size,
+        )
+        page_md = self._parse_image(png_bytes)
+        return {
+            "page_number": int(page_index) + 1,
+            "markdown": page_md,
         }
 
     # ------------------------------------------------------ internals

@@ -249,6 +249,32 @@ class ParserCfg:
     model_id: str = "nvidia/nemotron-parse"
     num_workers: int = 4
     runtime: str = "hybrid"           # local | nim | hybrid
+    # Which OCR client backs the ``hybrid`` runtime when pypdf's
+    # output trips one of the fallback gates (whole-doc empty,
+    # whole-doc lossy, or per-page Case-D surgical). Decoupled from
+    # ``runtime`` so an operator can keep ``runtime: hybrid`` and
+    # swap the OCR backend independently. Three valid values:
+    #
+    # * ``"qwen3_6_omni"`` (default since 2026-05) -- self-hosted
+    #   Qwen3.6-27B-FP8 vLLM. Supports per-page surgical fallback.
+    # * ``"nemotron_omni"`` -- self-hosted Nemotron-3 Nano Omni NIM
+    #   (rollback target). Supports per-page surgical fallback.
+    # * ``"nim"`` -- cloud nemotron-parse v1.2 NIM (legacy; needs
+    #   ``NVIDIA_API_KEY``). Whole-doc fallback only -- the NIM
+    #   tools API does not fit the per-page splice contract.
+    #
+    # The site YAML usually overrides this with an env-var
+    # interpolation (``${oc.env:HYBRID_FALLBACK_RUNTIME,qwen3_6_omni}``)
+    # so operators can flip the OCR backend per-deploy without
+    # editing config; the schema default keeps the same active
+    # backend so unit tests that load the schema alone get the
+    # current production behavior.
+    hybrid_fallback_runtime: str = "qwen3_6_omni"
+    # Toggle the per-page surgical splice path inside the hybrid
+    # runtime. Default ``True`` enables it; flip to ``False`` to
+    # restore the legacy whole-doc-only fallback (mode (a) + (b)
+    # only) without changing the fallback client.
+    hybrid_surgical_pages: bool = True
     nim_base_url: str = (
         "${oc.env:NIM_BASE_URL,https://integrate.api.nvidia.com/v1}"
     )

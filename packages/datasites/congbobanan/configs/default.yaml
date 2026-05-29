@@ -77,6 +77,18 @@ parser:
   # * ``nemotron_omni`` -- self-hosted nemotron-3-nano-omni-30b VLM (rollback).
   # * ``qwen3_6_omni``  -- self-hosted Qwen3.6-27B-FP8 vLLM (default).
   runtime: "${oc.env:PARSER_RUNTIME,qwen3_6_omni}"
+  # Which OCR client backs the ``hybrid`` runtime when pypdf trips a
+  # fallback gate (whole-doc empty / lossy, or Case-D per-page
+  # surgical). Independent of ``runtime`` above: an operator can
+  # leave the active runtime as ``qwen3_6_omni`` for the bulk
+  # single-pass corpus and only flip ``runtime`` to ``hybrid`` for
+  # mixed-quality re-runs without re-touching the OCR backend
+  # selection. Valid values: ``qwen3_6_omni`` (default, supports
+  # per-page surgical splice), ``nemotron_omni`` (rollback, supports
+  # surgical), ``nim`` (legacy cloud nemotron-parse, whole-doc
+  # fallback only -- the NIM tools API doesn't fit the per-page
+  # contract). Override via ``HYBRID_FALLBACK_RUNTIME`` env var.
+  hybrid_fallback_runtime: "${oc.env:HYBRID_FALLBACK_RUNTIME,qwen3_6_omni}"
   min_local_chars: 50
   # Second hybrid fallback gate. ``lossy_score`` (in packages/parser/
   # hybrid.py) measures the fraction of lowercase 1-2-char ASCII

@@ -53,6 +53,7 @@ dependencies = [
   # HuggingFace embedder) pick up the heavy deps via the optional
   # `gpu` extras-group below.
   "nemo-curator[text_cpu]>=0.7",
+  "docx2txt>=0.9",
 ]
 
 [project.optional-dependencies]
