@@ -186,6 +186,12 @@ class ScraperCfg:
     listing_url_template: str = ""
     taxonomy_url: str = ""
     min_card_threshold: int = 1
+    # WAF soft-block detection: how many consecutive "decoy" responses
+    # (HTTP 200 but missing the real-content marker) the detail
+    # downloader tolerates before aborting the stage. Currently only
+    # the ``thuvienphapluat_banan`` downloader honours this; other
+    # datasites ignore it. Defaults to 10 ≈ ~20 s burst at 0.5 QPS.
+    decoy_abort_threshold: int = 10
 
     # ---- vbpl Playwright crawler -----------------------------------
     # vbpl.vn is a Next.js SPA whose backend (vbpl-bientap-gateway.moj
