@@ -108,13 +108,21 @@ scraper:
 # releases the GIL during read so 4-8 workers scale near-linearly.
 
 parser:
-  model_id: nvidia/nemoretriever-parse
-  # local: pypdf + docx2txt + .doc subprocess only (default; cheap,
-  #        free, no NIM key). Most vbpl PDFs are digital text so
-  #        local handles them fine.
-  # nim:    nemoretriever-parse only. Needs NVIDIA_API_KEY.
+  # Composite tag: vbpl runs ``runtime: local`` so in practice every
+  # row gets the pypdf half of this composite, but the qwen3.6-27b
+  # half is left in place so a future bump to ``runtime: hybrid``
+  # picks up the modern OCR fallback without a YAML edit.
+  model_id: pypdf+qwen3.6-27b
+  # local:  pypdf + docx2txt + .doc subprocess only (default; cheap,
+  #         free, no NIM key, no GPU). Most vbpl PDFs are digital
+  #         text so local handles them fine.
+  # nim:    legacy cloud nemoretriever-parse NIM only. Needs
+  #         NVIDIA_API_KEY.
   # hybrid: pypdf first; route image-only scans (< min_local_chars)
-  #         to the NIM endpoint. Recommended once a NIM key is set.
+  #         or font-corrupt docs to the qwen3.6-27b fallback (via
+  #         the ``hybrid_fallback_runtime`` knob; default
+  #         ``qwen3_6_omni``). Recommended once the self-hosted vLLM
+  #         endpoint is reachable.
   runtime: local
   num_workers: 4
   min_local_chars: 50

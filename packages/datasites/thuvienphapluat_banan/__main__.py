@@ -10,7 +10,7 @@
 
     # Cheap smoke run: only walk the first 3 listing pages.
     python -m packages.datasites.thuvienphapluat_banan --pipeline harvest \\
-        --override scraper.max_pages=3
+        --override scraper.id_start=1 scraper.max_id=100
 
     # Fetch every judgment detail via the slugless /banan/ban-an/x-<id>
     # shortcut. Resumable from the html/items/<id>.html caches.

@@ -49,13 +49,19 @@ scraper:
   selectors: {}               # override to point at custom CSS selectors
 
 parser:
-  # Cloud NIM chat model (OpenAI-compatible); do NOT use the old
-  # ``nvidia/nemotron-parse`` slug -- that path 404s.
-  model_id: nvidia/nemoretriever-parse
-  # hybrid: pypdf first, nemoretriever-parse fallback on image-only
-  # scans (via rasterization + OCR). Requires NVIDIA_API_KEY. Switch
-  # to `local` if you only have pypdf, or `nim` to force every PDF
-  # through nemoretriever-parse.
+  # Composite tag: under ``runtime: hybrid`` the local pypdf path
+  # handles ~70% of docs and the ``hybrid_fallback_runtime``
+  # (default ``qwen3_6_omni``) handles the OCR-needed subset. Both
+  # ids are surfaced together so meta.json captures the dispatched
+  # backend per-row. The legacy ``nvidia/nemoretriever-parse`` slug
+  # is preserved only for pre-2026-05 manifest back-compat.
+  model_id: pypdf+qwen3.6-27b
+  # hybrid: pypdf first, qwen3.6-27b fallback on image-only scans /
+  # font-corrupt docs (via rasterization + OCR on the self-hosted
+  # vLLM endpoint at ``${oc.env:QWEN3_6_OMNI_BASE_URL,...}``).
+  # Switch to ``local`` for pypdf-only, or ``nim`` to force every
+  # PDF through the legacy cloud nemoretriever-parse NIM (needs
+  # NVIDIA_API_KEY).
   runtime: hybrid
   min_local_chars: 50
   num_workers: 4

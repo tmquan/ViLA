@@ -71,6 +71,9 @@ class DetailRecord:
     related_doc_ids: list[int] = field(default_factory=list)
     body_html: str | None = None
     body_text: str | None = None
+    pdf_url: str | None = None
+    pdf_file_id: int | None = None
+    pdf_filename: str | None = None
 
 
 # -----------------------------------------------------------------------
@@ -301,6 +304,25 @@ def parse_detail_page(html: str, *, source_url: str = "") -> DetailRecord | None
     # ---- related document ids (xét lại / dẫn chiếu / căn cứ) ------------
     rec.related_doc_ids = _extract_related_ids(soup, current_id=rec.ban_an_id)
 
+    # ---- embedded PDF URL (PDF.js viewer setup) -------------------------
+    # Every detail page ships a ``<script>`` block that wires up the
+    # PDF.js viewer with a literal CDN URL:
+    #
+    #     var url='https://cdn.thuvienphapluat.vn/uploads/danluat/'
+    #             'FileAttack/BA/<file_id>/<filename>.pdf';
+    #     pdfjsLib.getDocument(url)…
+    #
+    # The PDF is openly served (no auth, no Turnstile, Cloudflare
+    # cache_control=public). ``file_id`` is NOT always equal to
+    # ``ban_an_id``: for newer judgments it matches, for older
+    # "republished" cases it points to the canonical archive id
+    # (often the first ``related_doc_id``). We capture both for
+    # provenance + downstream auditing.
+    pdf_url, pdf_file_id, pdf_filename = _extract_pdf_url(html)
+    rec.pdf_url = pdf_url
+    rec.pdf_file_id = pdf_file_id
+    rec.pdf_filename = pdf_filename
+
     return rec
 
 
@@ -376,6 +398,45 @@ def _split_case_kind_procedure(doc_number: str) -> tuple[str | None, str | None]
     kind_norm = kind if kind in CASE_KIND_VI_TO_EN else kind
     proc_norm = proc if proc and proc in PROCEDURE_VI_TO_EN else proc
     return kind_norm, proc_norm
+
+
+#: ``var url='https://cdn.thuvienphapluat.vn/uploads/danluat/FileAttack/BA/<id>/<filename>.pdf'``
+#: with either single or double quotes. Tolerant of whitespace + the
+#: filename containing spaces (the portal occasionally writes
+#: ``39_2021_HS-ST_ NAM DINH.pdf`` with an embedded space; we accept
+#: any non-quote character up to ``.pdf``).
+_PDF_URL_RE = re.compile(
+    r"""
+    var\s+url\s*=\s*['"]
+    (?P<url>
+        https?://(?:cdn\.)?thuvienphapluat\.vn
+        /uploads/danluat/FileAttack/BA/
+        (?P<file_id>\d+)/
+        (?P<filename>[^'"]+?\.pdf)
+    )
+    ['"]
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+
+def _extract_pdf_url(html: str) -> tuple[str | None, int | None, str | None]:
+    """Pull ``(pdf_url, file_id, filename)`` from the PDF.js viewer setup.
+
+    Returns ``(None, None, None)`` when the page lacks the viewer
+    script (judgments without an attached PDF — rare but observed
+    on the very oldest records).
+    """
+    if not html:
+        return None, None, None
+    m = _PDF_URL_RE.search(html)
+    if not m:
+        return None, None, None
+    try:
+        file_id = int(m.group("file_id"))
+    except (TypeError, ValueError):
+        file_id = None
+    return m.group("url"), file_id, m.group("filename")
 
 
 def _extract_related_ids(soup: BeautifulSoup, *, current_id: int) -> list[int]:

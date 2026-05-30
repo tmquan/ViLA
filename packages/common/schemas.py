@@ -252,14 +252,18 @@ class ParserCfg:
     """
 
     # Cloud NIM model slug. ``nvidia/nemotron-parse`` is the canonical
-    # NIM endpoint name (per NVIDIA's NIM OpenAPI spec for
-    # nvidia-nemotron-parse-infer, which declares it as the default
-    # ``model`` value). Auto-routes to the latest deployed revision;
-    # as of 2026-02 that is v1.2 (HF: nvidia/NVIDIA-Nemotron-Parse-v1.2).
-    # The older ``nvidia/nemoretriever-parse`` slug refers to the v1.0
-    # NeMo Retriever Parse model and is preserved only for back-compat
-    # of pre-2026 manifest entries.
-    model_id: str = "nvidia/nemotron-parse"
+    # Composite tag written to every row's ``parser_model`` column.
+    # Under the default ``runtime="hybrid"`` the local pypdf path
+    # handles ~70% of docs and the ``hybrid_fallback_runtime`` (default
+    # ``qwen3_6_omni``) handles the OCR-needed B'+C+D subset; both ids
+    # are surfaced together so meta.json's ``parser_model`` field
+    # captures the dispatched-at-the-stage answer rather than just the
+    # unconditional fallback id. Sites that pin a single backend (e.g.
+    # ``runtime="nim"``) typically override with the bare model slug
+    # in their YAML. The legacy ``nvidia/nemotron-parse`` /
+    # ``nvidia/nemoretriever-parse`` slugs are preserved only for
+    # back-compat of pre-2026-05 manifest entries.
+    model_id: str = "pypdf+qwen3.6-27b"
     num_workers: int = 4
     runtime: str = "hybrid"           # local | nim | hybrid
     # Which OCR client backs the ``hybrid`` runtime when pypdf's

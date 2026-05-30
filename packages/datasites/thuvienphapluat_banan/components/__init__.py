@@ -7,9 +7,9 @@ dispatched through the shared Ray executor — see
 :mod:`packages.datasites.thuvienphapluat_banan.scraper`):
 
     parser.py     -- pure-function listing-HTML + detail-HTML -> dataclass
-    harvester.py  -- /banan/tim-ban-an pagination walker      -> listings.jsonl
+    harvester.py  -- ID-range emitter (Turnstile-bypass)      -> listings.jsonl
     downloader.py -- per-id detail fetcher (slugless /x-<id>) -> docs.jsonl
-    parse.py      -- docs.jsonl + body_html                   -> md/<id>.md
+    parse.py      -- docs.jsonl + body_html                   -> md/<id>.md (legacy in-process; the PdfParseStage variant supersedes it)
 
 The driver lives in :mod:`packages.datasites.thuvienphapluat_banan.scraper`
 and is exposed via ``python -m packages.datasites.thuvienphapluat_banan``.
@@ -20,7 +20,6 @@ from packages.datasites.thuvienphapluat_banan.components.downloader import (
     BananDetailDownloader,
 )
 from packages.datasites.thuvienphapluat_banan.components.harvester import (
-    DEFAULT_LISTING_URL,
     DEFAULT_TAXONOMY_URL,
     BananHarvester,
     HarvestState,
@@ -38,7 +37,6 @@ from packages.datasites.thuvienphapluat_banan.components.parser import (
 
 __all__ = [
     "DEFAULT_DETAIL_URL_TEMPLATE",
-    "DEFAULT_LISTING_URL",
     "DEFAULT_TAXONOMY_URL",
     "BananDetailDownloader",
     "BananDocumentParser",

@@ -129,6 +129,10 @@ DETAIL_JSONL_FIELDS: list[str] = [
     "body_text",            # plain-text projection of the active tab
     "body_char_len",
     "body_text_hash",
+    # ---- attached PDF (the actual source of truth for the parse stage) -
+    "pdf_url",              # https://cdn.thuvienphapluat.vn/.../<file_id>/<filename>.pdf
+    "pdf_file_id",          # int — usually == ban_an_id, occasionally the archive id
+    "pdf_filename",         # original portal-supplied filename (kept for audit)
     # ---- runtime -----------------------------------------------------
     "html_path",            # absolute path to html/items/<id>.html cache
     "fetch_status",         # "ok" | "not_found" | "http_<code>" | "crash:<exc>"

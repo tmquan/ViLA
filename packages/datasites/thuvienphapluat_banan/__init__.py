@@ -2,33 +2,40 @@
 
 Source: https://thuvienphapluat.vn/banan/ (the "Thư viện Bản án" /
 "Court Judgment Library" surface of THƯ VIỆN PHÁP LUẬT; ~319 K judgment
-documents as of 2026-05, paginated 20-per-page on the
-``/banan/tim-ban-an`` search endpoint). Each judgment is an HTML
-document — no PDF attachment — covering the full judgment text plus
-the sidebar metadata (court / doc_number / trial_level / legal_area /
-issue_date / keywords / related-doc-ids).
+documents as of 2026-05). Every judgment ships **both** an inline HTML
+body and an attached PDF served from a public CDN
+(``cdn.thuvienphapluat.vn/uploads/danluat/FileAttack/BA/...``). The
+public-facing search endpoint ``/banan/tim-ban-an`` is permanently
+fronted by a Cloudflare Turnstile JS challenge, so we bypass it via
+**integer-ID enumeration** of the slugless detail shortcut
+``/banan/ban-an/x-<id>``, which redirects to the canonical HTML page
+without Turnstile.
 
-Hybrid datasite (wiki/DATASITES.md §13.4):
+Architecture (2026-05 cutover):
 
-* ``harvest`` + ``detail`` + ``parse`` run **in-process**
-  (:class:`packages.common.PoliteSession` + a thread pool sharing one
-  rate-limited bucket; the source portal sits behind Cloudflare and
-  hands out flat 403s when over-bucketed, so each HTTP layer wraps a
-  403-cool-down loop matching the sibling ``thuvienphapluat_tnpl``
-  datasite).
-* ``extract`` + ``embed`` + ``reduce`` are **NeMo Curator** pipelines
-  dispatched through the shared Ray executor — exactly like the
-  ``vbpl`` hybrid. Each Curator stage opens and tears down its own
-  Ray context (idempotent across the back-to-back run inside
-  ``--pipeline all``).
+* ``harvest`` -- in-process; ID-range emitter (no listing HTTP).
+* ``detail``  -- in-process; PoliteSession + thread pool; fetches the
+  slugless detail HTML, mines sidebar metadata, and extracts the
+  embedded PDF CDN URL.
+* ``download``-- in-process; PDF fetcher from the open CDN
+  (no auth, no Turnstile).
+* ``parse``   -- Curator + Ray; :class:`packages.parser.stage.PdfParseStage`
+  with ``hybrid`` runtime + ``qwen3_6_omni`` fallback (the schema
+  default since 2026-05).
+* ``extract`` + ``embed`` + ``reduce`` -- NeMo Curator pipelines through
+  the shared Ray executor, identical to vbpl / congbobanan.
+
+Each layer wraps a Cloudflare 403 cool-down loop matching the sibling
+:mod:`thuvienphapluat_tnpl` datasite.
 
 Top-level surface:
 
-    components/parser.py     -- pure HTML -> dataclass extractors
-    components/harvester.py  -- /banan/tim-ban-an paginator
-    components/downloader.py -- per-id detail fetcher (slugless /x-<id>)
-    components/parse.py      -- in-process body_html -> markdown writer
-    scraper.py               -- six-stage dispatch + Curator wiring
+    components/parser.py     -- pure HTML -> dataclass extractors (incl. PDF URL)
+    components/harvester.py  -- ID-range emitter
+    components/downloader.py -- per-id detail HTML fetcher (slugless /x-<id>)
+    components/parse.py      -- legacy in-process HTML->markdown writer
+                                (superseded by the PdfParseStage path)
+    scraper.py               -- pipeline dispatch + Curator wiring
     parse.py / extract.py /  -- thin Curator factory wrappers consumed
         embed.py / reduce.py    by scraper.PIPELINES
     _embed_reduce_inproc.py  -- optional in-process embed+reduce driver
@@ -41,7 +48,7 @@ Run via::
 
     python -m packages.datasites.thuvienphapluat_banan --pipeline all
     python -m packages.datasites.thuvienphapluat_banan --pipeline harvest \\
-        --override scraper.max_pages=3
+        --override scraper.id_start=1 scraper.max_id=100
     python -m packages.datasites.thuvienphapluat_banan.analyze
     python -m packages.datasites.thuvienphapluat_banan.viz
     python -m packages.datasites.thuvienphapluat_banan.hf_export
@@ -50,7 +57,6 @@ Run via::
 
 from packages.datasites.thuvienphapluat_banan.components import (
     DEFAULT_DETAIL_URL_TEMPLATE,
-    DEFAULT_LISTING_URL,
     DEFAULT_TAXONOMY_URL,
     BananDetailDownloader,
     BananDocumentParser,
@@ -77,7 +83,6 @@ from packages.datasites.thuvienphapluat_banan.scraper import (
 __all__ = [
     "ALL_PIPELINES_ORDER",
     "DEFAULT_DETAIL_URL_TEMPLATE",
-    "DEFAULT_LISTING_URL",
     "DEFAULT_TAXONOMY_URL",
     "PIPELINES",
     "BananDetailDownloader",

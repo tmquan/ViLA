@@ -76,14 +76,23 @@ ALL_PIPELINES_ORDER = list(PIPELINE_NAMES)
 
 
 def run_harvest(cfg: Any) -> Path:
-    """Walk listing pages, write listings.jsonl + taxonomy.json."""
+    """Enumerate ban_an_id range, write listings.jsonl + taxonomy.json.
+
+    Since 2026-05 the paginated ``/banan/tim-ban-an`` listing endpoint
+    is permanently fronted by Cloudflare Turnstile and unreachable
+    from headless clients. The harvester instead enumerates the
+    integer ``ban_an_id`` space (sibling of thuvienphapluat_tnpl);
+    the downstream detail stage fills sidebar metadata from the
+    slugless detail HTML, and the parse stage runs on the embedded
+    CDN PDFs.
+    """
     layout = build_layout(cfg)
     harv = BananHarvester(cfg, layout)
     state = harv.run()
     lst_path, _ = harv.write_outputs(state)
     logger.info(
-        "harvest complete: pages=%d total_judgments=%d listings_jsonl=%s",
-        state.pages_fetched, len(state.listings), lst_path,
+        "harvest complete: ids=%d range=[%d..%d] listings_jsonl=%s",
+        len(state.listings), state.id_start, state.max_id, lst_path,
     )
     return lst_path
 

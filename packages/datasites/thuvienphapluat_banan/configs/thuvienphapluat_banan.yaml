@@ -13,7 +13,8 @@ _base: default.yaml
 # scraper:
 #   qps: 1.0                  # gentler on a flaky VPN
 #   num_workers: 2
-#   max_pages: 100            # smoke run: only walk the first 100 listing pages
+#   id_start: 1
+#   max_id: 100               # smoke run: only enumerate ban_an_id in [1,100]
 #
 # extractor:
 #   normalizers:

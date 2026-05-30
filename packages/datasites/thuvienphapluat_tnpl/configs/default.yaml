@@ -117,7 +117,10 @@ translator:
 # without re-shaping it.
 
 parser:
-  model_id: nvidia/nemoretriever-parse
+  # Composite tag: under ``runtime: hybrid`` the local pypdf path
+  # handles ~70% of docs and the ``hybrid_fallback_runtime`` (default
+  # ``qwen3_6_omni``) handles the OCR-needed subset.
+  model_id: pypdf+qwen3.6-27b
   runtime: hybrid
   num_workers: 4
 

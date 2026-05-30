@@ -60,23 +60,32 @@ parser:
   # HF: nvidia/NVIDIA-Nemotron-Parse-v1.2, released 2026-02).
   # Only consumed when ``runtime`` is ``hybrid`` or ``nim`` -- the
   # ``nemotron_omni`` runtime uses ``omni_model`` below.
-  model_id: nvidia/nemotron-parse
-  # Active runtime. Defaults (since the 2026-05 cutover) to the
-  # self-hosted Qwen3.6-27B-FP8 vLLM container (single-pass VLM at
-  # http://localhost:8000/v1, no API key). Override via PARSER_RUNTIME
-  # env var or ``--override parser.runtime=hybrid`` to fall back to
-  # the cloud nemotron-parse + pypdf pipeline; or
-  # ``parser.runtime=nemotron_omni`` to roll back to the prior
+  #
+  # Composite tag: under runtime=hybrid the local pypdf path handles
+  # ~70% of docs and the qwen3_6_omni fallback handles the OCR-needed
+  # B'+C+D subset. Both ids are surfaced together so meta.json's
+  # parser_model field captures the dispatched-at-the-stage answer
+  # rather than the unconditional fallback id.
+  model_id: pypdf+qwen3.6-27b
+  # Active runtime. Defaults (since the 2026-05-30 hybrid-cutover) to
+  # ``hybrid`` -- pypdf for the ~70% of digital-text PDFs in the
+  # corpus, with the OCR-needed B'+C+D subset (~30%) falling through
+  # to ``hybrid_fallback_runtime`` (default ``qwen3_6_omni`` -- the
+  # self-hosted Qwen3.6-27B-FP8 vLLM at http://localhost:8000/v1).
+  # Override via PARSER_RUNTIME env var, e.g.
+  # ``PARSER_RUNTIME=qwen3_6_omni`` to force every doc through OCR
+  # (the pre-cutover behavior, ~5x slower but skips pypdf entirely),
+  # or ``PARSER_RUNTIME=nemotron_omni`` to roll back to the prior
   # nemotron-3-nano-omni-30b NIM (still wired in
   # ``packages/parser/stage.py`` for that purpose).
   #
   # Runtimes:
   # * ``local``         -- pypdf only (image-only scans yield empty).
   # * ``nim``           -- cloud nemotron-parse v1.2; needs NVIDIA_API_KEY.
-  # * ``hybrid``        -- pypdf + cloud nemotron-parse fallback.
+  # * ``hybrid``        -- pypdf + ``hybrid_fallback_runtime`` (default).
   # * ``nemotron_omni`` -- self-hosted nemotron-3-nano-omni-30b VLM (rollback).
-  # * ``qwen3_6_omni``  -- self-hosted Qwen3.6-27B-FP8 vLLM (default).
-  runtime: "${oc.env:PARSER_RUNTIME,qwen3_6_omni}"
+  # * ``qwen3_6_omni``  -- self-hosted Qwen3.6-27B-FP8 vLLM (full-OCR override).
+  runtime: "${oc.env:PARSER_RUNTIME,hybrid}"
   # Which OCR client backs the ``hybrid`` runtime when pypdf trips a
   # fallback gate (whole-doc empty / lossy, or Case-D per-page
   # surgical). Independent of ``runtime`` above: an operator can
