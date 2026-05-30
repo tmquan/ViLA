@@ -1,0 +1,223 @@
+# Default config for the thuvienphapluat_banan crawler.
+#
+# OmegaConf-based. A sibling YAML can override any subset of this via
+# `_base: default.yaml`; lists are REPLACED, mappings are DEEP-MERGED.
+# CLI dotlist overrides via `--override path.to.key=value` are applied
+# last.
+#
+# thuvienphapluat_banan is the **hybrid** sibling of thuvienphapluat_tnpl:
+# the first three stages (harvest + detail + parse) walk HTML in-process
+# behind a polite QPS bucket + 403 cool-down; the last three (extract +
+# embed + reduce) are NeMo Curator pipelines dispatched through the
+# shared executor / Ray bootstrap (wiki/DATASITES.md §13.4).
+
+host: thuvienphapluat_vn_banan
+output_dir: ./data
+full_text_context: 32768
+
+# ---- Stage 1+2+3 (in-process: harvest / detail / parse) -------------
+# Shared between the harvester (paginated listing walker), the detail
+# downloader, and the in-process body→markdown converter.
+
+scraper:
+  num_workers: 4
+  qps: 2.0                          # 2 req/s; polite for the host
+  user_agent: "ViLA-research/0.1 (+https://example.vn/contact)"
+  proxy: null
+  timeout_s: 30.0
+  max_retries: 5                    # HTML page GET retries (exp backoff)
+  verify_tls: true
+  # Detail fragments are tiny (40-70 KB), but the ASP.NET WebForms app
+  # behind the portal occasionally stalls under WAF interruption; a
+  # long flat delay rides those out cheaply.
+  download_max_retries: 50
+  download_retry_delay_s: 30.0
+
+  # ---- Per-status retry policy --------------------------------------
+  # Same shape as thuvienphapluat_tnpl. `skip_finished_statuses`
+  # filters the work queue down to truly unfinished ids; their
+  # existing docs.jsonl rows are carried over verbatim. Use to mop
+  # up transient failures without re-walking the cached corpus:
+  #
+  #   --override 'scraper.skip_finished_statuses=[ok,not_found]'
+  skip_finished_statuses: []
+
+  # ---- Cloudflare 403 cool-down --------------------------------------
+  # The shared PoliteSession retries 429/5xx with exponential backoff
+  # but treats 403 as terminal. thuvienphapluat.vn's Cloudflare WAF
+  # ban-buckets aggressive IPs into 5-15 min 403 windows; both the
+  # harvester and the downloader sleep `http_403_initial_delay_s`,
+  # double up to `http_403_max_delay_s`, up to `http_403_max_retries`
+  # times before tagging the row `http_403`. Set max_retries=0 to
+  # disable.
+  http_403_initial_delay_s: 60.0
+  http_403_max_delay_s: 600.0
+  http_403_max_retries: 5
+
+  # ---- banan-specific knobs (consumed by harvester + downloader) -----
+
+  # Paginated search-listing URL template. {page} is the 1-indexed
+  # page number; the portal renders 20 cards per page. We hold the
+  # default sort (sortType=1 == newest first) so resumed runs see a
+  # stable ordering; `type_q=0` is the "match anywhere" search mode
+  # required when the query parameter is empty.
+  listing_url_template: "https://thuvienphapluat.vn/banan/tim-ban-an?type_q=0&sortType=1&page={page}"
+
+  # Where to capture the closed-set faceting menu (courts, provinces,
+  # legal areas, statuses, sort modes, language codes). Snapshotted
+  # once per harvest and written verbatim into jsonl/taxonomy.json.
+  taxonomy_url: "https://thuvienphapluat.vn/banan/tim-ban-an?LanguageCode=vi"
+
+  # Detail-page URL template. The portal accepts a slugless shortcut
+  # `/banan/ban-an/x-<id>` that 302's to the canonical
+  # `/banan/ban-an/<slug>-<id>` URL — we use the shortcut so the
+  # cache key stays integer-only and survives any slug drift on
+  # the source portal.
+  detail_url_template: "https://thuvienphapluat.vn/banan/ban-an/x-{id}"
+
+  # Walk bounds.
+  start_page: 1
+  # null / 0 / negative ⇒ walk until the page renders fewer than
+  # min_card_threshold cards (end-of-pages signal).
+  max_pages: null
+  min_card_threshold: 1
+
+  # Cache HTML so a partial run resumes cheaply.
+  cache_listings: true
+  cache_details: true
+
+  # Unused for banan (kept for schema compatibility with the other datasites).
+  listing_url: ""
+  pdf_url_template: ""
+  paginated: true
+  fetch_detail_page: false
+  fetch_head_before_download: false
+  selectors: {}
+  extra_params: {}
+  extra_headers: {}
+
+# ---- Stage 3: parse (in-process body_html -> markdown) -------------
+# Used only by the in-process parser stage; the Curator extract stage
+# below reads the markdown the parser writes. We keep the field name
+# `parser` for shape parity with anle / vbpl / congbobanan even though
+# this site has no PDF / OCR path.
+
+parser:
+  # markdownify covers ~100% of thuvienphapluat_banan rows since
+  # the portal renders the full judgment text inline as HTML. Kept
+  # as model_id for shape parity with the other datasites.
+  model_id: local/markdownify
+  runtime: local
+  num_workers: 4
+  # Drop rows whose body markdown is shorter than this; sub-50 char
+  # bodies indicate WAF stripping or soft-404 surfaces.
+  min_body_chars: 50
+  # If true, re-emit every md/<id>.md + .meta.json on the next run
+  # (use after refreshing docs.jsonl to propagate new sidebar columns).
+  force: false
+
+# ---- Stage 4: extract (Curator + Ray) -------------------------------
+# Declarative normalizer chain runs as a Curator NormalizerChainStage
+# (wiki/DATASITES.md §3.5) between the markdown reader and the
+# regex / structure layers. banan markdown is HTML-derived (not pypdf-
+# derived) so the corpus does not need the vbpl/congbobanan single-
+# space mid-word repair; the universal `vietnamese_text` baseline is
+# enough.
+
+extractor:
+  normalizers:
+    - vietnamese_text
+  run_text_normalization: false
+  run_generic_layer: true
+  # Precedent (`án lệ`) normaliser targets Supreme-Court precedents,
+  # not general bản án; leave off until a banan-specific layer ships.
+  run_site_layer: false
+  run_structure_layer: true
+  llm_tier_for_ambiguous: fast
+  num_workers: 4
+  max_seq_length: "${..full_text_context}"
+
+# Parquet consumption tier shard sizing (wiki/DATASITES.md §3.5.4).
+# thuvienphapluat_banan rows ship the markdown body + the extractor
+# regex payload + the structure JSON. Empirically each row weighs
+# 20-50 KB so 10 K rows pack to ~200-500 MB depending on judgment
+# length; we conservatively start at 5 K to stay under the HF
+# dataset-viewer cliff (raise to 10 K only after a load-test).
+shards:
+  doc_chunk_size: 5000
+
+# ---- Stage 5: embed (Curator + Ray) ---------------------------------
+# NIM embedder by default (HTTP, no local GPU needed); set runtime=hf
+# to run nvidia/llama-nemotron-embed-1b-v2 locally on a GPU. Inputs
+# come from parquet/extract/extract-*.parquet; outputs to
+# parquet/embed/embed-*.parquet.
+
+embedder:
+  model_id: nvidia/llama-nemotron-embed-1b-v2
+  runtime: nim                  # nim | hf | auto
+  batch_size: 16
+  max_seq_length: 8192
+  chunking: sliding             # off | sliding | sentence
+  chunk_overlap: 256
+  model_dtype: bfloat16
+  device: auto
+
+# ---- Stage 6: reduce (Curator + Ray) --------------------------------
+# Vectorised PCA / t-SNE / UMAP + HDBSCAN on the full embedding matrix.
+# cuML on a worker with prefer_gpu=true; sklearn / umap-learn / hdbscan
+# fallback otherwise.
+
+reducer:
+  methods: [pca, tsne, umap]
+  n_components: 2
+  prefer_gpu: true
+  hdbscan_min_cluster_size: 50
+  hdbscan_min_samples: 10
+  max_chars: 8000
+
+# ---- Curator executor + Ray bootstrap -------------------------------
+# Only consumed by the extract + embed + reduce stages.
+
+executor:
+  name: xenna                   # xenna | ray_actor_pool | ray_data
+  mode: streaming
+  logging_interval: 60
+  autoscale_interval_s: 180
+  cpu_allocation_percentage: 0.9
+  ignore_failures: false
+
+ray:
+  address: null                 # None | "auto" | "ray://head:10001"
+  runtime_env: {}
+  num_cpus: null
+  num_gpus: null
+
+stage_overrides:
+  embed_files_per_partition: 4
+  # Reducer fits per partition; keep the whole corpus in ONE partition
+  # so PCA/UMAP coordinates and cluster_ids stay globally comparable.
+  reduce_files_per_partition: 100000
+
+# ---- Visualizer -----------------------------------------------------
+# Consumed by `python -m apps.visualizer --config-name thuvienphapluat_banan`
+# (the off-pipeline renderer; wiki/DATASITES.md §7).
+
+visualizer:
+  color_by:
+    - case_kind
+    - procedure
+    - trial_level
+    - legal_area
+    - year
+    - cluster_id
+  distribution_enums:
+    - case_kind
+    - procedure
+    - trial_level
+    - legal_area
+  dimensions: [pca, tsne, umap]
+  top_n_articles: 25
+  dashboard_title: "thuvienphapluat — Bản án"
+  emit_notebook: true
+  emit_png: true
+  theme: light

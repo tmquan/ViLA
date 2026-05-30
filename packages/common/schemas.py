@@ -174,6 +174,19 @@ class ScraperCfg:
     http_403_max_delay_s: float = 600.0
     http_403_max_retries: int = 5
 
+    # ---- thuvienphapluat_banan paginated court-judgment crawler ----
+    # The /banan/ portal exposes a paginated search endpoint at
+    # /banan/tim-ban-an?page=N (20 cards / page). The harvester walks
+    # ``listing_url_template`` formatted with ``page=N`` and stops on
+    # the first page that returns fewer than ``min_card_threshold``
+    # rows. ``taxonomy_url`` is a one-shot snapshot of the search-form
+    # dropdowns (courts / provinces / case types / statuses) captured
+    # once per harvest and written verbatim into jsonl/taxonomy.json.
+    # All three are unused (default empty) for other datasites.
+    listing_url_template: str = ""
+    taxonomy_url: str = ""
+    min_card_threshold: int = 1
+
     # ---- vbpl Playwright crawler -----------------------------------
     # vbpl.vn is a Next.js SPA whose backend (vbpl-bientap-gateway.moj
     # .gov.vn/api/qtdc/public/doc/...) is gated by a reCAPTCHA v3 ->
@@ -430,6 +443,18 @@ class ParserCfg:
     #: former relies on. Empty list (the default) keeps the parser
     #: writing whatever pypdf / nemotron-parse emit verbatim.
     normalizers: list[str] = field(default_factory=list)
+
+    # ---- thuvienphapluat_banan in-process HTML → markdown parser ---
+    # The banan parser doesn't go through pypdf / NIM (the portal
+    # serves HTML; we run markdownify locally). These two knobs are
+    # consumed by ``packages.datasites.thuvienphapluat_banan.components.parse``:
+    # ``min_body_chars`` rejects markdown bodies shorter than this
+    # (sub-50-char outputs indicate WAF stripping or soft-404 surfaces);
+    # ``force`` re-emits every md/<id>.md + .meta.json on the next run
+    # (use after refreshing docs.jsonl to propagate new sidebar columns).
+    # Defaults are safe for any datasite that doesn't use them.
+    min_body_chars: int = 50
+    force: bool = False
 
 
 @dataclass

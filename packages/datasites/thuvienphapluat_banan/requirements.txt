@@ -1,0 +1,36 @@
+# thuvienphapluat_banan hybrid-crawler runtime dependencies.
+#
+# Mirrors vbpl's requirements (it's the structural twin: hybrid Family
+# B harvest+detail+parse + Family A extract+embed+reduce). The harvest
+# / detail / parse stages need only the lightweight HTML + markdownify
+# stack; the extract / embed / reduce stages bring the heavyweight
+# NeMo Curator + Ray + NIM dependencies.
+
+# ---- Stage 1+2+3 (in-process: harvest / detail / parse) -----------
+requests>=2.31,<3.0
+beautifulsoup4>=4.12,<5.0
+lxml>=5.0,<6.0
+markdownify>=0.11
+omegaconf>=2.3,<3.0
+
+# ---- Stage 4+5+6 (Curator + Ray) ----------------------------------
+# Bring in via the workspace lockfile; listed here for completeness.
+# nemo-curator
+# ray[default]>=2.10
+
+# ---- HF export + push (only needed for publication) ---------------
+huggingface_hub>=0.23
+pyarrow>=14.0
+
+# ---- analyze + viz ------------------------------------------------
+matplotlib>=3.8,<4.0
+numpy>=1.26
+
+# ---- _embed_reduce_inproc (optional fallback embed/reduce driver) -
+# Only required if you bypass the Curator embed+reduce stages.
+# transformers>=4.40
+# torch>=2.1
+# sentence-transformers>=2.5
+# umap-learn>=0.5
+# hdbscan>=0.8
+# scikit-learn>=1.3
