@@ -34,6 +34,12 @@ EXTRACTOR_JSONL_FIELDS: list[str] = [
     "text_hash",
     "char_len",
     "extracted",
+    # Hierarchical structure (DocumentMeta + sections + paragraphs +
+    # sentences). Populated by LegalStructureExtractor when
+    # cfg.extractor.run_structure_layer is true (default for
+    # congbobanan). Must be whitelisted here or JsonlPerDocWriter drops
+    # it -- the hf_export sentences + structure.meta layers depend on it.
+    "structure",
     # congbobanan sidebar metadata
     "doc_type",
     "ban_an_so",

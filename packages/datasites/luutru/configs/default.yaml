@@ -1,0 +1,127 @@
+# Default config for the luutru pipeline.
+#
+# OmegaConf-based. Use `_base: default.yaml` from a sibling file to
+# override any subset of this; lists are REPLACED, mappings are
+# DEEP-MERGED. Hydra-style dotlist overrides are accepted on the CLI
+# via `--override path.to.key=value`.
+#
+# `full_text_context` is the pipeline-wide token budget for stages that
+# must read a full Vietnamese legal document in one pass. Stages that
+# care reference it via `${..full_text_context}` so a single override
+# propagates everywhere.
+
+host: luutru.gov.vn
+output_dir: ./data
+full_text_context: 32768
+
+scraper:
+  num_workers: 4
+  qps: 1.0
+  user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+  proxy: null
+  timeout_s: 30.0
+  # luutru.gov.vn + dms.luutru.gov.vn present a Mozilla-bundle-valid
+  # cert (HTTP/2 200 without -k); leave TLS verification on.
+  verify_tls: true
+  max_retries: 5                 # HTML page GETs; exp backoff 1.5^n
+  # Binary-download retry. PDF endpoints on VN .gov.vn hosts flake on
+  # minute scales; a long flat delay rides these out without flooding
+  # the server on recovery.
+  download_max_retries: 50       # attempts per PDF before giving up
+  download_retry_delay_s: 30.0   # flat delay between attempts
+  # DNS resolution failures (EAI_AGAIN) are retried on a separate
+  # longer-budget channel from the request/download retry budgets above.
+  dns_max_retries: 12
+  dns_retry_delay_s: 5.0
+
+  # vanban.aspx GET-paginated document search. See luutru.yaml for the
+  # type=all corpus override.
+  listing_url: https://luutru.gov.vn/vanban.aspx
+  detail_url_template: https://luutru.gov.vn/xemchitietvanban.htm?id={doc_name}
+  base_url: https://luutru.gov.vn/
+  # IIS returns a 500 stub to a bare request; warm up the ASP.NET
+  # session cookie against the home page before walking the listing.
+  warm_up_url: https://luutru.gov.vn/home.htm
+
+  paginated: true
+  page_param: p
+  start_page: 1
+  max_pages: null                # null -> read last page from the pager
+  page_detect_cap: 5000
+  # type/filter params merged into every listing-page URL. `type=all`
+  # spans QPPL + CĐĐH; the empty filter params mirror the portal form.
+  extra_params:
+    type: all
+    shvb: ""
+    htvb: ""
+    lvvb: ""
+    cqbh: ""
+    trynd: ""
+  extra_headers: {}
+  fetch_detail_page: true
+  fetch_head_before_download: true
+  selectors: {}                  # override to point at custom CSS selectors
+
+parser:
+  # hybrid: local pypdf first, OCR VLM fallback on image-only scans /
+  # font-corrupt docs. Switch to `local` for pypdf-only (offline smoke
+  # runs), or `nim` to force every PDF through the cloud parse NIM.
+  model_id: pypdf+qwen3.6-27b
+  runtime: hybrid
+  min_local_chars: 50
+  num_workers: 4
+  nim_base_url: "${oc.env:NIM_BASE_URL,https://integrate.api.nvidia.com/v1}"
+  nim_tool: markdown_bbox         # markdown_bbox | markdown_no_bbox | detection_only
+  nim_dpi: 150                    # PDF -> PNG raster resolution
+  timeout_s: 120.0
+
+extractor:
+  # Declarative normalizer chain (wiki/DATASITES.md §3.5). luutru ships
+  # the universal Vietnamese baseline. The precedent / án-lệ site layer
+  # stays OFF -- these are general legal documents, not court precedents.
+  normalizers:
+    - vietnamese_text
+  run_text_normalization: false
+  run_generic_layer: true
+  run_site_layer: false
+  run_structure_layer: true
+  llm_tier_for_ambiguous: fast
+  max_seq_length: "${..full_text_context}"
+
+# Parquet consumption tier shard sizing -- luutru uses the
+# wiki/DATASITES.md §3.5 default (10K rows / shard). The ~3K-document
+# corpus collapses into a single documents/embed/reduce shard.
+
+embedder:
+  # Default: llama-nemotron-embed-1b-v2 served via NIM. 8k native
+  # context; sliding-window chunking covers the 32k full_text_context.
+  model_id: nvidia/llama-nemotron-embed-1b-v2
+  runtime: nim
+  batch_size: 8
+  max_seq_length: 8192         # model window (not full_text_context)
+  chunking: sliding            # off | sliding | sentence
+  chunk_overlap: 256           # tokens (converted to chars internally)
+  model_dtype: bfloat16
+  device: auto
+
+reducer:
+  methods: [pca, tsne, umap]
+  n_components: 2
+  prefer_gpu: true
+
+visualizer:
+  color_by:
+    # luutru document-metadata facets (top-level JSONL columns from the
+    # detail-page extractor) + clustering.
+    - doc_type             # short form code (TT / NĐ / QĐ / ...)
+    - legal_type           # full form name (Thông tư / Nghị định / ...)
+    - legal_area           # Lĩnh vực
+    - issuing_authority     # Cơ quan ban hành
+    - cluster_id
+  distribution_enums: []
+  dimensions: [pca, tsne, umap]
+  top_n_articles: 20
+  dashboard_title: "ViLA - luutru.gov.vn exploration"
+  emit_notebook: true
+  emit_png: false
+  theme: plotly_white

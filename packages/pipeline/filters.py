@@ -108,4 +108,84 @@ class SkipExistingMarkdownFilter(ProcessingStage[DocumentBatch, DocumentBatch]):
         )
 
 
-__all__ = ["SkipExistingMarkdownFilter"]
+@dataclass
+class SkipExistingParquetFilter(ProcessingStage[DocumentBatch, DocumentBatch]):
+    """Drop rows whose ``<doc_name>.parquet`` already exists in ``parquet_dir``.
+
+    Inserted between the reader and the embedder (or reducer) stage,
+    this turns a re-run into a tight scan: docs whose per-doc output
+    parquet is already on disk never reach the expensive stage, so a
+    crashed/restarted embed run resumes at document granularity instead
+    of re-embedding all 1.37 M docs. The only cost is one
+    ``Path.stat()`` per row.
+
+    Mirrors :class:`SkipExistingMarkdownFilter`. Fail-open: if
+    ``parquet_dir`` doesn't exist (cold start), nothing is dropped. A
+    zero-byte parquet (e.g. a half-written file from a killed run) is
+    treated as missing so the doc is re-embedded; callers that want to
+    trust partial outputs should validate them out-of-band first.
+
+    All-rows-dropped batches return an empty :class:`DocumentBatch`,
+    which downstream stages handle as a no-op.
+    """
+
+    parquet_dir: str
+    doc_name_field: str = "doc_name"
+    name: str = "skip_existing_parquet_filter"
+    resources: Resources = field(default_factory=lambda: Resources(cpus=0.5))
+    batch_size: int = 1
+
+    def inputs(self) -> tuple[list[str], list[str]]:
+        return (["data"], [self.doc_name_field])
+
+    def outputs(self) -> tuple[list[str], list[str]]:
+        return (["data"], [])
+
+    def setup(self, worker_metadata: WorkerMetadata | None = None) -> None:
+        self._parquet_dir = Path(self.parquet_dir)
+
+    def process(self, task: DocumentBatch) -> DocumentBatch:
+        df = task.to_pandas()
+        if df.empty or self.doc_name_field not in df.columns:
+            return task
+        if not getattr(self, "_parquet_dir", None):
+            self.setup(None)
+
+        parquet_dir = self._parquet_dir
+        if not parquet_dir.exists():
+            return task
+
+        def _has_parquet(doc_name: Any) -> bool:
+            if doc_name is None:
+                return False
+            name = str(doc_name).strip()
+            if not name:
+                return False
+            try:
+                # Zero-byte / half-written parquet from a killed run is
+                # treated as missing so the doc is re-embedded.
+                st = (parquet_dir / f"{name}.parquet").stat()
+            except OSError:
+                return False
+            return st.st_size > 0
+
+        keep_mask = df[self.doc_name_field].map(_has_parquet).map(lambda x: not x)
+        n_in = len(df)
+        df = df.loc[keep_mask].reset_index(drop=True)
+        dropped = n_in - len(df)
+        if dropped:
+            logger.debug(
+                "SkipExistingParquetFilter: dropped %d/%d rows already on disk",
+                dropped, n_in,
+            )
+
+        return DocumentBatch(
+            task_id=task.task_id,
+            dataset_name=task.dataset_name,
+            data=df,
+            _metadata=task._metadata,
+            _stage_perf=task._stage_perf,
+        )
+
+
+__all__ = ["SkipExistingMarkdownFilter", "SkipExistingParquetFilter"]

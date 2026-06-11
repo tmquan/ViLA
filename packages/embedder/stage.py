@@ -152,6 +152,9 @@ class NimEmbedderStage(ProcessingStage[DocumentBatch, DocumentBatch]):
     # pre-flight heuristic while still bounding worst-case API fan-out.
     _MAX_SPLIT_DEPTH: int = 6
     _MIN_SPLIT_CHARS: int = 200
+    # Hard cap on inputs packed into one token-budget request, so a run
+    # of tiny chunks can't build a pathologically long input list.
+    _MAX_BATCH_TEXTS: int = 64
 
     def inputs(self) -> tuple[list[str], list[str]]:
         text_field = str(self.cfg.embedder.get("text_field", "markdown"))
@@ -203,6 +206,7 @@ class NimEmbedderStage(ProcessingStage[DocumentBatch, DocumentBatch]):
         chunking_mode = str(self.cfg.embedder.chunking)
         chunk_overlap_tokens = int(self.cfg.embedder.chunk_overlap)
         batch_size = int(self.cfg.embedder.batch_size)
+        token_budget = int(self.cfg.embedder.get("batch_token_budget", 0))
 
         df = task.to_pandas().copy()
 
@@ -212,38 +216,55 @@ class NimEmbedderStage(ProcessingStage[DocumentBatch, DocumentBatch]):
         chunks_used: list[int] = []
         chunking_used: list[str] = []
 
-        for text in df[text_field]:
-            text_str = str(text or "")
-            text_hash = hashlib.sha256(text_str.encode("utf-8")).hexdigest()[:32]
+        # Phase 1: split each doc into chunks once. ``None`` marks an
+        # empty / whitespace-only doc (emitted as a zero-length vector).
+        texts = [str(t or "") for t in df[text_field]]
+        text_hashes = [
+            hashlib.sha256(t.encode("utf-8")).hexdigest()[:32] for t in texts
+        ]
+        per_doc_chunks: list[list[str] | None] = [
+            self._split_for_embedding(t, chunking_mode, chunk_overlap_tokens)
+            if t.strip() else None
+            for t in texts
+        ]
 
-            # NIM rejects empty / whitespace-only inputs with
-            # ``400 - Input list must be non-empty and all elements must
-            # be non-empty.`` Short-circuit empty rows to an empty
-            # embedding so one bad document never crashes the batch.
-            if not text_str.strip():
+        # Phase 2: embed. ``batch_token_budget > 0`` packs chunks across
+        # documents into token-bounded requests (amortizes per-request
+        # latency for short docs); 0 keeps the legacy per-doc batching.
+        # Either way each chunk is embedded independently by the backend,
+        # so the per-doc pooled vector is identical.
+        if token_budget > 0:
+            per_doc_vectors = self._embed_docs_token_budget(
+                per_doc_chunks, token_budget
+            )
+        else:
+            per_doc_vectors = [
+                self._embed_chunks(chunks, batch_size)
+                if chunks is not None else []
+                for chunks in per_doc_chunks
+            ]
+
+        # Phase 3: mean-pool per doc (identical to the prior per-row loop).
+        for i, chunks in enumerate(per_doc_chunks):
+            if chunks is None:
+                # NIM rejects empty / whitespace-only inputs; short-circuit
+                # so one bad document never crashes the batch.
                 logger.warning(
                     "embedder: empty/whitespace-only text (hash=%s); "
                     "emitting zero-length embedding",
-                    text_hash,
+                    text_hashes[i],
                 )
                 embeddings.append([])
                 dims.append(0)
-                text_hashes.append(text_hash)
                 chunks_used.append(0)
                 chunking_used.append("empty")
                 continue
-
-            chunks = self._split_for_embedding(
-                text_str, chunking_mode, chunk_overlap_tokens
-            )
-            vectors = self._embed_chunks(chunks, batch_size)
             # Filter out empty vectors before pooling so mean_pool does
             # not choke on mixed shapes (if a chunk was empty/filtered).
-            non_empty = [v for v in vectors if v]
+            non_empty = [v for v in per_doc_vectors[i] if v]
             pooled = mean_pool(non_empty) if non_empty else []
             embeddings.append(pooled)
             dims.append(len(pooled))
-            text_hashes.append(text_hash)
             chunks_used.append(len(non_empty))
             chunking_used.append(
                 chunking_mode if len(chunks) > 1 else "none"
@@ -308,6 +329,60 @@ class NimEmbedderStage(ProcessingStage[DocumentBatch, DocumentBatch]):
             sub = chunks[i : i + batch_size]
             out.extend(self._safe_embed_batch(sub))
         return out
+
+    def _embed_docs_token_budget(
+        self,
+        per_doc_chunks: list[list[str] | None],
+        token_budget: int,
+    ) -> list[list[list[float]]]:
+        """Embed every doc's chunks, packing across docs by token budget.
+
+        Flattens all docs' chunks into one stream, greedily packs
+        consecutive chunks into request batches whose summed estimated
+        tokens stay under ``token_budget`` (and at most
+        ``_MAX_BATCH_TEXTS`` inputs), embeds each packed batch in one
+        backend call via :meth:`_safe_embed_batch`, then regroups the
+        vectors back per doc in chunk order.
+
+        A chunk larger than the whole budget is sent alone (the
+        ``j > i`` guard) and recovered by ``_safe_embed_batch``'s
+        oversize split. Because the backend embeds each input
+        independently within a request, the resulting per-doc vectors
+        are identical to the one-at-a-time path -- only request packing
+        changes.
+        """
+        assert self._backend is not None
+        results: list[list[list[float]]] = [
+            [] for _ in range(len(per_doc_chunks))
+        ]
+        flat: list[tuple[int, str]] = []
+        for di, chunks in enumerate(per_doc_chunks):
+            if not chunks:
+                continue
+            for chunk in chunks:
+                flat.append((di, chunk))
+        if not flat:
+            return results
+
+        cpt = self._chars_per_token()
+        i, n = 0, len(flat)
+        while i < n:
+            j = i
+            cum_tokens = 0
+            while j < n:
+                est = max(1, int(len(flat[j][1]) / cpt))
+                if j > i and (
+                    cum_tokens + est > token_budget
+                    or (j - i) >= self._MAX_BATCH_TEXTS
+                ):
+                    break
+                cum_tokens += est
+                j += 1
+            vectors = self._safe_embed_batch([flat[k][1] for k in range(i, j)])
+            for k in range(i, j):
+                results[flat[k][0]].append(vectors[k - i])
+            i = j
+        return results
 
     def _safe_embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch; recover from NIM's 400 errors that the pre-flight

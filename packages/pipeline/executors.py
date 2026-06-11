@@ -138,6 +138,19 @@ def init_ray(cfg: Any) -> bool:
             num_cpus, num_gpus, init_kwargs.get("include_dashboard", "default"),
         )
     ray.init(**init_kwargs)
+    # On hosts that can reach more than one Ray GCS (shared multi-node
+    # boxes, leftover clusters), cosmos-xenna's submission-client address
+    # resolver (``ray_address_to_api_server_url``) raises "Found multiple
+    # active Ray instances" when ``RAY_ADDRESS`` is unset. Pin it to the
+    # cluster we just bound to so every downstream lookup (dashboard /
+    # state API / monitor) is unambiguous.
+    try:
+        gcs = ray.get_runtime_context().gcs_address
+        if gcs:
+            os.environ["RAY_ADDRESS"] = gcs
+            logger.info("pinned RAY_ADDRESS=%s for ray lookups", gcs)
+    except Exception as exc:  # best-effort; never block init on this
+        logger.debug("could not pin RAY_ADDRESS: %s", exc)
     return True
 
 

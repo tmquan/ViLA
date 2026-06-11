@@ -54,6 +54,19 @@ dependencies = [
   # `gpu` extras-group below.
   "nemo-curator[text_cpu]>=0.7",
   "docx2txt>=0.9",
+  # Reducer stage (packages/reducer) deps. These MUST live in the
+  # locked workspace env (not just the per-datasite requirements.txt)
+  # so Ray/xenna workers -- which sync from uv.lock -- can import them.
+  # The reducer imports `umap` (umap-learn) for UMAP and
+  # `sklearn.cluster.HDBSCAN` (scikit-learn >=1.3) for clustering;
+  # cuML is an optional GPU accelerant picked up via the `gpu` extra.
+  "scikit-learn>=1.3",
+  "umap-learn>=0.5.6",
+  # hf_export renders the four UMAP scatter PNGs embedded in the
+  # dataset card via matplotlib (Agg backend); keep it in the locked
+  # env so the publish step doesn't depend on an ad-hoc .venv install.
+  "matplotlib>=3.7",
+  "pillow>=10",
 ]
 
 [project.optional-dependencies]

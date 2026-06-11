@@ -36,6 +36,7 @@ from packages.common import SiteLayout
 from packages.embedder.stage import build_embedder_stage
 from packages.extractor.normalizers import build_normalizer_chain
 from packages.extractor.stage import LegalExtractStage
+from packages.pipeline.filters import SkipExistingParquetFilter
 from packages.pipeline.io import (
     JsonlPerDocWriter,
     MarkdownReader,
@@ -177,6 +178,11 @@ def build_embed_pipeline(
         ),
         stages=[
             reader,
+            # Resume-by-default: docs whose <doc_name>.parquet is already
+            # in embeddings_dir skip the embedder, so a crashed/restarted
+            # run never re-embeds completed docs. Mirrors the parse
+            # pipeline's SkipExistingMarkdownFilter convention.
+            SkipExistingParquetFilter(parquet_dir=str(layout.embeddings_dir)),
             build_embedder_stage(cfg),
             ParquetPerDocWriter(
                 path=str(layout.embeddings_dir),

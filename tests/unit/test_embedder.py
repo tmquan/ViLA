@@ -313,6 +313,83 @@ def test_process_row_with_empty_markdown_short_circuits() -> None:
     assert all(all(t.strip() for t in batch) for batch in calls)
 
 
+class _ContentBackend:
+    """Deterministic, position-INDEPENDENT backend.
+
+    The embedding depends only on the text content, never on its
+    position in the request batch, so a correct token-budget packer must
+    produce per-doc vectors identical to the one-at-a-time path.
+    """
+
+    model_id = "fake/content"
+    embedding_dim = 4
+    max_seq_length = 128
+
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        out: list[list[float]] = []
+        for t in texts:
+            h = (hash(t) % 997) / 997.0
+            out.append([h, 1.0 - h, 0.5, 0.25])
+        return out
+
+
+def test_token_budget_batching_matches_one_at_a_time() -> None:
+    """Token-budget cross-doc packing must yield identical per-doc vectors."""
+    # Several short docs (pack together) + one long doc (multi-chunk).
+    texts = ["alpha doc", "beta doc", "gamma doc", "x" * 4000, "delta doc"]
+
+    legacy_cfg = _cfg()
+    legacy_cfg.embedder.batch_token_budget = 0
+    legacy = NimEmbedderStage(cfg=legacy_cfg)
+    legacy._entry = ModelEntry("fake/content", "nim", 4, True, None)
+    legacy._backend = _ContentBackend()
+    out_legacy = legacy.process(_batch(texts)).to_pandas()
+
+    packed_cfg = _cfg()
+    packed_cfg.embedder.batch_token_budget = 64  # small budget -> real packing
+    packed = NimEmbedderStage(cfg=packed_cfg)
+    packed._entry = ModelEntry("fake/content", "nim", 4, True, None)
+    packed._backend = _ContentBackend()
+    out_packed = packed.process(_batch(texts)).to_pandas()
+
+    assert list(out_legacy["doc_name"]) == list(out_packed["doc_name"])
+    for a, b in zip(out_legacy["embedding"], out_packed["embedding"], strict=True):
+        assert len(a) == len(b)
+        for x, y in zip(a, b, strict=True):
+            assert math.isclose(x, y, rel_tol=1e-9, abs_tol=1e-12)
+    # And the chunk bookkeeping is preserved.
+    assert list(out_legacy["embedding_chunks_used"]) == list(
+        out_packed["embedding_chunks_used"]
+    )
+    assert list(out_legacy["embedding_chunking"]) == list(
+        out_packed["embedding_chunking"]
+    )
+
+
+def test_token_budget_sends_packed_requests() -> None:
+    """With a budget that fits several short docs, fewer backend calls fire."""
+
+    class _CountingBackend(_ContentBackend):
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def embed_batch(self, texts: list[str]) -> list[list[float]]:
+            self.calls.append(list(texts))
+            return super().embed_batch(texts)
+
+    texts = [f"short doc number {i}" for i in range(8)]
+    cfg = _cfg()
+    cfg.embedder.batch_token_budget = 4096  # all 8 short docs fit in one request
+    stage = NimEmbedderStage(cfg=cfg)
+    stage._entry = ModelEntry("fake/content", "nim", 4, True, None)
+    backend = _CountingBackend()
+    stage._backend = backend
+    stage.process(_batch(texts))
+    # Eight tiny docs packed into a single backend request (not 8).
+    assert len(backend.calls) == 1
+    assert len(backend.calls[0]) == 8
+
+
 def test_resolve_nim_base_url_prefers_embedder_then_parser_then_default() -> None:
     """Regression for H2: embedder NIM URL no longer reads from ``cfg.parser``.
 

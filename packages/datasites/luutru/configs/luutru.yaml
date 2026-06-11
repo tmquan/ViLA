@@ -1,0 +1,34 @@
+_base: default.yaml
+
+# luutru.gov.vn exposes its document corpus through a single
+# GET-paginated ASP.NET search surface:
+#
+#   /vanban.aspx?type={all,qppl,cddh}&p=N&shvb=&htvb=&lvvb=&cqbh=&trynd=
+#       type=qppl  -- văn bản quy phạm pháp luật (~292 pages × ~10/page)
+#       type=cddh  -- văn bản chỉ đạo điều hành    (~8 pages)
+#       type=all   -- QPPL + CĐĐH together          (~299 pages, ~3K docs)
+#
+# Each listing row links a detail page /xemchitietvanban.htm?id=<GUID>
+# whose "Tệp đính kèm" anchor points at the source PDF on
+# dms.luutru.gov.vn. The default below targets `type=all` (the full
+# corpus); narrow to a single class by overriding scraper.extra_params.type.
+
+scraper:
+  num_workers: 6
+  qps: 2.0                  # ~2 req/s is well within the polite envelope
+
+  listing_url: https://luutru.gov.vn/vanban.aspx
+  detail_url_template: https://luutru.gov.vn/xemchitietvanban.htm?id={doc_name}
+  warm_up_url: https://luutru.gov.vn/home.htm
+
+  paginated: true
+  page_param: p
+  start_page: 1
+  # max_pages: null -> last page read from the pager (~299 for type=all).
+  extra_params:
+    type: all
+    shvb: ""
+    htvb: ""
+    lvvb: ""
+    cqbh: ""
+    trynd: ""
