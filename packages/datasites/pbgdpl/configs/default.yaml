@@ -1,0 +1,99 @@
+# Default config for the pbgdpl crawler.
+#
+# OmegaConf-based. Use `_base: default.yaml` from a sibling file to
+# override any subset of this; lists are REPLACED, mappings are
+# DEEP-MERGED. CLI dotlist overrides via `--override path.to.key=value`
+# are applied last.
+#
+# Unlike anle / congbobanan, pbgdpl serves HTML-only Q&A pairs (no
+# PDF, no OCR), so the parser / extractor / embedder / reducer
+# sections are not consumed by this crawler. They are kept in the
+# typed PipelineCfg schema and left at their schema defaults so a
+# future curation step can pick up where this crawler stops without
+# a config-shape migration.
+
+host: pbgdpl.gov.vn
+output_dir: ./data
+full_text_context: 32768
+
+scraper:
+  num_workers: 4
+  qps: 2.0                          # 2 req/s, well within polite envelope
+  user_agent: "ViLA-research/0.1 (+https://example.vn/contact)"
+  proxy: null
+  timeout_s: 30.0
+  max_retries: 5                    # HTML page GET retries (exp backoff)
+  verify_tls: true
+  # Detail / listing fragments are tiny (5-12 KB), but the user
+  # control occasionally stalls under WAF interruption -- a long flat
+  # delay rides those out cheaply.
+  download_max_retries: 50
+  download_retry_delay_s: 30.0
+
+  # ---- pbgdpl-specific knobs (consumed by the harvester/downloader) ----
+
+  # The AJAX user control. Listing: ?page=N or ?page=N&lv=ID.
+  # Detail:  ?ItemID=ID. The same URL serves both surfaces.
+  listing_url: https://pbgdpl.gov.vn/SMPT_Publishing_UC/HoiDapPL/frmDSCauHoi.aspx
+
+  # Homepage where the LinhVuc taxonomy + featured set live.
+  index_url: https://pbgdpl.gov.vn/Pages/hoi-dap-pl.aspx
+
+  # When null, the harvester reads `last_page` from the pagination
+  # footer of page 1 (~575 as of 2026-05; ~4 600 Q&As, 8 per page).
+  max_pages: null
+
+  # Walk every populated LinhVuc topic to attach lv_ids per question
+  # (the only way to recover the topic taxonomy assignment, since the
+  # detail page does not expose it). Costs ~1 000 extra requests at
+  # the default 2 QPS; most topics are sparse but a few are very busy.
+  walk_lv: true
+  lv_max_pages: 100   # safety cap per topic; observed max < 30 in 2026
+
+  # Cache HTML fragments under html/listings/ + html/lv/ + html/items/
+  # so a partial run resumes cheaply.
+  cache_listings: true
+  cache_details: true
+
+  # Unused for pbgdpl (kept for schema compatibility with the other datasites).
+  detail_url_template: ""
+  pdf_url_template: ""
+  paginated: false
+  fetch_detail_page: false
+  fetch_head_before_download: false
+  selectors: {}
+  extra_params: {}
+  extra_headers: {}
+
+# The four downstream stages below have no consumer in pbgdpl yet;
+# they are kept so a future curation pipeline can read this same
+# config without re-shaping it.
+
+parser:
+  # Composite tag: under ``runtime: hybrid`` the local pypdf path
+  # handles ~70% of docs and the ``hybrid_fallback_runtime`` (default
+  # ``qwen3_6_omni``) handles the OCR-needed subset.
+  model_id: pypdf+qwen3.6-27b
+  runtime: hybrid
+  num_workers: 4
+
+extractor:
+  run_text_normalization: true
+  run_generic_layer: true
+  run_site_layer: false
+  run_structure_layer: true
+  llm_tier_for_ambiguous: fast
+  max_seq_length: "${..full_text_context}"
+
+embedder:
+  model_id: nvidia/llama-nemotron-embed-1b-v2
+  runtime: nim
+  batch_size: 16
+  max_seq_length: 8192
+  chunking: sliding
+  chunk_overlap: 256
+
+reducer:
+  methods: [pca, tsne, umap]
+  n_components: 2
+  prefer_gpu: true

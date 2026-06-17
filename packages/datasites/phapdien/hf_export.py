@@ -22,6 +22,7 @@ HF Datasets-Viewer surfaces all three tables.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import sys
@@ -86,6 +87,7 @@ ANCHOR_PREFIX = "#"
 # ``chapter_title``, ``content_text``, ...) keep their unsuffixed
 # names because there is no bilingual pair to disambiguate.
 _ARTICLE_SCHEMA = pa.schema([
+    pa.field("record_id",         pa.string()),
     pa.field("subject_id",          pa.string()),
     pa.field("topic_id",          pa.string()),
     pa.field("topic_number",      pa.int64()),
@@ -94,6 +96,7 @@ _ARTICLE_SCHEMA = pa.schema([
     pa.field("subject_number",      pa.int64()),
     pa.field("subject_title",       pa.string()),
     pa.field("subject_title_vi",    pa.string()),
+    pa.field("article_id",        pa.string()),
     pa.field("article_anchor",    pa.string()),
     pa.field("article_title",     pa.string()),
     pa.field("chapter_title",     pa.string()),
@@ -171,6 +174,10 @@ def _subject_en(title_vi: Any) -> str | None:
     return _SUBJECT_EN_INDEX.get(_nfc(str(title_vi)))
 
 
+def _content_hash(text: str | None) -> str:
+    return hashlib.sha1((text or "").encode("utf-8")).hexdigest()
+
+
 def _coerce_articles(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Project raw scraper rows into the published article schema.
 
@@ -179,8 +186,23 @@ def _coerce_articles(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     companions and joins the English label from the curated
     :mod:`packages.datasites.phapdien.ontology` translation tables
     onto the unsuffixed primary column.
+
+    Two identity fields are added here:
+
+    * ``article_id`` — the canonical ``Điều …`` citation code carried
+      from the scraper. Human-facing, but the source reuses a handful
+      of codes, so it is *not* a guaranteed-unique key.
+    * ``record_id`` — ``sha1(subject_id | article_id | content_hash)``
+      truncated to 16 hex chars. Unique per published row and used as
+      the dataset primary key.
+
+    Exact duplicates (same ``subject_id`` + ``article_id`` + content)
+    are dropped — the source occasionally lists an article twice within
+    one đề-mục.
     """
     out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    dropped = 0
     for r in rows:
         rec = dict(r)
         rec["topic_number"] = _to_int(rec.get("topic_number"))
@@ -191,10 +213,22 @@ def _coerce_articles(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         rec["topic_title_vi"] = topic_vi
         rec["subject_title"]    = _subject_en(subject_vi)
         rec["subject_title_vi"] = subject_vi
+        rec.setdefault("article_id", "")
+
+        chash = _content_hash(rec.get("content_text"))
+        identity = f"{rec.get('subject_id')}|{rec.get('article_id')}|{chash}"
+        if identity in seen:
+            dropped += 1
+            continue
+        seen.add(identity)
+        rec["record_id"] = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:16]
+
         anchor = rec.get("article_anchor")
         if anchor and not str(anchor).startswith(ANCHOR_PREFIX):
             rec["article_anchor"] = f"{ANCHOR_PREFIX}{anchor}"
         out.append(rec)
+    if dropped:
+        logger.info("dropped %d exact-duplicate article rows during export", dropped)
     return out
 
 
@@ -595,8 +629,9 @@ def render_card(analytics: dict[str, Any], license_id: str, repo_owner: str, rep
 > — bộ pháp điển chính thức do **Bộ Tư pháp** công bố. Mỗi dòng là một
 > **Điều** kèm toàn văn đã chuẩn hoá, chương sở thuộc, đề mục và chủ đề,
 > cùng đường liên kết quay về văn bản gốc trên
-> [`vbpl.vn`](https://vbpl.vn/). Mỗi Điều có một mã neo phân cấp ổn định
-> (ví dụ `Điều 1.1.LQ.1`) định danh duy nhất trong toàn bộ ngữ liệu.
+> [`vbpl.vn`](https://vbpl.vn/). Mỗi Điều mang một mã trích dẫn phân
+> cấp (`article_id`, ví dụ `Điều 1.1.LQ.1`) và một khoá dòng duy nhất
+> (`record_id`).
 >
 > 🇬🇧 **Summary.** Article-level corpus of the **Bộ Pháp Điển** — the
 > official codification of Vietnamese law published by the **Ministry
@@ -604,8 +639,9 @@ def render_card(analytics: dict[str, Any], license_id: str, repo_owner: str, rep
 > normalised legal text, the chapter it sits under, the đề-mục
 > (subject) and chủ-đề (topic) it belongs to, and back-links to the
 > originating instrument on [`vbpl.vn`](https://vbpl.vn/). Each article
-> carries a stable hierarchical anchor (e.g. `Điều 1.1.LQ.1`) that
-> uniquely identifies it across the entire corpus.
+> carries a hierarchical citation code (`article_id`, e.g.
+> `Điều 1.1.LQ.1`) and a guaranteed-unique row key (`record_id`); the
+> browsable source link is the `vbpl.vn` URL in `source_links`.
 
 ## Tổng quan · At a glance
 
@@ -666,6 +702,7 @@ no English counterpart on this source.
 
 | Trường · Field | Kiểu · Type | Mô tả · Description |
 |---|---|---|
+| `record_id` | string | Khoá dòng duy nhất, ổn định · Stable, **guaranteed-unique** row key — `sha1(subject_id \\| article_id \\| content_hash)[:16]`. Use this as the primary key. |
 | `subject_id` | string | UUID đề mục mà điều này thuộc về · UUID of the đề-mục this article belongs to. |
 | `topic_id` | string | UUID chủ đề chứa đề mục · UUID of the chủ-đề (topic) the đề-mục sits under. |
 | `topic_number` | int64 | Số thứ tự chủ đề (1–45) · Topic display number. |
@@ -674,7 +711,8 @@ no English counterpart on this source.
 | `subject_number` | int64 | Số thứ tự đề mục trong chủ đề · Đề-mục display number within its topic. |
 | `subject_title` | string | Tên đề mục tiếng Anh · Đề-mục name in **English**; joined from `ontology_subjects`. |
 | `subject_title_vi` | string | Tên đề mục tiếng Việt · Đề-mục name in **Vietnamese**. |
-| `article_anchor` | string | Mã neo phân cấp ổn định, có tiền tố `#` · Stable hierarchical id, prefixed with `#` (e.g. `#0100100000000000100000100000000000000000`). The `#` byte is required to keep the HF dataset-server stats engine from coercing the 40-digit id to a Python int and overflowing C `long`; strip it client-side to recover the raw id. |
+| `article_id` | string | Mã trích dẫn chính tắc · Canonical citation code, e.g. `Điều 39.13.TT.70.6`. Human-facing legal citation. **Note:** the source reuses ~200 codes, so this is *not* globally unique — use `record_id` as the primary key. |
+| `article_anchor` | string | Mã neo thô của cổng, có tiền tố `#` · Raw portal `<a name>` anchor, prefixed with `#` (e.g. `#0100100000000000100000100000000000000000`). The `#` byte keeps the HF dataset-server stats engine from coercing the 40-digit id to a Python int and overflowing C `long`; strip it client-side to recover the raw id. **Not unique** (the portal reuses some anchors) and may be empty — kept only for round-tripping back to the source page. |
 | `article_title` | string | Tiêu đề đầy đủ kèm tiền tố *Điều N.M.X.Y* · Full title incl. the *Điều N.M.X.Y* prefix and the article heading. |
 | `chapter_title` | string | Tiêu đề chương sở thuộc · Chapter heading the article sits under (`"Chương I - …"`), if any. |
 | `source_note_text` | string | Trích dẫn về văn bản gốc · Citation back to the originating instrument (`Luật/Nghị định/Thông tư`). |
@@ -683,7 +721,7 @@ no English counterpart on this source.
 | `content_text` | string | Toàn văn đã chuẩn hoá · Normalised article body (whitespace-collapsed, NBSP-stripped). |
 | `content_char_len` | int64 | Số ký tự `content_text` · Character count of `content_text`. |
 | `content_word_count` | int64 | Số từ `content_text` · Whitespace-token count of `content_text`. |
-| `source_url` | string | Liên kết sâu về phapdien.moj.gov.vn · Direct deep link back to the article on `phapdien.moj.gov.vn`. |
+| `source_url` | string | Định vị trên cổng phapdien.moj.gov.vn · Locator on the codification portal (`ViewBoPD.aspx?demucid=…#<anchor>`). **The portal renders article text client-side**, so this opens the đề-mục viewer rather than scrolling straight to the article — for a browsable source of record use the `vbpl.vn` URL in `source_links`. |
 | `scraped_at` | string | Thời điểm thu thập (UTC) · ISO-8601 UTC timestamp of capture. |
 
 ## Phân bố độ dài · Length distribution
@@ -844,9 +882,19 @@ def export(
     )
     paths["analytics"] = out_analytics
 
-    # Ontology figures + mermaid mindmap source.
-    viz_paths = render_viz(out_analytics, out_dir)
-    paths.update({f"viz_{k}": v for k, v in viz_paths.items()})
+    # Ontology figures + mermaid mindmap source. The figures are an
+    # optional embellishment (the comment in requirements.txt calls viz
+    # optional), so a missing viz dependency (matplotlib / squarify)
+    # must not abort the whole export — the parquet + card are the
+    # primary deliverables. Log and continue.
+    try:
+        viz_paths = render_viz(out_analytics, out_dir)
+        paths.update({f"viz_{k}": v for k, v in viz_paths.items()})
+    except ImportError as exc:
+        logger.warning(
+            "skipping ontology figures (missing viz dependency: %s); "
+            "install matplotlib + squarify to render them", exc,
+        )
 
     out_readme = out_dir / "README.md"
     out_readme.write_text(

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup, NavigableString, Tag
 
 from packages.common import PoliteSession, SiteLayout
 from packages.common.http import session_from_scraper_cfg
@@ -40,6 +40,17 @@ ACTION_URL = f"{BASE_URL}/TraCuuPhapDien/ActionHandler.aspx"
 _TREE_JSON_RE = re.compile(r"CreateTree',\s*'(.+?)'\s*,", re.S)
 _FILE_VERSION_RE = re.compile(r"fileVersion:\s*'([^']+)'")
 _WORD_RE = re.compile(r"\S+", re.UNICODE)
+
+#: Structural paragraph classes emitted by the portal's codified-text HTML.
+#: ``pChuong`` = chapter heading, ``pDieu`` = article heading, ``pGhiChu`` =
+#: source-note (citation + outbound links), ``pChiDan`` = related-article
+#: cross-reference. Everything else (chiefly ``pNoiDung``) is article body.
+_BLOCK_TAGS = ("p", "table")
+
+#: Defensive ceiling. After the document-order parser an article body should
+#: never approach this; a hit means the source HTML is malformed in a new way
+#: (e.g. an unclosed structural ``<p>`` nesting later articles) and is logged.
+_CONTENT_LEN_WARN = 200_000
 
 
 @dataclass
@@ -203,8 +214,8 @@ class PhapdienCrawler:
                     raise RuntimeError("ActionHandler returned empty Data")
                 if self._cache_html:
                     content_path.write_text(content_html, encoding="utf-8")
-            md_path.write_text(html_to_markdown_text(content_html), encoding="utf-8")
             articles = parse_articles(content_html, subject, view_url, scraped_at)
+            md_path.write_text(render_subject_markdown(subject, articles), encoding="utf-8")
             return base_meta, articles
         except Exception as exc:
             logger.exception("subject failed: %s", subject.subject_id)
@@ -322,91 +333,149 @@ def parse_articles(
     source_url: str,
     scraped_at: str,
 ) -> list[dict[str, Any]]:
-    """Split one de-muc HTML document into article-level records."""
+    """Split one de-muc HTML document into article-level records.
+
+    The codified text is a flat sequence of class-tagged ``<p>`` blocks
+    (``pChuong`` / ``pDieu`` / ``pGhiChu`` / ``pNoiDung`` / ``pChiDan``).
+    We walk those blocks in **document order** and attach each note /
+    body block to the most recent ``pDieu``.
+
+    Crucially we never recurse into a block's nested children for body
+    text: some de-muc HTML ships a malformed, unclosed ``<p
+    class="pNoiDung">`` that the HTML parser repairs by nesting *every
+    subsequent article* inside it. A naive ``get_text()`` on such a
+    block swallows the rest of the document into one article (observed:
+    a single 8 MB "article" holding 3,765 nested ones). Using
+    :func:`_own_text` — text that belongs to the block itself, excluding
+    any nested ``<p>`` / ``<table>`` — keeps each article bounded; the
+    nested articles are still visited in their own right by the
+    document-order walk.
+    """
     soup = BeautifulSoup(content_html, "html.parser")
     records: list[dict[str, Any]] = []
     chapter_parts: list[str] = []
-    for p in soup.find_all("p"):
-        classes = set(p.get("class") or [])
+    current: dict[str, Any] | None = None
+    content_chunks: list[str] = []
+
+    def _flush() -> None:
+        if current is None:
+            return
+        content_text = "\n".join(content_chunks).strip()
+        if len(content_text) > _CONTENT_LEN_WARN:
+            logger.warning(
+                "oversized article body subject=%s anchor=%s len=%d (possible malformed HTML)",
+                subject.subject_id, current["article_anchor"], len(content_text),
+            )
+        current["content_text"] = content_text
+        current["content_char_len"] = len(content_text)
+        current["content_word_count"] = len(_WORD_RE.findall(content_text))
+        records.append(current)
+
+    for block in soup.find_all(_BLOCK_TAGS):
+        classes = set(block.get("class") or [])
         if "pChuong" in classes:
-            text = _clean_text(p.get_text(" "))
+            text = _own_text(block)
             if text:
                 if text.lower().startswith("chương"):
                     chapter_parts = [text]
                 elif chapter_parts:
                     chapter_parts.append(text)
             continue
-        if "pDieu" not in classes:
-            continue
-        article_title = _clean_text(p.get_text(" "))
-        anchor = ""
-        a = p.find("a", attrs={"name": True})
-        if a is not None:
-            anchor = str(a.get("name") or "")
-
-        source_note = ""
-        related_note = ""
-        content_chunks: list[str] = []
-        source_links: list[dict[str, str]] = []
-        for sib in p.next_siblings:
-            if isinstance(sib, Tag):
-                sib_classes = set(sib.get("class") or [])
-                if "pDieu" in sib_classes or "pChuong" in sib_classes:
-                    break
-                text = _clean_text(sib.get_text(" "))
-                if not text:
-                    continue
-                if "pGhiChu" in sib_classes:
-                    source_note = text
-                    source_links = [
-                        {"text": _clean_text(a.get_text(" ")), "href": str(a.get("href") or "")}
-                        for a in sib.find_all("a")
-                    ]
-                elif "pChiDan" in sib_classes:
-                    related_note = text
-                else:
-                    content_chunks.append(text)
-        content_text = "\n".join(content_chunks).strip()
-        records.append(
-            {
+        if "pDieu" in classes:
+            _flush()
+            content_chunks = []
+            anchor = ""
+            a = block.find("a", attrs={"name": True})
+            if a is not None:
+                anchor = str(a.get("name") or "")
+            article_title = _own_text(block)
+            current = {
                 "subject_id": subject.subject_id,
                 "topic_id": subject.topic_id,
                 "topic_number": subject.topic_number,
                 "topic_title": subject.topic_title,
                 "subject_number": subject.subject_number,
                 "subject_title": subject.subject_title,
+                "article_id": _article_code(article_title),
                 "article_anchor": anchor,
                 "article_title": article_title,
                 "chapter_title": " - ".join(chapter_parts),
-                "source_note_text": source_note,
-                "source_links": source_links,
-                "related_note_text": related_note,
-                "content_text": content_text,
-                "content_char_len": len(content_text),
-                "content_word_count": len(_WORD_RE.findall(content_text)),
+                "source_note_text": "",
+                "source_links": [],
+                "related_note_text": "",
+                "content_text": "",
+                "content_char_len": 0,
+                "content_word_count": 0,
                 "source_url": f"{source_url}#{anchor}" if anchor else source_url,
                 "scraped_at": scraped_at,
             }
-        )
+            continue
+        if current is None:
+            continue
+        text = _own_text(block)
+        if not text:
+            continue
+        if "pGhiChu" in classes:
+            current["source_note_text"] = text
+            current["source_links"] = [
+                {"text": _clean_text(a.get_text(" ")), "href": str(a.get("href") or "")}
+                for a in block.find_all("a")
+            ]
+        elif "pChiDan" in classes:
+            current["related_note_text"] = text
+        else:
+            content_chunks.append(text)
+
+    _flush()
     return records
 
 
-def html_to_markdown_text(content_html: str) -> str:
-    soup = BeautifulSoup(content_html, "html.parser")
-    for tag in soup(["script", "style", "link"]):
-        tag.decompose()
-    lines: list[str] = []
-    for elem in soup.find_all(["h1", "h2", "h3", "p"]):
-        text = _clean_text(elem.get_text(" "))
-        if not text:
+def _own_text(block: Tag) -> str:
+    """Return text that belongs to ``block`` itself.
+
+    Excludes text inside nested ``<p>`` / ``<table>`` descendants, which
+    the document-order walk visits as their own blocks. This makes the
+    parser immune to malformed, unclosed structural ``<p>`` elements
+    that otherwise nest later articles inside an earlier one.
+    """
+    parts: list[str] = []
+    for desc in block.descendants:
+        if not isinstance(desc, NavigableString):
             continue
-        classes = set(elem.get("class") or [])
-        if elem.name in {"h1", "h2", "h3"}:
-            lines.extend(["", f"# {text}", ""])
-        elif "pChuong" in classes or "pDieu" in classes:
-            lines.extend(["", f"## {text}", ""])
-        else:
-            lines.append(text)
+        ancestor = desc.parent
+        nested = False
+        while ancestor is not None and ancestor is not block:
+            if ancestor.name in _BLOCK_TAGS:
+                nested = True
+                break
+            ancestor = ancestor.parent
+        if not nested:
+            parts.append(str(desc))
+    return _clean_text(" ".join(parts))
+
+
+def render_subject_markdown(
+    subject: SubjectNode, articles: list[dict[str, Any]]
+) -> str:
+    """Render a de-muc's parsed articles to a plain markdown-ish body.
+
+    Built from the parsed article records (not a second HTML walk) so it
+    stays consistent with ``articles.jsonl`` and inherits the same
+    immunity to the malformed-nesting bug.
+    """
+    lines: list[str] = [f"# {subject.subject_title}".rstrip(), ""]
+    last_chapter = None
+    for art in articles:
+        chapter = art.get("chapter_title") or ""
+        if chapter and chapter != last_chapter:
+            lines.extend([f"## {chapter}", ""])
+            last_chapter = chapter
+        title = art.get("article_title") or ""
+        if title:
+            lines.extend([f"### {title}", ""])
+        body = art.get("content_text") or ""
+        if body:
+            lines.extend([body, ""])
     return "\n".join(lines).strip() + "\n"
 
 
@@ -436,6 +505,28 @@ def _text_without_action_links(value: str) -> str:
     for a in soup.find_all("a"):
         a.decompose()
     return _clean_text(soup.get_text(" "))
+
+
+def _article_code(article_title: str) -> str:
+    """Extract the canonical citation code from an article title.
+
+    Article titles are ``Điều <CODE>. <heading>`` where ``<CODE>`` is a
+    dot-separated, whitespace-free token (e.g. ``39.13.TT.70.6`` or
+    ``1.10.LQ.28a``). The code is the canonical legal citation and the
+    dataset's human-facing ``article_id``. Returns ``""`` if the title
+    does not start with ``Điều``.
+
+    Note: the codification source contains a small number (~200) of
+    genuinely reused codes across/within de-muc, so this id is a
+    citation — not a guaranteed-unique primary key. The export layer
+    mints a unique ``record_id`` for that.
+    """
+    text = (article_title or "").strip()
+    if not text.startswith("Điều"):
+        return ""
+    rest = text[len("Điều"):].strip()
+    token = rest.split(" ", 1)[0]
+    return f"Điều {token.rstrip('.')}" if token else ""
 
 
 def _split_numbered_title(text: str, kind: str) -> tuple[str, str]:
@@ -471,6 +562,7 @@ __all__ = [
     "build_subject_index",
     "parse_articles",
     "parse_tree_nodes",
+    "render_subject_markdown",
     "run_detail",
     "run_pipeline",
     "run_tree",

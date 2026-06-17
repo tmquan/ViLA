@@ -1,0 +1,145 @@
+# Default config for the anle pipeline.
+#
+# OmegaConf-based. Use `_base: default.yaml` from a sibling file to
+# override any subset of this; lists are REPLACED, mappings are
+# DEEP-MERGED. Hydra-style dotlist overrides are accepted on the CLI
+# via `--override path.to.key=value`.
+#
+# `full_text_context` is the pipeline-wide token budget for stages that
+# must read a full Vietnamese legal document in one pass (bản án / cáo
+# trạng / án lệ are long). Stages that care reference it via
+# `${..full_text_context}` so a single override propagates everywhere.
+
+host: anle.toaan.gov.vn
+output_dir: ./data
+full_text_context: 32768
+
+scraper:
+  num_workers: 4
+  qps: 1.0
+  user_agent: "ViLA-research/0.1 (+https://example.vn/contact)"
+  proxy: null
+  timeout_s: 30.0
+  max_retries: 5                 # HTML page GETs; exp backoff 1.5^n
+  # Binary-download retry. PDF endpoints on VN .gov.vn hosts flake on
+  # minute scales; a long flat delay rides these out without flooding
+  # the server on recovery.
+  download_max_retries: 50       # attempts per PDF before giving up
+  download_retry_delay_s: 30.0   # flat delay between attempts
+  # DNS resolution failures (EAI_AGAIN) are retried on a separate
+  # longer-budget channel: a transient systemd-resolved hiccup
+  # shouldn't burn the request/download retry budgets above (which
+  # are tuned for 5xx / connection resets).
+  dns_max_retries: 12
+  dns_retry_delay_s: 5.0
+  listing_url: https://anle.toaan.gov.vn/webcenter/portal/anle/anle
+  detail_url_template: https://anle.toaan.gov.vn/webcenter/portal/anle/chitietanle?dDocName={doc_name}
+  listing_pages: []           # override to enumerate paged listings
+  # Oracle ADF paginated-listing support (see anle.yaml for nguonanle).
+  paginated: false
+  page_param: selectedPage
+  start_page: 1
+  max_pages: null
+  page_detect_cap: 5000
+  page_detect_probes: [10, 50, 100, 200, 500, 1000, 2000, 5000]
+  extra_params: {}
+  extra_headers: {}
+  fetch_detail_page: true
+  fetch_head_before_download: true
+  selectors: {}               # override to point at custom CSS selectors
+
+parser:
+  # Composite tag: under ``runtime: hybrid`` the local pypdf path
+  # handles ~70% of docs and the ``hybrid_fallback_runtime``
+  # (default ``qwen3_6_omni``) handles the OCR-needed subset. Both
+  # ids are surfaced together so meta.json captures the dispatched
+  # backend per-row. The legacy ``nvidia/nemoretriever-parse`` slug
+  # is preserved only for pre-2026-05 manifest back-compat.
+  model_id: pypdf+qwen3.6-27b
+  # hybrid: pypdf first, qwen3.6-27b fallback on image-only scans /
+  # font-corrupt docs (via rasterization + OCR on the self-hosted
+  # vLLM endpoint at ``${oc.env:QWEN3_6_OMNI_BASE_URL,...}``).
+  # Switch to ``local`` for pypdf-only, or ``nim`` to force every
+  # PDF through the legacy cloud nemoretriever-parse NIM (needs
+  # NVIDIA_API_KEY).
+  runtime: hybrid
+  min_local_chars: 50
+  num_workers: 4
+  nim_base_url: "${oc.env:NIM_BASE_URL,https://integrate.api.nvidia.com/v1}"
+  nim_tool: markdown_bbox         # markdown_bbox | markdown_no_bbox | detection_only
+  nim_dpi: 150                    # PDF -> PNG raster resolution
+  timeout_s: 120.0
+
+extractor:
+  # Declarative normalizer chain (wiki/DATASITES.md §3.5). anle ships only the
+  # universal baseline -- the in-process precedent extractor
+  # (run_site_layer) handles án lệ-specific cleanup downstream
+  # because those normalizers depend on the structured fields
+  # (parties, court, ...) the site layer emits.
+  #
+  # ``run_text_normalization: false`` because the chain already owns
+  # normalization; leaving the inline ``normalize_text`` on would
+  # double-normalize ``markdown`` (idempotent but wasteful).
+  normalizers:
+    - vietnamese_text
+  run_text_normalization: false
+  run_generic_layer: true
+  run_site_layer: true
+  run_structure_layer: true
+  llm_tier_for_ambiguous: fast
+  max_seq_length: "${..full_text_context}"
+
+# Parquet consumption tier shard sizing -- anle uses the wiki/DATASITES.md
+# §3.5 default (10K rows / shard) because precedent rows are thin
+# (no structure_json blob; the body is the markdown).
+# Override here only if shard sizes ever balloon past the HF dataset-
+# viewer cap; today the default is fine.
+
+embedder:
+  # Default: llama-nemotron-embed-1b-v2 served via NIM.
+  # 8k native context; use sliding-window chunking to cover the
+  # pipeline-wide full_text_context (32k) across multiple chunks
+  # aggregated by mean pooling. See packages/embedder/embedder.py.
+  model_id: nvidia/llama-nemotron-embed-1b-v2
+  runtime: nim
+  batch_size: 8
+  max_seq_length: 8192         # model window (not full_text_context)
+  chunking: sliding            # off | sliding | sentence
+  chunk_overlap: 256           # tokens (converted to chars internally)
+  model_dtype: bfloat16
+  device: auto
+
+reducer:
+  methods: [pca, tsne, umap]
+  n_components: 2
+  prefer_gpu: true
+
+visualizer:
+  color_by:
+    # Structure-extractor meta (lifted from structure.meta into
+    # top-level columns by packages.visualizer.base._promote_structure_meta).
+    - case_type            # dan_su / hinh_su / hon_nhan_gia_dinh / ...
+    - doc_type             # ban_an / quyet_dinh / an_le / ...
+    - doc_subtype          # so_tham / phuc_tham / giam_doc_tham / ...
+    - court_level          # huyen / tinh / cap_cao / toi_cao
+    # Ontology-aligned + clustering
+    - legal_type
+    - legal_relation
+    - procedure_type
+    - legal_arc
+    - code_id
+    - cluster_id
+  distribution_enums:
+    - LegalRelation
+    - ProcedureType
+    - PenaltyType
+    - OutcomeCode
+    - ExitCode
+    - SeverityBand
+    - CourtLevel
+  dimensions: [pca, tsne, umap]
+  top_n_articles: 20
+  dashboard_title: "ViLA - anle.toaan.gov.vn exploration"
+  emit_notebook: true
+  emit_png: false
+  theme: plotly_white

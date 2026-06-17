@@ -21,6 +21,7 @@ Vietnamese legal data sources
 +- Primary (statute and normative)
 |   +- vanban.chinhphu.vn             (government)                 [HTML + PDF]
 |   +- moj.gov.vn                     (Ministry of Justice)        [HTML + PDF]
+|   +- phapdien.moj.gov.vn            (Bộ Pháp Điển - codified law)[HTML/WebForms]
 |   +- quochoi.vn                     (National Assembly)          [HTML + PDF]
 |
 +- Secondary (aggregators)
@@ -81,7 +82,7 @@ publication of court judgments.
   scanned, most are text-extractable).
 - **Update frequency**: daily crawl. Incremental by `publish_date` cursor
   (state stored in `scraper_state` table). Full re-crawl quarterly for
-  changed documents (see 2.6 on corrections).
+  changed documents (see 2.7 on corrections).
 - **Legal / ethical**:
   - Public data published by a government authority; no ToS prohibition on
     research use.
@@ -176,14 +177,66 @@ publication of court judgments.
   | `effective_from` | date |
   | `effective_to` | date (nullable) |
 
-### 2.5 `toaan.gov.vn` — Courts portal
+### 2.5 `phapdien.moj.gov.vn` — Bộ Pháp Điển (codified law)
+
+The official **codification** of Vietnamese law (`Bộ Pháp Điển`)
+published by the Ministry of Justice. Distinct from `vbpl.vn`: it
+re-organizes the statute corpus into a stable three-level ontology
+(**Chủ đề** topic → **Đề mục** subject → **Điều** article) and is the
+cleanest article-level source we have (~64K articles, 42 topics, 202
+đề-mục).
+
+- **Access method**: ASP.NET WebForms; **no public JSON/SOAP API**. The
+  reachable surfaces are `TreeBoPD.aspx` (embeds the full jstree topic
+  tree), `ViewBoPD.aspx?demucid=<uuid>&mapc=1` (a shell that yields a
+  `fileVersion` token), and `ActionHandler.aspx` (`do=html`, returns
+  the codified HTML body). The site is fronted by a `wcdnga.com` CDN.
+- **Integration method**: shipped at
+  [`packages/datasites/phapdien/`](../packages/datasites/phapdien/).
+  Two stages — `tree` (topic/đề-mục tree) and `detail` (per-đề-mục
+  content + article-level JSONL) — write JSONL directly (article-shaped,
+  not document-shaped, so no parse/extract/embed/reduce chain).
+  Published as
+  [`tmquan/phapdien-moj-gov-vn`](https://huggingface.co/datasets/tmquan/phapdien-moj-gov-vn).
+- **Data schema (`articles`)**:
+
+  | Field | Type | Notes |
+  |-------|------|-------|
+  | `record_id` | string | guaranteed-unique row key (`sha1(subject_id\|article_id\|content_hash)[:16]`) |
+  | `article_id` | string | canonical citation code, e.g. `Điều 39.13.TT.70.6` (human-facing; **not** globally unique — source reuses ~200 codes) |
+  | `article_anchor` | string | raw portal `<a name>`; **not unique**, may be empty |
+  | `article_title` | string | full `Điều …` heading |
+  | `chapter_title` | string | `Chương …` the article sits under |
+  | `content_text` | longtext | normalized article body |
+  | `source_note_text` / `source_links` | string / list | citation back to the originating instrument on `vbpl.vn` |
+  | `source_url` | string | portal locator (`ViewBoPD.aspx?demucid=…#anchor`) |
+
+- **Parser caveats** (important — see the crawler's `parse_articles`):
+  - Article bodies are extracted by a **document-order block walk**
+    using *own-text* (text not belonging to a nested `<p>`/`<table>`).
+    This is deliberate: some đề-mục ship a malformed, unclosed
+    `<p class="pNoiDung">` that the HTML parser repairs by nesting every
+    later article inside it; a naive `get_text()` would merge the rest
+    of the document into one giant "article" (observed: a single 8 MB
+    row containing 3,765 nested articles).
+  - `source_url` is a **programmatic locator, not a browsable deep
+    link**: the portal renders the article text client-side, so opening
+    the URL shows the đề-mục viewer, not the article. The browsable
+    source of record is the `vbpl.vn` link in `source_links`.
+  - `article_anchor` (the portal `<a name>`) is **not unique** and is
+    kept only for round-tripping; use `record_id` as the primary key
+    and `article_id` as the citation.
+- **Legal / ethical**: public, paywall-free government codification.
+  Redistribution credits the Ministry of Justice (Bộ Tư pháp).
+
+### 2.6 `toaan.gov.vn` — Courts portal
 
 - **Content**: organizational information, news, and links. Used to build
   the canonical `courts` dimension table (province, city, court level).
 - **Integration method**: one-shot HTML scrape, versioned, refreshed yearly
   or when an administrative change occurs.
 
-### 2.6 Corrections, deprecation, and supersession
+### 2.7 Corrections, deprecation, and supersession
 
 Legal data is not immutable:
 

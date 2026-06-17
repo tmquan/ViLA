@@ -40,6 +40,7 @@ ARTICLE_FIELDS: list[str] = [
     "topic_title",
     "subject_number",
     "subject_title",
+    "article_id",
     "article_anchor",
     "article_title",
     "chapter_title",

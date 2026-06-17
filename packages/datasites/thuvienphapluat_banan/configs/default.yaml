@@ -1,0 +1,222 @@
+# Default config for the thuvienphapluat_banan crawler.
+#
+# OmegaConf-based. A sibling YAML can override any subset of this via
+# `_base: default.yaml`; lists are REPLACED, mappings are DEEP-MERGED.
+# CLI dotlist overrides via `--override path.to.key=value` are applied
+# last.
+#
+# Architectural notes (2026-05 cutover):
+#
+# * The portal's paginated search endpoint
+#   ``/banan/tim-ban-an?page=N`` is permanently fronted by a Cloudflare
+#   Turnstile JS challenge (HTTP 403 to every non-browser client). The
+#   slugless detail shortcut ``/banan/ban-an/x-<id>`` and the PDF CDN
+#   ``cdn.thuvienphapluat.vn/uploads/danluat/FileAttack/BA/...`` are
+#   open. We therefore enumerate the integer ``ban_an_id`` space at
+#   harvest time (sibling of thuvienphapluat_tnpl) instead of walking
+#   listing pages.
+# * Every detail page embeds the full judgment as an inline PDF (via
+#   PDF.js). The parse stage runs on those PDFs (qwen3.6_omni hybrid
+#   fallback by schema default) rather than the in-process HTML body
+#   parser. The HTML sidebar is still mined for metadata
+#   (court, doc_number, trial_level, legal_area, issue_date, keywords,
+#   related ids) by the detail stage.
+#
+# Stage map:
+#   harvest  -- in-process; ID-range emitter (no HTTP for the listing
+#               itself, best-effort taxonomy snapshot of /banan/)
+#   detail   -- in-process; PoliteSession + ThreadPoolExecutor + 403
+#               cool-down; writes docs.jsonl with sidebar + pdf_url
+#   download -- in-process; PDF fetcher (CDN, no auth)
+#   parse    -- Curator + Ray (PdfParseStage, qwen3.6 fallback)
+#   extract  -- Curator + Ray
+#   embed    -- Curator + Ray
+#   reduce   -- Curator + Ray
+
+host: thuvienphapluat_vn_banan
+output_dir: ./data
+full_text_context: 32768
+
+# ---- Stage 1+2 (in-process: harvest / detail) -----------------------
+# Shared between the ID-range harvester and the detail downloader.
+
+scraper:
+  num_workers: 4
+  qps: 2.0                          # 2 req/s; polite for the host
+  user_agent: "ViLA-research/0.1 (+https://example.vn/contact)"
+  proxy: null
+  timeout_s: 30.0
+  max_retries: 5                    # HTML page GET retries (exp backoff)
+  verify_tls: true
+  download_max_retries: 50
+  download_retry_delay_s: 30.0
+
+  # ---- Per-status retry policy --------------------------------------
+  # `skip_finished_statuses` filters the detail work queue down to
+  # truly unfinished ids; their existing docs.jsonl rows are carried
+  # over verbatim. Use to mop up transient failures without
+  # re-walking the cached corpus:
+  #
+  #   --override 'scraper.skip_finished_statuses=[ok,not_found]'
+  skip_finished_statuses: []
+
+  # ---- Cloudflare 403 cool-down --------------------------------------
+  # The shared PoliteSession retries 429/5xx with exponential backoff
+  # but treats 403 as terminal. thuvienphapluat.vn's Cloudflare WAF
+  # ban-buckets aggressive IPs into 5-15 min 403 windows; the
+  # downloader sleeps `http_403_initial_delay_s`, doubles up to
+  # `http_403_max_delay_s`, up to `http_403_max_retries` times before
+  # tagging the row `http_403`. Set max_retries=0 to disable.
+  http_403_initial_delay_s: 60.0
+  http_403_max_delay_s: 600.0
+  http_403_max_retries: 5
+
+  # ---- ID-range enumeration (replaces the paginated harvester) ------
+  # id_start ≤ ban_an_id ≤ max_id. When `max_id` is null the harvester
+  # sniffs the landing page for the largest visible id and adds
+  # `id_buffer`. When the landing page is blocked, falls back to a
+  # 2026-05-recon-floor of 381 970 + buffer.
+  id_start: 1
+  max_id: null
+  id_buffer: 5000
+
+  # Slugless detail shortcut; the portal 302's to the canonical
+  # /banan/ban-an/<slug>-<id> URL. We use the shortcut so the cache
+  # key stays integer-only and survives any slug drift.
+  detail_url_template: "https://thuvienphapluat.vn/banan/ban-an/x-{id}"
+
+  # Best-effort taxonomy snapshot (200 expected, but landing too can
+  # 403 on cold cache; harvester writes a stub if blocked).
+  taxonomy_url: "https://thuvienphapluat.vn/banan/"
+
+  # Cache HTML so a partial run resumes cheaply.
+  cache_listings: true
+  cache_details: true
+
+  # ---- Retired but kept for schema compatibility --------------------
+  # The paginated harvester is gone (Turnstile-blocked endpoint). These
+  # fields stay only so OmegaConf strict mode does not error on the
+  # shared ScraperCfg schema; nothing reads them.
+  listing_url_template: ""
+  listing_url: ""
+  pdf_url_template: ""
+  paginated: false
+  start_page: 1
+  max_pages: null
+  min_card_threshold: 1
+  fetch_detail_page: false
+  fetch_head_before_download: false
+  selectors: {}
+  extra_params: {}
+  extra_headers: {}
+
+# ---- Stage 4: parse (Curator + Ray; PdfParseStage) -----------------
+# qwen3.6_omni hybrid fallback is the schema default (see
+# packages/common/schemas.py::ParserCfg). The parse stage reads the
+# downloaded PDFs from `pdf/<ban_an_id>.{pdf,docx,doc,rtf}` and writes
+# `md/<ban_an_id>.md` + `<ban_an_id>.meta.json`. Operators can
+# override the fallback backend per-deploy via the env var:
+#
+#   HYBRID_FALLBACK_RUNTIME=nemotron_omni python -m packages.datasites.thuvienphapluat_banan --pipeline parse
+#
+# The min_body_chars guard catches WAF-stripped HTML bodies (legacy
+# in-process parser) and stub OCR output alike; `force` re-emits every
+# md/<id>.md on the next run.
+parser:
+  # Inherit schema defaults:
+  #   model_id: pypdf+qwen3.6-27b
+  #   runtime:  hybrid
+  #   hybrid_fallback_runtime: ${oc.env:HYBRID_FALLBACK_RUNTIME,qwen3_6_omni}
+  hybrid_fallback_runtime: "${oc.env:HYBRID_FALLBACK_RUNTIME,qwen3_6_omni}"
+  num_workers: 4
+  min_body_chars: 50
+  force: false
+  # Parser-side normalisation: lift the vbpl/congbobanan repair chain
+  # so OCR-derived markdown gets the same Vietnamese-text cleanup as
+  # the legal-document corpus.
+  normalizers:
+    - vietnamese_text
+    - letter_spaced_collapse
+
+# ---- Stage 5: extract (Curator + Ray) -------------------------------
+extractor:
+  normalizers:
+    - vietnamese_text
+  run_text_normalization: false
+  run_generic_layer: true
+  # Precedent (`án lệ`) normaliser targets Supreme-Court precedents,
+  # not general bản án; leave off until a banan-specific layer ships.
+  run_site_layer: false
+  run_structure_layer: true
+  llm_tier_for_ambiguous: fast
+  num_workers: 4
+  max_seq_length: "${..full_text_context}"
+
+# Parquet consumption tier shard sizing (wiki/DATASITES.md §3.5.4).
+shards:
+  doc_chunk_size: 5000
+
+# ---- Stage 6: embed (Curator + Ray) ---------------------------------
+embedder:
+  model_id: nvidia/llama-nemotron-embed-1b-v2
+  runtime: nim                  # nim | hf | auto
+  batch_size: 16
+  max_seq_length: 8192
+  chunking: sliding             # off | sliding | sentence
+  chunk_overlap: 256
+  model_dtype: bfloat16
+  device: auto
+
+# ---- Stage 7: reduce (Curator + Ray) --------------------------------
+reducer:
+  methods: [pca, tsne, umap]
+  n_components: 2
+  prefer_gpu: true
+  hdbscan_min_cluster_size: 50
+  hdbscan_min_samples: 10
+  max_chars: 8000
+
+# ---- Curator executor + Ray bootstrap -------------------------------
+executor:
+  name: xenna                   # xenna | ray_actor_pool | ray_data
+  mode: streaming
+  logging_interval: 60
+  autoscale_interval_s: 180
+  cpu_allocation_percentage: 0.9
+  ignore_failures: false
+
+ray:
+  address: null                 # None | "auto" | "ray://head:10001"
+  runtime_env: {}
+  num_cpus: null
+  num_gpus: null
+
+stage_overrides:
+  embed_files_per_partition: 4
+  # Reducer fits per partition; keep the whole corpus in ONE partition
+  # so PCA/UMAP coordinates and cluster_ids stay globally comparable.
+  reduce_files_per_partition: 100000
+  # Parse stage: PDFs are ~150-600 KB each; 32 PDFs / partition fits
+  # comfortably in worker RAM for the qwen3.6 hybrid splice.
+  parse_files_per_partition: 32
+
+# ---- Visualizer -----------------------------------------------------
+visualizer:
+  color_by:
+    - case_kind
+    - procedure
+    - trial_level
+    - legal_area
+    - year
+    - cluster_id
+  distribution_enums:
+    - case_kind
+    - procedure
+    - trial_level
+    - legal_area
+  dimensions: [pca, tsne, umap]
+  top_n_articles: 25
+  dashboard_title: "thuvienphapluat — Bản án"
+  emit_notebook: true
+  emit_png: true
+  theme: light

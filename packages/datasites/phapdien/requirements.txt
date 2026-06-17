@@ -18,8 +18,10 @@ omegaconf>=2.3,<3.0
 pyarrow>=15.0
 huggingface_hub>=0.23
 
-# --- optional viz (viz.py) -----------------------------------------
-# matplotlib is lazy-imported inside viz.py functions, so installs that
-# never call render_all() / render_mermaid_mindmap() don't need it. Pin
-# loosely so a fork can pick its own version.
-# matplotlib>=3.7
+# --- viz (viz.py, required by hf_export render_all) ----------------
+# matplotlib + squarify are lazy-imported inside viz.py, but
+# hf_export.export() calls render_all() (topic figures, treemap,
+# sunburst, instrument hierarchy), so both are required for the
+# documented export flow. Pin loosely so a fork can pick its own version.
+matplotlib>=3.7
+squarify>=0.4

@@ -1,0 +1,301 @@
+# Default config for the congbobanan pipeline.
+#
+# OmegaConf-based; use `_base: default.yaml` from a sibling file to
+# override any subset. Hydra-style dotlist overrides accepted on the
+# CLI via `--override path.to.key=value`.
+#
+# congbobanan.toaan.gov.vn is an integer-ID portal: every published
+# judgment is addressed as /2taNt1cvn/chi-tiet-ban-an and the URL
+# generator enumerates [start_id .. end_id] without hitting the
+# network. Real crawls override start_id / end_id on the CLI.
+
+host: congbobanan.toaan.gov.vn
+output_dir: ./data
+full_text_context: 32768
+# Smoke-test default: crawl a tiny slice. Real runs override this on
+# the CLI (`--override scraper.start_id=1 scraper.end_id=2100400`).
+limit: null
+
+scraper:
+  num_workers: 4
+  qps: 1.0                  # the WAF is strict; keep polite
+  user_agent: "ViLA-research/0.1 (+https://example.vn/contact)"
+  proxy: null               # congbobanan refuses non-VN IPs; set a VN proxy
+  timeout_s: 30.0
+  max_retries: 5
+  # WARNING: disables TLS verification for ALL congbobanan traffic.
+  # The .gov.vn certificate chain is not in the Mozilla bundle, so the
+  # supported path is shipping a custom CA bundle via REQUESTS_CA_BUNDLE
+  # and overriding this to ``true``. The default stays ``false`` only
+  # because that's what current operators rely on -- review per
+  # deployment.
+  verify_tls: false
+  download_max_retries: 50
+  download_retry_delay_s: 30.0
+  # Separate, longer-budget retry channel for DNS resolution failures
+  # (EAI_AGAIN, EAI_NONAME). systemd-resolved on the worker host can
+  # stall for tens of seconds under concurrent load against .gov.vn
+  # nameservers; the request/download retry budgets above are tuned
+  # for 5xx / connection resets and would give up too early.
+  dns_max_retries: 12
+  dns_retry_delay_s: 5.0
+
+  # URL templates
+  detail_url_template: "https://congbobanan.toaan.gov.vn/2ta{case_id}t1cvn/chi-tiet-ban-an"
+  pdf_url_template: "https://congbobanan.toaan.gov.vn/3ta{case_id}t1cvn/"
+
+  # Integer-ID range crawler
+  start_id: 1
+  end_id: 100               # bump to ~2_100_400 for the full corpus
+  retry_empty_detail: true  # re-fetch once if the first detail GET is a ghost
+
+  extra_headers:
+    Accept: "*/*"
+    Accept-Language: "vi-VN,vi;q=0.9,en;q=0.8"
+
+parser:
+  # Cloud NIM chat model (OpenAI-compatible). ``nvidia/nemotron-parse``
+  # is the canonical NIM endpoint slug per NVIDIA's NIM OpenAPI spec;
+  # it auto-routes to the latest deployed revision (currently v1.2,
+  # HF: nvidia/NVIDIA-Nemotron-Parse-v1.2, released 2026-02).
+  # Only consumed when ``runtime`` is ``hybrid`` or ``nim`` -- the
+  # ``nemotron_omni`` runtime uses ``omni_model`` below.
+  #
+  # Composite tag: under runtime=hybrid the local pypdf path handles
+  # ~70% of docs and the qwen3_6_omni fallback handles the OCR-needed
+  # B'+C+D subset. Both ids are surfaced together so meta.json's
+  # parser_model field captures the dispatched-at-the-stage answer
+  # rather than the unconditional fallback id.
+  model_id: pypdf+qwen3.6-27b
+  # Active runtime. Defaults (since the 2026-05-30 hybrid-cutover) to
+  # ``hybrid`` -- pypdf for the ~70% of digital-text PDFs in the
+  # corpus, with the OCR-needed B'+C+D subset (~30%) falling through
+  # to ``hybrid_fallback_runtime`` (default ``qwen3_6_omni`` -- the
+  # self-hosted Qwen3.6-27B-FP8 vLLM at http://localhost:8000/v1).
+  # Override via PARSER_RUNTIME env var, e.g.
+  # ``PARSER_RUNTIME=qwen3_6_omni`` to force every doc through OCR
+  # (the pre-cutover behavior, ~5x slower but skips pypdf entirely),
+  # or ``PARSER_RUNTIME=nemotron_omni`` to roll back to the prior
+  # nemotron-3-nano-omni-30b NIM (still wired in
+  # ``packages/parser/stage.py`` for that purpose).
+  #
+  # Runtimes:
+  # * ``local``         -- pypdf only (image-only scans yield empty).
+  # * ``nim``           -- cloud nemotron-parse v1.2; needs NVIDIA_API_KEY.
+  # * ``hybrid``        -- pypdf + ``hybrid_fallback_runtime`` (default).
+  # * ``nemotron_omni`` -- self-hosted nemotron-3-nano-omni-30b VLM (rollback).
+  # * ``qwen3_6_omni``  -- self-hosted Qwen3.6-27B-FP8 vLLM (full-OCR override).
+  runtime: "${oc.env:PARSER_RUNTIME,hybrid}"
+  # Which OCR client backs the ``hybrid`` runtime when pypdf trips a
+  # fallback gate (whole-doc empty / lossy, or Case-D per-page
+  # surgical). Independent of ``runtime`` above: an operator can
+  # leave the active runtime as ``qwen3_6_omni`` for the bulk
+  # single-pass corpus and only flip ``runtime`` to ``hybrid`` for
+  # mixed-quality re-runs without re-touching the OCR backend
+  # selection. Valid values: ``qwen3_6_omni`` (default, supports
+  # per-page surgical splice), ``nemotron_omni`` (rollback, supports
+  # surgical), ``nim`` (legacy cloud nemotron-parse, whole-doc
+  # fallback only -- the NIM tools API doesn't fit the per-page
+  # contract). Override via ``HYBRID_FALLBACK_RUNTIME`` env var.
+  hybrid_fallback_runtime: "${oc.env:HYBRID_FALLBACK_RUNTIME,qwen3_6_omni}"
+  min_local_chars: 50
+  # Second hybrid fallback gate. ``lossy_score`` (in packages/parser/
+  # hybrid.py) measures the fraction of lowercase 1-2-char ASCII
+  # fragments embedded in body text -- the signature of catastrophic
+  # font corruption where most glyphs render as space (legacy
+  # VnTime / VNI / corrupted ToUnicode CMaps). 0.05 cleanly separates
+  # the healthy tail (~94% of congbobanan, p50=0.016) from the
+  # catastrophic band (~6%, p95+=0.088).
+  #
+  # NOT the same as the cmap_healer in packages/parser/pypdf.py:
+  # * cmap_healer fixes ``<CID> <0020>`` defects in OTHERWISE-healthy
+  #   ToUnicode CMaps (~3.4% of corpus); pypdf still extracts good
+  #   text, lossy_score stays low.
+  # * max_local_lossy_score fires when the CMap is missing entirely
+  #   (legacy non-Unicode fonts); pypdf returns mostly-empty
+  #   1-2-char fragments, lossy_score climbs above the threshold,
+  #   and NIM OCR takes over.
+  max_local_lossy_score: 0.05
+  num_workers: 4
+  nim_base_url: "${oc.env:NIM_BASE_URL,https://integrate.api.nvidia.com/v1}"
+  nim_tool: markdown_bbox         # markdown_bbox | markdown_no_bbox | detection_only
+  # Source-side raster DPI. The NemotronParseClient renders at this
+  # DPI, then thumbnails each page onto a fixed 1536x2048 white
+  # canvas matching v1.2's training geometry. 300 DPI gives crisp
+  # tone-mark glyph edges before the downscale step.
+  nim_dpi: 300
+  # Per-page generation cap on the v1.2 layout-JSON output. 3500
+  # matches the v1.1 cookbook default; bump to 5000-6000 if you see
+  # multi-page tables being truncated mid-row.
+  nim_max_tokens: 3500
+  # Deterministic decoding. v1.2 is a structured-extraction task;
+  # leave at 0.0 unless you're A/B-testing sampling.
+  nim_temperature: 0.0
+  # Rate-limit retry budget (OpenAI SDK exponential backoff:
+  # 1s, 2s, 4s, 8s, 16s). 5 covers ~31s of build.nvidia.com 429
+  # windows before the per-page handler logs ``RATE_LIMIT`` and
+  # moves on. Bump to 8-10 if you see frequent RATE_LIMIT lines
+  # in the parse log; drop to 2 only if rate limits aren't a
+  # concern (e.g. local NIM deployment).
+  nim_max_retries: 5
+  # Wire protocol for the NIM client; see schemas.ParserCfg.nim_protocol.
+  # ``nim_tools`` for cloud (build.nvidia.com), ``vllm_decoder_prompt`` for
+  # a self-hosted vLLM serving ``nvidia/NVIDIA-Nemotron-Parse-v1.2``.
+  # Overrides via NIM_PROTOCOL env var.
+  nim_protocol: "${oc.env:NIM_PROTOCOL,nim_tools}"
+  # Self-hosted Nemotron-3 Nano Omni endpoint (used when
+  # ``runtime: nemotron_omni``). Single-pass VLM that handles
+  # OCR + layout-preserving markdown for Vietnamese court documents
+  # without the pypdf -> nemotron-parse -> llm_ocr_fix chain.
+  # No NVIDIA_API_KEY required (local NIM).
+  omni_base_url: "${oc.env:NEMOTRON_OMNI_BASE_URL,http://localhost:8000/v1}"
+  omni_model: "${oc.env:NEMOTRON_OMNI_MODEL,nvidia/nemotron-3-nano-omni-30b-a3b-reasoning}"
+  # Per-page generation cap for the Omni VLM (free-form markdown
+  # output; covers a dense Vietnamese court page including headers,
+  # body paragraphs, evidence table, signatories).
+  omni_max_tokens: 8192
+  # Low non-zero temperature + client-side top_k=1 (near-greedy with a
+  # small entropy floor; matches NVIDIA's reference OCR notebook).
+  omni_temperature: 0.2
+  # Per-page HTTP read timeout (seconds). Generous because page 1 of
+  # a session pays the vLLM warmup cost (CUDA graph capture).
+  omni_timeout_s: 180.0
+  omni_max_retries: 5
+  # Self-hosted Qwen3.6-27B-FP8 endpoint (used when
+  # ``runtime: qwen3_6_omni`` -- the default since the 2026-05
+  # cutover from ``nemotron_omni``). Single-pass multimodal VLM
+  # (arch ``Qwen3_5ForConditionalGeneration``) serving Vietnamese
+  # OCR + layout-preserving markdown for court documents.
+  # No NVIDIA_API_KEY required (local vLLM at
+  # http://localhost:8000/v1; ``--served-model-name qwen3.6-27b``
+  # in vllm/qwen3.6-omni/scripts/launch.sh becomes the model id
+  # clients send).
+  qwen3_6_omni_base_url: "${oc.env:QWEN3_6_OMNI_BASE_URL,http://localhost:8000/v1}"
+  qwen3_6_omni_model: "${oc.env:QWEN3_6_OMNI_MODEL,qwen3.6-27b}"
+  # Per-page generation cap. Same shape as the omni knobs above; 8192
+  # comfortably covers a dense Vietnamese court page within
+  # vLLM's --max-model-len 32768 budget.
+  qwen3_6_omni_max_tokens: 8192
+  # Qwen3.6 Instruct-mode recommended sampling (temperature 0.7 +
+  # top_p 0.8 + top_k 20, per the model card). Drop to 0.0 / top_k 1
+  # if smoke shows hallucination on long documents.
+  qwen3_6_omni_temperature: 0.7
+  qwen3_6_omni_top_p: 0.8
+  qwen3_6_omni_timeout_s: 180.0
+  qwen3_6_omni_max_retries: 5
+  timeout_s: 120.0
+  # Declarative parser-side normalizer chain. Runs immediately after
+  # PdfParseStage on the in-memory ``markdown`` column, BEFORE the
+  # markdown is written to disk -- so ``data/<host>/md/*.md`` is
+  # already canonical and downstream consumers (extractor, embedder,
+  # ad-hoc readers) see the cleaned text without re-running this work.
+  #
+  # Order matters (see wiki/PARSING.md § 5.3):
+  #   1. ``letter_spaced_collapse`` -- universal 2+-space glyph-run
+  #      collapser ("T h \u00f4 n g  t i n" -> "Th\u00f4ng tin").
+  #   2. ``congbobanan_join_word_breaks`` -- site-specific
+  #      single-space mid-word rejoiner ("hu y\u1ec7n" -> "huy\u1ec7n");
+  #      runs BEFORE vietnamese_text so the syllable predicate sees
+  #      original NFC tone marks.
+  #   3. ``vietnamese_text`` -- ftfy + NFC + tone-mark + whitespace.
+  #   4. ``congbobanan_join_soft_wraps`` -- site-specific PDF
+  #      soft-wrap reflow (folds 4 visual lines back into 1 logical
+  #      paragraph); runs AFTER vietnamese_text so its terminal-
+  #      punctuation checks see canonical NFC quotes.
+  #   5. ``congbobanan_strip_page_noise`` -- site-specific per-page
+  #      bare-digit body-line stripper; runs LAST.
+  #
+  # Reuses the same registry-backed chain stage the extractor uses,
+  # so each name resolves via packages.extractor.normalizers.NORMALIZER_REGISTRY.
+  # An empty list explicitly disables parser-side normalisation.
+  #
+  # ``llm_ocr_fix`` was removed in the nemotron_omni cutover (2026-05):
+  # the self-hosted Nemotron-3 Nano Omni VLM already produces clean
+  # diacritic-aware Vietnamese transcriptions, so the paid
+  # build.nvidia.com OCR-fix call no longer pays its weight. Re-add
+  # it tail-of-chain only if you flip ``runtime`` back to hybrid /
+  # nim and start seeing OCR-typo regressions in the parsed markdown.
+  normalizers:
+    - letter_spaced_collapse
+    - congbobanan_join_word_breaks
+    - vietnamese_text
+    - congbobanan_join_soft_wraps
+    - congbobanan_strip_page_noise
+
+extractor:
+  # Declarative normalizer chain (wiki/DATASITES.md §3.5). congbobanan ships
+  # only the universal Vietnamese-text baseline -- the corpus is
+  # high-quality court-published judgments without the
+  # CMS-export artefacts vbpl has, so no site-specific
+  # normalizers are needed.
+  #
+  # ``run_text_normalization: false`` because the chain already owns
+  # normalization; leaving the inline ``normalize_text`` on would
+  # double-normalize ``markdown`` (idempotent but wasteful).
+  #
+  # OPT-IN: ``llm_ocr_fix`` (NIM-hosted Qwen3.5-122B-A10B) catches
+  # OCR-typo slips that v1.2 leaves behind ("phien toa" -> "phien
+  # toa", "chi toa" -> "chu toa", "Vien kiem sat" -> "Vien kiem
+  # sat", missing tone marks, etc). Each call hits the paid
+  # build.nvidia.com tier and adds ~3-5s per doc; only enable for
+  # bulk passes you actually want to LLM-clean. Append it AFTER
+  # ``vietnamese_text`` so the deterministic layer fixes the easy
+  # cases first; the LLM only sees what regex couldn't resolve.
+  # Edit shape is enforced by guardrails (token count, proper-noun
+  # protection, len cap, no-digit, per-doc caps) -- see
+  # packages/extractor/llm_ocr_fix.py for the rules.
+  #
+  #   normalizers:
+  #     - vietnamese_text
+  #     - llm_ocr_fix
+  normalizers:
+    - vietnamese_text
+  run_text_normalization: false
+  run_generic_layer: true
+  run_site_layer: false          # precedent normalization is anle-only
+  run_structure_layer: true      # hierarchical doc model (sections / paragraphs / sentences)
+  llm_tier_for_ambiguous: fast
+  max_seq_length: "${..full_text_context}"
+
+# Parquet consumption tier shard sizing -- congbobanan uses the
+# wiki/DATASITES.md §3.5 default (10K rows / shard); judgment rows are thin
+# (markdown + structure stats, no inline structure_json), so the
+# default packs to ~80-120 MB per shard well under the HF dataset-
+# viewer cap.
+
+embedder:
+  model_id: nvidia/llama-nemotron-embed-1b-v2
+  runtime: nim
+  batch_size: 8
+  max_seq_length: 8192
+  chunking: sliding
+  chunk_overlap: 256
+  model_dtype: bfloat16
+  device: auto
+
+reducer:
+  methods: [pca, tsne, umap]
+  n_components: 2
+  prefer_gpu: true
+
+executor:
+  name: xenna
+  mode: streaming
+  logging_interval: 60
+  autoscale_interval_s: 180
+  cpu_allocation_percentage: 0.9
+  ignore_failures: false
+
+ray:
+  address: null             # set to "ray://head:10001" for a remote cluster
+  runtime_env: {}
+  num_cpus: null
+  num_gpus: null
+
+stage_overrides:
+  parse_files_per_partition: 32
+  extract_files_per_partition: 32
+  embed_files_per_partition: 16
+  # Reducer fits per partition; keep the whole corpus in ONE partition
+  # so PCA/UMAP coordinates and cluster_ids stay globally comparable.
+  reduce_files_per_partition: 100000
