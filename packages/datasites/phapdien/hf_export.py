@@ -864,16 +864,18 @@ def export(
 
     paths = export_parquet(jsonl_dir, out_dir)
 
+    # Always recompute analytics from the current JSONL. The parquet
+    # above is built directly from ``articles.jsonl``; reusing a stale
+    # ``analytics.json`` (e.g. left over from an earlier ``--limit``
+    # sample run) would silently desync the card + figures from the
+    # data — recomputing is only a few seconds and keeps them in lockstep.
+    logger.info("computing analytics from JSONL")
+    analytics = analyze(jsonl_dir)
     analytics_src = jsonl_dir / "analytics.json"
-    if not analytics_src.exists():
-        logger.info("analytics.json missing -- regenerating from JSONL")
-        analytics = analyze(jsonl_dir)
-        analytics_src.write_text(
-            json.dumps(analytics, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    else:
-        analytics = json.loads(analytics_src.read_text(encoding="utf-8"))
+    analytics_src.write_text(
+        json.dumps(analytics, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
     out_analytics = out_dir / "analytics.json"
     out_analytics.write_text(
