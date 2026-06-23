@@ -1,0 +1,67 @@
+# Default config for the dichvucong datasite.
+#
+# OmegaConf-based. Use `_base: default.yaml` from a sibling file to
+# override any subset of this; lists are REPLACED, mappings are
+# DEEP-MERGED. CLI dotlist overrides via `--override path.to.key=value`
+# are applied last.
+#
+# dichvucong is a JSON-API datasite: the national portal's
+# `POST /jsp/rest.jsp` gateway returns structured records directly, so
+# there is no PDF parse / OCR step. The crawl + extract pipelines write
+# per-procedure JSONL; embed / reduce reuse the shared factories if a
+# downstream vector index is wanted.
+
+host: dichvucong.gov.vn
+output_dir: ./data
+full_text_context: 32768
+
+scraper:
+  # rest.jsp gateway on the VPCP front-end (covers all ministries +
+  # provinces, incl. Bộ Công An).
+  rest_url: "https://vpcp.dichvucong.gov.vn/jsp/rest.jsp"
+  referer: "https://vpcp.dichvucong.gov.vn/p/home/dvc-tthc-thu-tuc-hanh-chinh.html"
+  search_service: "procedure_advanced_search_service_v2"
+
+  # Pagination / enumeration.
+  record_per_page: 50
+  start_page: 1
+  max_pages: 2000          # safety cap; auto-stops on a short/empty page
+  agency_type: 1           # 1 = Bộ/Ban/Ngành; provincial variants differ
+  shard_by_agency: false   # true -> walk pages per impl_agency_id
+
+  # Per-procedure detail enrichment is opt-in: the search service
+  # already returns the full curatable metadata, and the detail
+  # service's id-param is portal-version-specific. Confirm + enable
+  # before relying on it.
+  fetch_detail: false
+  detail_service: "proc_id_service"
+  detail_id_param: "procedure_id"
+  detail_url_template: "https://dichvucong.gov.vn/p/home/dvc-chi-tiet-thu-tuc-hanh-chinh.html?ma_thu_tuc={code}"
+
+  # Polite-crawl envelope (government host).
+  num_workers: 2
+  qps: 1.0
+  user_agent: "ViLA-research/0.1 (+https://example.vn/contact)"
+  proxy: null
+  timeout_s: 60.0
+  max_retries: 5
+  verify_tls: true
+
+stage_overrides:
+  extract_files_per_partition: 8
+
+# Downstream stages kept at schema defaults; only consumed if an
+# embed/reduce step is wired on the curated JSONL.
+embedder:
+  model_id: nvidia/llama-nemotron-embed-1b-v2
+  runtime: nim
+  text_field: procedure_name
+  batch_size: 16
+  max_seq_length: 8192
+  chunking: sentence
+  chunk_overlap: 128
+
+reducer:
+  methods: [pca, umap]
+  n_components: 2
+  prefer_gpu: true

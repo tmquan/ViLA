@@ -4,7 +4,7 @@ This folder is the **source of truth** for the artefacts code in this
 repository builds against. Where a doc under `docs/` conflicts with
 one under `wiki/`, the wiki wins and the `docs/` copy is the bug.
 
-The seven documents below are pinned by source-code references at
+The documents below are pinned by source-code references at
 **section granularity** (e.g. `wiki/EXTRACTION.md § 5.1`,
 `wiki/DATASITES.md § 3.5.4`). Do not renumber sections or rename
 files without grepping the workspace first.
@@ -17,10 +17,13 @@ files without grepping the workspace first.
 | [`ONTOLOGY.md`](ONTOLOGY.md) | Implementation-ready ontology freeze **v1.2.0** — classes, properties, axioms `AX-01..AX-18`, state machines, controlled vocabularies, identifier rules, JSON-LD context, AKN export profile | Postgres DDL, Pydantic / Zod models, KG node + edge types, JSON-LD context, AKN serialiser |
 | [`DATASITES.md`](DATASITES.md) | Datasite SoP — Family A (Curator + Ray), Family B (HTML crawler), hybrid (`vbpl`); five-pipeline chain; two-tier output rule (raw per-doc + 10 K-row parquet); HF publish + bilingual card; checklist for new sites | `packages/datasites/*`, `packages/pipeline/factories.py`, `packages/common/io.py`, `packages/common/runner.py` |
 | [`PARSING.md`](PARSING.md) | Vietnamese PDF parsing — Unicode `U+1EA0..U+1EF9` precomposed-vowel block, legacy TCVN3 / VnTime + VNI-Times encodings, ToUnicode CMap defects (Mode D `<CID> <0020>` heal), `lossy_score` detector for catastrophic Mode C garble, site normalizer chain order | `packages/parser/cmap_healer.py`, `packages/parser/pypdf.py`, `packages/parser/hybrid.py`, `packages/datasites/congbobanan/normalizers.py` |
+| [`PDFExtractor.md`](PDFExtractor.md) | `PDFExtractor` base ABC (HTMLExtractor pattern) + the 8 renamed Vietnamese legal PDF types, `VietnameseLegalDocumentPDFExtractor` router, the Preclassifier, official `nemotron-parse` engine, the 8 datasite Downloaders, and the modified workflow — slide source for the NeMo Curator deck | `packages/parser/base.py`, `packages/parser/hybrid.py`, `packages/parser/stage.py`, `packages/parser/nemotron.py` |
 | [`EXTRACTION.md`](EXTRACTION.md) | Vietnamese legal NER + KB-grounding pipeline — 27-type entity schema (`metadata` / `maindata`), `cache_key` formula, prompt-version history, KB-grounding contract for `legal_dict` (phapdien) + `legal_term` (tnpl) | `packages/extractor/ner/` |
+| [`EMBED_AND_REDUCE.md`](EMBED_AND_REDUCE.md) | Stages 4–5 the NeMo Curator way — `EmbedderBackend` ABC (NIM/HF) + chunking/mean-pool, `ReducerAlgorithm` ABC (PCA/t-SNE/UMAP) + HDBSCAN, the full-batch reduce contract, idempotent pipeline factories, and where semantic dedup slots in | `packages/embedder/`, `packages/reducer/`, `packages/pipeline/factories.py` |
 | [`MODELS.md`](MODELS.md) | Four-model NER roster on NIM (`openai/gpt-oss-120b` canonical, plus Nemotron-3 and two Qwen MoE), deterministic sampling profile, per-model reasoning toggles | `packages/extractor/ner/client.py`, `configs/default.yaml` |
 | [`TIMELINE.md`](TIMELINE.md) | Date-anchored event-line projection of an NER record — `meta` / `main` swimlanes, `WhenAnchor` schema, F1–F5 relative-temporal families, Mermaid renderer | `packages/extractor/timeline/` |
 | [`DEVELOPMENT.md`](DEVELOPMENT.md) | Phase-anchored development-arc projection of an NER record — seven-phase taxonomy (`preamble` → `signature`), per-phase entity delta (`*_introduced` / `*_carried`) | `packages/extractor/development/` |
+| [`DICHVUCONG.md`](DICHVUCONG.md) | National administrative-procedure (thủ tục hành chính) API + curation — the `dichvucong.gov.vn` `rest.jsp` gateway that aggregates every ministry + province (incl. Bộ Công An), the curated row schema, and the state-reconcile freshness mechanism (added/amended/withdrawn + supersession) | `packages/datasites/dichvucong/` |
 | [`ANLE.md`](ANLE.md) | Reading the `anle.toaan.gov.vn` corpus as ordinary Vietnamese court decisions (not precedents) — `doc_code` grammar, the canonical five-section case anatomy, per-area party/statute/outcome specialization, and the application-build + LLM-finetune consumer recipes | `packages/extractor/structure.py`, `packages/extractor/generic.py`, `packages/extractor/precedent.py`, `scripts/classify_anle.py` |
 
 ## Reading order

@@ -224,6 +224,24 @@ class ScraperCfg:
     # for vbpl; off for diagnostic runs.
     stealth: bool = True
 
+    # ---- dichvucong national-TTHC JSON-gateway crawler --------------
+    # dichvucong.gov.vn serves its administrative-procedure corpus via
+    # one JSON gateway (POST /jsp/rest.jsp) that aggregates every
+    # ministry + province (incl. Bộ Công An). The harvester paginates
+    # the ``search_service`` and caches each page as JSON. Defaults are
+    # no-ops for other datasites; dichvucong's YAML overrides them.
+    # (``start_page`` / ``max_pages`` / ``detail_url_template`` above
+    # are reused.) See wiki/DICHVUCONG.md.
+    rest_url: str = ""                     # gateway endpoint
+    referer: str = ""                      # Referer header the gateway expects
+    search_service: str = ""               # e.g. procedure_advanced_search_service_v2
+    record_per_page: int = 50              # search page size
+    agency_type: int = 1                   # 1 = Bộ/Ban/Ngành
+    shard_by_agency: bool = False          # walk pages per impl_agency_id
+    fetch_detail: bool = False             # opt-in per-procedure detail hop
+    detail_service: str = ""               # e.g. proc_id_service
+    detail_id_param: str = ""              # version-specific id param name
+
 
 @dataclass
 class ParserCfg:
@@ -542,6 +560,12 @@ class EmbedderCfg:
 
     model_id: str = "nvidia/llama-nemotron-embed-1b-v2"
     runtime: str = "nim"    # auto / nim / hf
+    # Row column the embedder reads as input text. Defaults to the
+    # parser's markdown body; JSON-API datasites (dichvucong) point it
+    # at their text field (e.g. ``procedure_name``). Read via ``.get``
+    # in the stage, declared here so a YAML override passes the struct
+    # merge.
+    text_field: str = "markdown"
     batch_size: int = 8
     max_seq_length: int = 8192
     chunking: str = "sliding"   # off / sliding / sentence

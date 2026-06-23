@@ -1,0 +1,14 @@
+# dichvucong datasite runtime dependencies.
+#
+# JSON-API datasite (no PDF / OCR), so the dependency set is small:
+# the rest.jsp gateway returns structured JSON consumed directly.
+
+# --- crawl + extract (Curator download primitives) ---
+requests>=2.31,<3.0
+omegaconf>=2.3,<3.0
+
+# nemo-curator provides URLGenerator / DocumentDownloader /
+# DocumentIterator / DocumentExtractor base classes + the Pipeline /
+# Ray executor. Installed at the repo level; listed here for parity
+# with the other datasites' requirement files.
+# nemo-curator[text_cuda13]>=26.02
