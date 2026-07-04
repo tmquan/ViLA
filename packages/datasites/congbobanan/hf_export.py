@@ -1182,7 +1182,7 @@ of columns:
 | `issue_date` | string | ISO 8601 issue date when discoverable. |
 | `issuing_authority` | string | Full court name. |
 | `court_level` | string | `huyen` \| `tinh` \| `cap_cao` \| `toi_cao`. |
-| `jurisdiction` | string | Province / city qualifier extracted from the body. |
+| `jurisdiction` | string | **Deprecated** — seat/locality token parsed from `issuing_authority`; not the court's territorial jurisdiction; fully re-derivable; scheduled for removal. Prefer `issuing_authority` + `court_level`. |
 
 ### Sidebar metadata (HTML detail-page co-update)
 

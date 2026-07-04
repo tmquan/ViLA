@@ -31,6 +31,7 @@ def _scraper_module(site: str) -> Any:
 
 
 CRAWLER_SITES: list[tuple[str, tuple[str, ...]]] = [
+    ("dichvucong", ("list", "detail")),
     ("pbgdpl", ("harvest", "detail")),
     ("phapdien", ("tree", "detail")),
     ("thuvienphapluat_tnpl", ("harvest", "detail", "translate")),

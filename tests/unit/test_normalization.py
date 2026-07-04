@@ -43,6 +43,30 @@ def test_modern_orthography_unchanged() -> None:
     assert normalize_text(text) == text
 
 
+def test_closed_syllables_not_rewritten() -> None:
+    # The 1984 reform only moved tone marks on OPEN syllables. When a
+    # letter follows the digraph — final consonant or off-glide — the
+    # tail-vowel tone mark is the only correct placement in both
+    # conventions and must survive normalization unchanged.
+    cases = [
+        "hoạt động",       # final consonant t
+        "an toàn",         # final consonant n
+        "hoàn cảnh",       # final consonant n
+        "kiểm soát",       # final consonant t
+        "choàng",          # final cluster ng
+        "ngoài ra",        # off-glide i (triphthong oai)
+        "ngoáy",           # off-glide y (triphthong oay)
+        "loại",            # off-glide i
+        "khuỷu tay",       # off-glide u (triphthong uyu)
+        "họ Huỳnh",        # final cluster nh (surname)
+        "TOÀN QUỐC",       # ALL-CAPS closed syllable
+    ]
+    for text in cases:
+        assert normalize_text(text) == text, (
+            f"closed syllable corrupted: {text!r} -> {normalize_text(text)!r}"
+        )
+
+
 def test_collapses_intra_line_whitespace() -> None:
     text = "Bản án số:    38/2021/DS-PT"
     assert normalize_text(text) == "Bản án số: 38/2021/DS-PT"
@@ -148,9 +172,12 @@ def test_qu_initial_ua_not_rewritten() -> None:
 
 def test_uy_after_other_consonants_still_rewritten() -> None:
     # The qu- exemption is q-specific. ``th``, ``l``, ``t``, ``h``
-    # initials with old-orthography diphthongs still rewrite.
+    # initials with old-orthography OPEN syllables still rewrite.
+    # (``huỳnh`` must NOT rewrite — the ``nh`` final closes the
+    # syllable, so the tail-vowel tone mark is already correct; see
+    # test_closed_syllables_not_rewritten.)
     cases = {
-        "huỳnh đệ": "hùynh đệ",        # h + uỳ -> h + ùy
+        "huỷ bỏ": "hủy bỏ",            # h + uỷ -> h + ủy
         "luỳ tre xanh": "lùy tre xanh",
         "tuỷ sống": "tủy sống",
     }

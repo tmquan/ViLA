@@ -1,15 +1,4 @@
-"""Shared paths + output schema for the dichvucong datasite.
-
-Uses the ``"html"`` layout profile (no PDF tier) plus two datasite-
-specific dirs:
-
-* ``pages/``  — raw per-page JSON cache written by the Downloader
-  (``at<agency_type>_aid<impl_agency_id>_p<NNNNN>.json``). This is the
-  append-friendly capture the freshness diff (``wiki/DICHVUCONG.md`` §5)
-  runs against.
-* ``state/``  — the incremental manifest (``manifest.jsonl``): one row
-  per procedure key with its last-seen ``decision_id`` + ``content_hash``.
-"""
+"""Shared paths + schema for the dichvucong (new-portal) datasite."""
 
 from __future__ import annotations
 
@@ -19,46 +8,57 @@ from typing import Any
 from packages.common import SiteLayout
 from packages.common import build_layout as _build_layout_common
 
-#: JSONL columns written by the Extract pipeline (mirror of
-#: :meth:`DichvucongDocumentExtractor.output_columns`).
-EXTRACTOR_JSONL_FIELDS: list[str] = [
-    "doc_name",
-    "procedure_id",
-    "procedure_code",
-    "procedure_name",
-    "published_agency",
-    "implementation_agency",
-    "field_name",
-    "decision_id",
-    "amount",
-    "source",
-    "source_url",
-    "content_hash",
-    "fetched_at",
+INDEX_FIELDS: list[str] = [
+    "formality_id", "formality_case_id", "target_type", "code", "name",
+    "level", "handle_department_name", "category_name", "state",
+]
+
+PROCEDURE_FIELDS: list[str] = [
+    "doc_name", "formality_id", "target_type",
+    "code", "procedure_name", "decision_no", "category_name",
+    "department_promulgate",
+    "is_province", "is_ministry", "is_ward", "is_vertical", "is_full_process",
+    "description", "execution_steps", "execution_methods", "profile_components",
+    "requirements_conditions", "fees", "legal_basis", "results",
+    "target_objects", "executing_agencies", "coordinating_agencies", "keywords",
+    "content_text", "content_char_len",
+    "source", "source_url", "content_hash", "scraped_at",
+]
+
+# --- embed / reduce schema (shared with the in-process embed+reduce runner) ---
+
+#: Columns the embedder reads from procedures.jsonl. ``content_text`` is the
+#: rich structured body (steps/fees/profile/legal basis/results/agencies).
+EMBEDDER_JSONL_READ_FIELDS: list[str] = ["doc_name", "content_text"]
+
+#: Parquet columns the embedder writes (``doc_name`` = formality_id join key).
+EMBEDDER_PARQUET_FIELDS: list[str] = [
+    "doc_name", "embedding", "embedding_dim", "embedding_model_id",
+    "embedding_text_hash", "embedding_chunks_used", "embedding_chunking",
+]
+
+#: Parquet columns the reducer writes (coords for pca/umap/tsne @ 2D).
+REDUCER_PARQUET_FIELDS: list[str] = [
+    *EMBEDDER_PARQUET_FIELDS,
+    "pca_x", "pca_y", "umap_x", "umap_y", "tsne_x", "tsne_y",
 ]
 
 
-def pages_dir(layout: SiteLayout) -> Path:
-    return layout.site_root / "pages"
+def procedures_jsonl(layout: SiteLayout) -> Path:
+    return layout.jsonl_dir / "procedures.jsonl"
 
 
-def state_dir(layout: SiteLayout) -> Path:
-    return layout.site_root / "state"
+def detail_dir(layout: SiteLayout) -> Path:
+    return layout.site_root / "json"
 
 
 def build_layout(cfg: Any) -> SiteLayout:
-    """Ensure the dichvucong layout (html profile + pages/ + state/)."""
     layout = SiteLayout.from_cfg(cfg)
-    return _build_layout_common(
-        cfg,
-        profile="html",
-        extra_dirs=(pages_dir(layout), state_dir(layout)),
-    )
+    return _build_layout_common(cfg, profile="html", extra_dirs=(detail_dir(layout),))
 
 
 __all__ = [
-    "EXTRACTOR_JSONL_FIELDS",
-    "build_layout",
-    "pages_dir",
-    "state_dir",
+    "INDEX_FIELDS", "PROCEDURE_FIELDS",
+    "EMBEDDER_JSONL_READ_FIELDS", "EMBEDDER_PARQUET_FIELDS", "REDUCER_PARQUET_FIELDS",
+    "build_layout", "detail_dir", "procedures_jsonl",
 ]

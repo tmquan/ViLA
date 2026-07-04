@@ -35,11 +35,26 @@ class TSNEReducer(ReducerAlgorithm):
             import cupy as cp
             from cuml.manifold import TSNE as CumlTSNE
 
-            X = cp.asarray(matrix)
-            out = CumlTSNE(
-                n_components=n_components, perplexity=perplexity
-            ).fit_transform(X)
-            return out.get()
+            # cuML t-SNE scales to 100k+ points on-GPU. The FFT method is
+            # the fastest/most stable interpolation-based variant for
+            # large n; fall back to barnes_hut if this build lacks it.
+            X = cp.asarray(matrix, dtype="float32")
+            try:
+                est = CumlTSNE(
+                    n_components=n_components, perplexity=perplexity,
+                    method="fft", random_state=0,
+                )
+                out = est.fit_transform(X)
+            except TypeError:
+                out = CumlTSNE(
+                    n_components=n_components, perplexity=perplexity,
+                ).fit_transform(X)
+            # cuML may return a cupy array, a cudf.DataFrame, or numpy.
+            if hasattr(out, "to_cupy"):
+                out = out.to_cupy()
+            if hasattr(out, "get"):
+                out = out.get()
+            return np.asarray(out, dtype="float32")
         from sklearn.manifold import TSNE
 
         return TSNE(

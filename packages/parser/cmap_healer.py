@@ -158,9 +158,13 @@ def heal_pdf_bytes(pdf_bytes: bytes) -> tuple[bytes, list[CMapPatch]]:
     all_patches: list[CMapPatch] = []
     try:
         with pikepdf.open(io.BytesIO(pdf_bytes)) as pdf:
-            # Track stream object IDs so each shared CMap is patched
-            # exactly once even when many pages reference it.
-            seen_streams: set[int] = set()
+            # Track stream object ids so each shared CMap is patched
+            # exactly once even when many pages reference it. Keyed by
+            # PDF (object, generation) — NOT Python id(): pikepdf hands
+            # out a fresh transient wrapper per attribute access, and a
+            # recycled memory address would make two distinct streams
+            # collide nondeterministically.
+            seen_streams: set[tuple[int, int]] = set()
             for page in pdf.pages:
                 resources = page.get("/Resources")
                 if resources is None:
@@ -174,10 +178,13 @@ def heal_pdf_bytes(pdf_bytes: bytes) -> tuple[bytes, list[CMapPatch]]:
                     if "/ToUnicode" not in font:
                         continue
                     tu_stream = font["/ToUnicode"]
-                    key = id(tu_stream)
-                    if key in seen_streams:
-                        continue
-                    seen_streams.add(key)
+                    key = tu_stream.objgen
+                    # (0, 0) marks a direct (non-indirect) object; those
+                    # are never shared, so only dedupe true indirects.
+                    if key != (0, 0):
+                        if key in seen_streams:
+                            continue
+                        seen_streams.add(key)
                     try:
                         body = tu_stream.read_bytes()
                     except Exception as exc:

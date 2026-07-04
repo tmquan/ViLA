@@ -1,63 +1,59 @@
-# dichvucong.gov.vn — Cổng Dịch vụ công Quốc gia (national TTHC)
+# dichvucong.gov.vn — full administrative-procedure detail
 
-Curates the **administrative-procedure** (thủ tục hành chính) corpus
-from the National Public Service Portal, run by Văn phòng Chính phủ.
+Playwright crawler + curation for the **National Public Service Portal**
+(Cổng Dịch vụ công Quốc gia). Its public `/api/v1` endpoints return the
+**full structured detail** of administrative procedures nationwide — trình
+tự thực hiện (`executionSteps`), thành phần hồ sơ (`profileComponents`),
+phí (`fees`), căn cứ pháp lý (`legalBasis`), kết quả (`results`), cơ quan
+thực hiện, … **No VNeID / login required.**
 
-The portal serves its whole corpus through **one JSON gateway** that
-**already aggregates every ministry and province** — including Bộ Công
-An (`dichvucong.bocongan.gov.vn`) — so this single datasite covers them
-all. Full API contract + freshness mechanism:
-[`wiki/DICHVUCONG.md`](../../../wiki/DICHVUCONG.md).
+The endpoints sit behind an **F5/TSPD WAF** that rejects raw HTTP, so the
+JSON calls are issued from a real (headless) browser context that has
+solved the challenge — same rationale as the `vbpl` datasite.
 
 ```text
-POST https://vpcp.dichvucong.gov.vn/jsp/rest.jsp
-  body: params={"service":"procedure_advanced_search_service_v2",
-                "provider":"dvcquocgia","type":"ref",
-                "pageIndex":N,"recordPerPage":50, ...}
-  -> JSON array of procedure records
+list:   POST /api/v1/configuring/formality/list-formality-case-by-citizen   {limit, lastId, formalityTargetType}
+detail: POST /api/v1/configuring/formality/get-formality-by-citizen          {id: formalityId}
 ```
+
+The list is enumerated across audiences (`formalityTargetType`:
+`VIETNAMESE_CITIZEN` + `ENTERPRISE`; other enums 400) and **unioned by
+formality GUID** to maximise distinct-procedure coverage.
 
 ## Running
 
 ```bash
-# Crawl every search page -> pages/*.json, then flatten to JSONL:
-python -m packages.datasites.dichvucong --pipeline all --executor xenna
+# Crawl (resumable; cached json/<formality_id>.json skip):
+python -m packages.datasites.dichvucong --pipeline list   --limit 200   # pilot
+python -m packages.datasites.dichvucong --pipeline detail --limit 200
+python -m packages.datasites.dichvucong --pipeline all                  # full national
 
-# Smoke test (first few pages only):
-python -m packages.datasites.dichvucong --pipeline crawl --limit 5
-python -m packages.datasites.dichvucong --pipeline extract
+# Embed + reduce (in-process; no Ray/xenna GPU scheduler):
+python -m packages.datasites.dichvucong._embed_reduce_inproc --stage embed
+python -m packages.datasites.dichvucong._embed_reduce_inproc --stage reduce
 
-# Incremental freshness diff after extract (new / amended / withdrawn):
-python -m packages.datasites.dichvucong.reconcile
+# Deep analysis + HF export (procedures / embed / reduce tables + report):
+python -m packages.datasites.dichvucong.analyze
+python -m packages.datasites.dichvucong.hf_export            # build hf/
+python -m packages.datasites.dichvucong.hf_export --push     # build + upload
 ```
 
 ## Layout
 
 ```text
 data/dichvucong.gov.vn/
-  pages/at1_aid-1_p00001.json   # raw per-page JSON capture (idempotent cache)
-  jsonl/<procedure_code>.jsonl  # one curated row per procedure
-  state/manifest.jsonl          # authoritative snapshot (freshness keys)
-  state/changelog-<ts>.jsonl    # per-cycle added/amended/withdrawn audit
+  json/<formality_id>.json     # raw detail cache (idempotent)
+  jsonl/index.jsonl            # formality_id + target_type + metadata (list stage)
+  jsonl/procedures.jsonl       # full flattened procedure rows (detail stage)
+  jsonl/manifest.json
+  parquet/embeddings/<doc_name>.parquet   # one per procedure (embed stage)
+  parquet/reduced/reduced.parquet         # PCA/UMAP/t-SNE coords (reduce stage)
+  hf/                          # HF dataset folder (3 tables + figures + report)
 ```
 
-## Components (NeMo Curator download primitives)
+Each detail row carries `content_text` (all sections concatenated, ready
+to embed) plus the structured fields and `is_province/is_ministry/...`
+flags. Requires `playwright` + `chromium-headless-shell`.
 
-| File | Class | Role |
-|------|-------|------|
-| `components/url_generator.py` | `DichvucongURLGenerator` | enumerate non-empty search pages |
-| `components/downloader.py` | `DichvucongDocumentDownloader` | POST `rest.jsp`, cache page JSON (idempotent) |
-| `components/iterator.py` | `DichvucongDocumentIterator` | page JSON → one record per procedure |
-| `components/extractor.py` | `DichvucongDocumentExtractor` | flatten → curated row + `content_hash` + `decision_id` |
-| `components/api.py` | — | shared `rest.jsp` client + page-locator codec |
-| `reconcile.py` | `reconcile()` | incremental new/amended/withdrawn diff |
-
-## Notes
-
-- Per-procedure full-text **detail** enrichment is opt-in
-  (`scraper.fetch_detail`); the search service already returns the
-  curatable metadata, and the detail service's id-param is
-  portal-version-specific (confirm before enabling).
-- Politeness: government host — keep `qps` ≈ 1, identify the crawler in
-  `user_agent`, and check the portal terms before bulk pulls. The
-  `rest.jsp` gateway is internal/undocumented.
+Published to **`tmquan/dichvucong-gov-vn`** (configs `procedures` /
+`embed` / `reduce`, joined on `doc_name`).

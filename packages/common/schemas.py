@@ -55,6 +55,11 @@ class ScraperCfg:
     dns_retry_delay_s: float = 5.0          # flat delay between DNS retries
 
     # Per-site scraping hints. Concrete values live in the site's YAML.
+    # ``base_url`` is the site root used by downloaders that resolve
+    # relative links; ``tenant`` is the path segment for shared-platform
+    # portals (``dichvucong.<tenant>.gov.vn/<tenant>/``).
+    base_url: str = ""
+    tenant: str = ""
     listing_url: str = ""
     detail_url_template: str = ""
     pdf_url_template: str = ""
@@ -174,25 +179,6 @@ class ScraperCfg:
     http_403_max_delay_s: float = 600.0
     http_403_max_retries: int = 5
 
-    # ---- thuvienphapluat_banan paginated court-judgment crawler ----
-    # The /banan/ portal exposes a paginated search endpoint at
-    # /banan/tim-ban-an?page=N (20 cards / page). The harvester walks
-    # ``listing_url_template`` formatted with ``page=N`` and stops on
-    # the first page that returns fewer than ``min_card_threshold``
-    # rows. ``taxonomy_url`` is a one-shot snapshot of the search-form
-    # dropdowns (courts / provinces / case types / statuses) captured
-    # once per harvest and written verbatim into jsonl/taxonomy.json.
-    # All three are unused (default empty) for other datasites.
-    listing_url_template: str = ""
-    taxonomy_url: str = ""
-    min_card_threshold: int = 1
-    # WAF soft-block detection: how many consecutive "decoy" responses
-    # (HTTP 200 but missing the real-content marker) the detail
-    # downloader tolerates before aborting the stage. Currently only
-    # the ``thuvienphapluat_banan`` downloader honours this; other
-    # datasites ignore it. Defaults to 10 ≈ ~20 s burst at 0.5 QPS.
-    decoy_abort_threshold: int = 10
-
     # ---- vbpl Playwright crawler -----------------------------------
     # vbpl.vn is a Next.js SPA whose backend (vbpl-bientap-gateway.moj
     # .gov.vn/api/qtdc/public/doc/...) is gated by a reCAPTCHA v3 ->
@@ -224,23 +210,32 @@ class ScraperCfg:
     # for vbpl; off for diagnostic runs.
     stealth: bool = True
 
-    # ---- dichvucong national-TTHC JSON-gateway crawler --------------
-    # dichvucong.gov.vn serves its administrative-procedure corpus via
-    # one JSON gateway (POST /jsp/rest.jsp) that aggregates every
-    # ministry + province (incl. Bộ Công An). The harvester paginates
-    # the ``search_service`` and caches each page as JSON. Defaults are
-    # no-ops for other datasites; dichvucong's YAML overrides them.
-    # (``start_page`` / ``max_pages`` / ``detail_url_template`` above
-    # are reused.) See wiki/DICHVUCONG.md.
+    # ---- dichvucong national-TTHC crawler ----------------------------
+    # dichvucong.gov.vn is crawled by a thin ``scraper.py`` (``list`` ->
+    # ``detail`` pipelines) that walks the portal's public listing /
+    # detail pages. The legacy JSON-gateway knobs below are retained
+    # for config compatibility; defaults are no-ops for other datasites
+    # and dichvucong's YAML overrides them. (``start_page`` /
+    # ``max_pages`` / ``detail_url_template`` above are reused.) See
+    # ``packages/datasites/dichvucong/README.md``.
     rest_url: str = ""                     # gateway endpoint
     referer: str = ""                      # Referer header the gateway expects
     search_service: str = ""               # e.g. procedure_advanced_search_service_v2
     record_per_page: int = 50              # search page size
-    agency_type: int = 1                   # 1 = Bộ/Ban/Ngành
-    shard_by_agency: bool = False          # walk pages per impl_agency_id
+    agency_type: int = 1                   # default agency cohort
+    agency_types: list[int] = field(default_factory=list)  # cohorts to cover; [] => [agency_type]
+    shard_by_agency: bool = True           # per-agency walk (unfiltered -1 stalls)
     fetch_detail: bool = False             # opt-in per-procedure detail hop
     detail_service: str = ""               # e.g. proc_id_service
     detail_id_param: str = ""              # version-specific id param name
+    # dichvucong (national SPA /api/v1 behind F5 WAF, driven by Playwright):
+    # ``formality_target_type`` filters the list endpoint (e.g.
+    # VIETNAMESE_CITIZEN). Reuses ``base_url`` / ``headless`` / ``browser``
+    # / ``nav_timeout_s`` / ``record_per_page`` / ``max_pages``.
+    formality_target_type: str = "VIETNAMESE_CITIZEN"
+    # Enumerate several audiences and union by formality_id (foreigner /
+    # enterprise / organization expose distinct procedures beyond citizen).
+    formality_target_types: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -472,18 +467,6 @@ class ParserCfg:
     #: writing whatever pypdf / nemotron-parse emit verbatim.
     normalizers: list[str] = field(default_factory=list)
 
-    # ---- thuvienphapluat_banan in-process HTML → markdown parser ---
-    # The banan parser doesn't go through pypdf / NIM (the portal
-    # serves HTML; we run markdownify locally). These two knobs are
-    # consumed by ``packages.datasites.thuvienphapluat_banan.components.parse``:
-    # ``min_body_chars`` rejects markdown bodies shorter than this
-    # (sub-50-char outputs indicate WAF stripping or soft-404 surfaces);
-    # ``force`` re-emits every md/<id>.md + .meta.json on the next run
-    # (use after refreshing docs.jsonl to propagate new sidebar columns).
-    # Defaults are safe for any datasite that doesn't use them.
-    min_body_chars: int = 50
-    force: bool = False
-
 
 @dataclass
 class ExtractorCfg:
@@ -596,6 +579,10 @@ class EmbedderCfg:
     # chunk budget. Guards against tokenizer drift + BPE merges
     # expanding chunks slightly above what the heuristic predicts.
     safety_tokens: int = 512
+    # >0 packs chunks ACROSS documents into token-bounded NIM requests
+    # (amortizes per-request latency for short rows — e.g. dichvucong
+    # procedure names). 0 keeps per-doc batching.
+    batch_token_budget: int = 0
 
 
 @dataclass
@@ -612,6 +599,10 @@ class ReducerCfg:
     methods: list[str] = field(default_factory=lambda: ["pca", "tsne", "umap"])
     n_components: int = 2
     prefer_gpu: bool = True
+    # When False, skip HDBSCAN clustering entirely (no ``cluster_id``
+    # column emitted). Use for corpora explored purely by projection
+    # (e.g. dichvucong uses t-SNE, no clustering).
+    cluster: bool = True
     hdbscan_min_cluster_size: int = 50
     hdbscan_min_samples: int = 10
     max_chars: int = 4000

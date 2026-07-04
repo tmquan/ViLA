@@ -81,7 +81,8 @@ class ReducerStage(ProcessingStage[DocumentBatch, DocumentBatch]):
         for method in list(self.cfg.reducer.methods):
             for axis in axes:
                 out_cols.append(f"{method}_{axis}")
-        out_cols.append("cluster_id")
+        if bool(self.cfg.reducer.get("cluster", True)):
+            out_cols.append("cluster_id")
         return (["data"], out_cols)
 
     def setup(self, worker_metadata: WorkerMetadata | None = None) -> None:
@@ -101,6 +102,7 @@ class ReducerStage(ProcessingStage[DocumentBatch, DocumentBatch]):
 
         n_components = int(self.cfg.reducer.n_components)
         prefer_gpu = bool(self.cfg.reducer.prefer_gpu)
+        do_cluster = bool(self.cfg.reducer.get("cluster", True))
         axes = "xyz"[:n_components]
 
         # Empty-embedding rows (e.g. blank markdown upstream) carry
@@ -126,7 +128,8 @@ class ReducerStage(ProcessingStage[DocumentBatch, DocumentBatch]):
                 algo = algo_cls()
                 for i, axis in enumerate(axes):
                     df[f"{algo.name}_{axis}"] = [float("nan")] * len(df)
-            df["cluster_id"] = [-1] * len(df)
+            if do_cluster:
+                df["cluster_id"] = [-1] * len(df)
             return DocumentBatch(
                 task_id=task.task_id,
                 dataset_name=task.dataset_name,
@@ -163,20 +166,21 @@ class ReducerStage(ProcessingStage[DocumentBatch, DocumentBatch]):
                     column[tgt_i] = float(coords[src_i, i])
                 df[f"{algo.name}_{axis}"] = column
 
-        valid_cluster_ids = _cluster(
-            matrix,
-            prefer_gpu=prefer_gpu,
-            min_cluster_size_cfg=int(
-                getattr(self.cfg.reducer, "hdbscan_min_cluster_size", 0) or 0
-            ),
-            min_samples_cfg=int(
-                getattr(self.cfg.reducer, "hdbscan_min_samples", 0) or 0
-            ),
-        )
-        cluster_column: list[int] = [-1] * len(df)
-        for src_i, tgt_i in enumerate(valid_indices):
-            cluster_column[tgt_i] = valid_cluster_ids[src_i]
-        df["cluster_id"] = cluster_column
+        if do_cluster:
+            valid_cluster_ids = _cluster(
+                matrix,
+                prefer_gpu=prefer_gpu,
+                min_cluster_size_cfg=int(
+                    getattr(self.cfg.reducer, "hdbscan_min_cluster_size", 0) or 0
+                ),
+                min_samples_cfg=int(
+                    getattr(self.cfg.reducer, "hdbscan_min_samples", 0) or 0
+                ),
+            )
+            cluster_column: list[int] = [-1] * len(df)
+            for src_i, tgt_i in enumerate(valid_indices):
+                cluster_column[tgt_i] = valid_cluster_ids[src_i]
+            df["cluster_id"] = cluster_column
 
         return DocumentBatch(
             task_id=task.task_id,

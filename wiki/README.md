@@ -23,7 +23,6 @@ files without grepping the workspace first.
 | [`MODELS.md`](MODELS.md) | Four-model NER roster on NIM (`openai/gpt-oss-120b` canonical, plus Nemotron-3 and two Qwen MoE), deterministic sampling profile, per-model reasoning toggles | `packages/extractor/ner/client.py`, `configs/default.yaml` |
 | [`TIMELINE.md`](TIMELINE.md) | Date-anchored event-line projection of an NER record — `meta` / `main` swimlanes, `WhenAnchor` schema, F1–F5 relative-temporal families, Mermaid renderer | `packages/extractor/timeline/` |
 | [`DEVELOPMENT.md`](DEVELOPMENT.md) | Phase-anchored development-arc projection of an NER record — seven-phase taxonomy (`preamble` → `signature`), per-phase entity delta (`*_introduced` / `*_carried`) | `packages/extractor/development/` |
-| [`DICHVUCONG.md`](DICHVUCONG.md) | National administrative-procedure (thủ tục hành chính) API + curation — the `dichvucong.gov.vn` `rest.jsp` gateway that aggregates every ministry + province (incl. Bộ Công An), the curated row schema, and the state-reconcile freshness mechanism (added/amended/withdrawn + supersession) | `packages/datasites/dichvucong/` |
 | [`ANLE.md`](ANLE.md) | Reading the `anle.toaan.gov.vn` corpus as ordinary Vietnamese court decisions (not precedents) — `doc_code` grammar, the canonical five-section case anatomy, per-area party/statute/outcome specialization, and the application-build + LLM-finetune consumer recipes | `packages/extractor/structure.py`, `packages/extractor/generic.py`, `packages/extractor/precedent.py`, `scripts/classify_anle.py` |
 
 ## Reading order

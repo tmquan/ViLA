@@ -26,7 +26,11 @@ must deal with otherwise:
    ``(?<![qQ])`` lookbehind so qu-initial syllables stay intact
    (``Quỳnh``, ``Quý``, ``quà``, ``quá``: the ``qu`` digraph is a
    single onset, the vowel after it carries the tone natively, no
-   reform happened).
+   reform happened). The rewrite only fires on OPEN syllables — a
+   digraph followed by a letter (final consonant as in ``hoạt`` /
+   ``toàn``, or off-glide as in ``ngoài`` / ``khuỷu``) already has
+   the tone mark in its only correct position under both the old and
+   the new convention, and must not be touched.
 
 3. PDF-extractor whitespace artefacts: runs of spaces inside words
    ("thà nh phố"), trailing spaces before newlines, and stray
@@ -134,7 +138,18 @@ def _build_tone_re(table: dict[str, str]) -> re.Pattern[str]:
 
     ``o``-headed digraphs have no analogous trap (Vietnamese has no
     ``qo`` / ``ko`` single-onset that would put ``o`` outside the
-    rime), so they alternate without a guard.
+    rime), so they alternate without a lookbehind guard.
+
+    Every key additionally requires that the digraph ENDS the
+    syllable: the pre-/post-1984 reform only moved the tone mark on
+    OPEN syllables (``hoà → hòa``, ``thuỷ → thủy``). When a letter
+    follows the digraph the tone mark on the tail vowel is the one
+    and only correct placement in both conventions — a final
+    consonant (``hoạt``, ``toàn``, ``soát``) or an off-glide
+    (``ngoài``, ``ngoáy``, ``khuỷu``) — so rewriting there corrupts
+    the word (``hoạt → họat``). A trailing ``(?![^\\W\\d_])``
+    (not-followed-by-a-letter, Unicode-aware) lookahead confines the
+    rewrite to syllable-final digraphs.
     """
     o_keys = sorted(
         (k for k in table if k[:1].lower() == "o"),
@@ -153,7 +168,9 @@ def _build_tone_re(table: dict[str, str]) -> re.Pattern[str]:
             + "|".join(re.escape(k) for k in u_keys)
             + ")"
         )
-    return re.compile("|".join(parts))
+    # ``[^\W\d_]`` == "a Unicode letter"; the negative lookahead keeps
+    # the rewrite off closed syllables and triphthongs (see docstring).
+    return re.compile("(?:" + "|".join(parts) + r")(?![^\W\d_])")
 
 
 _TONE_RE = _build_tone_re(_TONE_TABLE)

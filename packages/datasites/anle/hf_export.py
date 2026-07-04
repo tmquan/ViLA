@@ -939,6 +939,12 @@ def _render_card(
     reduce = manifest["pipeline"]["reduce"]
     embed_model_id = embed["model_id"]
     embed_dim = embed["dim"]
+    # doc_type composition for the schema note (derived from the same
+    # manifest stats the class tables use, so it cannot drift).
+    _dt = manifest["by_doc_type"]
+    n_dt_ban_an = _format_int((_dt.get("ban_an") or {}).get("count", 0))
+    n_dt_quyet_dinh = _format_int((_dt.get("quyet_dinh") or {}).get("count", 0))
+    n_dt_null = _format_int((_dt.get("unknown") or {}).get("count", 0))
 
     front = _yaml_frontmatter(
         manifest, license_id,
@@ -1031,7 +1037,7 @@ of columns:
 | `source` | string | Source host, always `anle.toaan.gov.vn`. |
 | `detail_url` / `pdf_url` | string | Deep link back to the portal page / PDF. |
 | `doc_code` | string | E.g. `38/2021/DS-PT` (sequence/year/case-type-procedure). |
-| `doc_type` | string | `ban_an` \| `quyet_dinh` \| `an_le` \| `ban_cao_trang`. |
+| `doc_type` | string | Structure-layer form of the underlying document. Full taxonomy: `ban_an` \| `quyet_dinh` \| `an_le` \| `ban_cao_trang`; **in this corpus only `ban_an` ({n_dt_ban_an}), `quyet_dinh` ({n_dt_quyet_dinh}) and `null` ({n_dt_null}) occur** — the adopted precedents themselves are flagged via `precedent_number`, not `doc_type`. |
 | `case_type` | string | `dan_su` \| `hinh_su` \| `hon_nhan_gia_dinh` \| `lao_dong` \| `kinh_doanh_thuong_mai` \| `hanh_chinh`. |
 | `doc_subtype` | string | `so_tham` \| `phuc_tham` \| `giam_doc_tham` \| `tai_tham` \| `an_le`. |
 | `year` | int32 | Year extracted from `doc_code`. |
@@ -1040,7 +1046,7 @@ of columns:
 | `issue_date` | string | ISO 8601 issue date when discoverable. |
 | `issuing_authority` | string | Full court name. |
 | `court_level` | string | `huyen` \| `tinh` \| `cap_cao` \| `toi_cao`. |
-| `jurisdiction` | string | Province / city qualifier extracted from the body. |
+| `jurisdiction` | string | **Deprecated — do not use for legal analysis; scheduled for removal in the next schema revision.** Locality token substring-parsed out of `issuing_authority` (the token after the most-specific `huyện`/`quận`/`thị xã`/`tỉnh`/`thành phố` marker in the court name). It records the court's *seat*, **not** its territorial jurisdiction (*thẩm quyền theo lãnh thổ*) — e.g. the High Court seated in Ho Chi Minh City hears appeals from the whole southern region. 100% re-derivable from `issuing_authority`; ~65% `null` (letterheads like `TÒA ÁN NHÂN DÂN CẤP CAO TẠI ĐÀ NẴNG` carry no marker); district values lack their province; OCR noise passes through verbatim. Prefer `issuing_authority` + `court_level`. |
 
 ### Body + stats
 
@@ -1049,7 +1055,7 @@ of columns:
 | `markdown` | string | NFC-normalised, modern-orthography Vietnamese markdown (page-segmented with `## Page N` headings). |
 | `num_pages` / `num_sections` / `num_paragraphs` / `num_sentences` | int32 | Counts from the structure layer. |
 | `char_len` | int32 | Character length of `markdown`. |
-| `text_hash` | string | SHA-256 first-32 hex of `markdown` (re-run-stable id). |
+| `text_hash` | string | SHA-256 first-32 hex of the extract-stage markdown; stable join key across `documents` / `sentences` / `embed` / `reduce`. Computed **before** the 2026-07 tone-mark repair (see *Limitations*), so it intentionally does not re-hash the shipped `markdown`. |
 | `parser_model` / `parsed_at` | string | Provenance for the parse stage. |
 
 ### Hierarchy + entities
@@ -1122,6 +1128,57 @@ All five layers are deterministic and re-runnable.
 
 Captured: `{manifest.get('completed_at')}`.
 
+## Hạn chế & lưu ý · Limitations & caveats
+
+* **Tone-mark erratum (repaired 2026-07).** Parquet revisions published
+  before July 2026 carried a normalizer bug that moved tone marks inside
+  *closed* syllables (`hoạt → họat`, `toàn → tòan`, `ngoài → ngòai`),
+  affecting 1,962 of 1,963 documents. The text columns in this revision
+  are repaired (the swap is length-preserving, so `char_len` and entity
+  offsets stay valid). Two consequences remain: `text_hash` /
+  `embedding_text_hash` still hash the pre-repair text (kept as stable
+  join keys), and the shipped embeddings were computed from the
+  pre-repair sentences — the drift is confined to tone-mark placement
+  within affected syllables.
+* **`jurisdiction` is deprecated.** See the schema note: it is a lossy,
+  fully re-derivable substring of `issuing_authority`, records the
+  court's seat rather than its territorial jurisdiction, and is `null`
+  for ~65% of rows. It will be dropped in the next schema revision.
+* **Weak / regex labels.** `doc_type`, `case_type`, `doc_subtype`,
+  `court_level` and the extraction layers are deterministic regex
+  heuristics over OCR-imperfect PDF text, not human annotation. Expect
+  residual noise in all classification columns, and OCR noise
+  (letterhead dashes, truncated names) in `issuing_authority`.
+* **Court-taxonomy vintage.** `court_level` follows the pre-2025 court
+  organization (`huyen`/`tinh`/`cap_cao`/`toi_cao`). Vietnam's 2025
+  court reorganization replaced district-level courts with regional
+  courts (Tòa án nhân dân khu vực); documents in this corpus predate
+  that change.
+
+## Dữ liệu cá nhân · Personal data & anonymization
+
+Bản án, quyết định trên cổng của Toà án nhân dân tối cao được mã hoá
+thông tin cá nhân trước khi công bố theo **Nghị quyết
+03/2017/NQ-HĐTP** của Hội đồng Thẩm phán: tên đương sự được thay bằng
+ký hiệu (ví dụ "Nguyễn Văn A", "bà B"), địa chỉ và số giấy tờ được rút
+gọn. — Judgments and decisions on the Supreme People's Court portal
+are anonymized by the courts before publication under **Resolution
+03/2017/NQ-HĐTP** of the Council of Judges: party names are replaced
+with coded forms (e.g. "Nguyễn Văn A", "Mrs. B"), addresses and ID
+numbers are truncated.
+
+* Names of judges, prosecutors and court clerks (public officials
+  acting in their official capacity), case numbers and dates remain in
+  the text as published.
+* Anonymization is applied by the issuing court and can be incomplete
+  in places (e.g. organization names, land-parcel or vehicle
+  identifiers). This dataset redistributes the portal text **verbatim**
+  — no additional anonymization and no de-anonymization was performed.
+* Do **not** attempt to re-identify anonymized parties. Downstream
+  processing of personal data must comply with Vietnam's personal-data
+  framework (Decree 13/2023/NĐ-CP and the Personal Data Protection Law
+  effective 2026) and any law applicable to you (e.g. GDPR).
+
 ## Nguồn · Source
 
 * Portal: <https://anle.toaan.gov.vn/>
@@ -1130,12 +1187,18 @@ Captured: `{manifest.get('completed_at')}`.
 ## Giấy phép · License
 
 Văn bản gốc được Toà án nhân dân tối cao công bố trên cổng thông tin
-công cộng. Bản phân phối lại này dùng giấy phép **{license_id.upper()}**;
-vui lòng kiểm tra điều khoản sử dụng của trang nguồn trước khi tái
-phân phối thương mại. — The source documents are published by the
-Supreme People's Court on a public portal. This redistribution is
-shared under **{license_id.upper()}**; please check the source-website
-terms of use before commercial redistribution.
+công cộng. Theo **Điều 15 Luật Sở hữu trí tuệ**, văn bản tư pháp không
+thuộc phạm vi bảo hộ quyền tác giả, nên giấy phép **{license_id.upper()}** ở đây
+chỉ áp dụng cho phần tuyển chọn, cấu trúc hoá, chú giải và embedding do
+bộ dữ liệu này bổ sung — không áp dụng cho văn bản toà án gốc. Vui lòng
+kiểm tra điều khoản sử dụng của trang nguồn trước khi tái phân phối
+thương mại. — The source documents are published by the Supreme
+People's Court on a public portal. Under **Article 15 of Vietnam's
+Intellectual Property Law**, judicial documents are excluded from
+copyright, so the **{license_id.upper()}** grant here covers only the curation,
+structuring, annotations and embeddings added by this distribution —
+not the underlying court texts. Please check the source-website terms
+of use before commercial redistribution.
 
 ## Trích dẫn · Citation
 

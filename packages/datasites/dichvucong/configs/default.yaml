@@ -1,67 +1,44 @@
-# Default config for the dichvucong datasite.
+# Default config for dichvucong (national portal /api/v1, Playwright).
 #
-# OmegaConf-based. Use `_base: default.yaml` from a sibling file to
-# override any subset of this; lists are REPLACED, mappings are
-# DEEP-MERGED. CLI dotlist overrides via `--override path.to.key=value`
-# are applied last.
-#
-# dichvucong is a JSON-API datasite: the national portal's
-# `POST /jsp/rest.jsp` gateway returns structured records directly, so
-# there is no PDF parse / OCR step. The crawl + extract pipelines write
-# per-procedure JSONL; embed / reduce reuse the shared factories if a
-# downstream vector index is wanted.
+# The 2025+ SPA serves full structured procedure detail through public
+# /api/v1 endpoints behind an F5/TSPD WAF. We drive a headless browser
+# (challenge solved once, then in-page fetch) — no Ray, no auth.
 
 host: dichvucong.gov.vn
 output_dir: ./data
 full_text_context: 32768
 
 scraper:
-  # rest.jsp gateway on the VPCP front-end (covers all ministries +
-  # provinces, incl. Bộ Công An).
-  rest_url: "https://vpcp.dichvucong.gov.vn/jsp/rest.jsp"
-  referer: "https://vpcp.dichvucong.gov.vn/p/home/dvc-tthc-thu-tuc-hanh-chinh.html"
-  search_service: "procedure_advanced_search_service_v2"
-
-  # Pagination / enumeration.
-  record_per_page: 50
-  start_page: 1
-  max_pages: 2000          # safety cap; auto-stops on a short/empty page
-  agency_type: 1           # 1 = Bộ/Ban/Ngành; provincial variants differ
-  shard_by_agency: false   # true -> walk pages per impl_agency_id
-
-  # Per-procedure detail enrichment is opt-in: the search service
-  # already returns the full curatable metadata, and the detail
-  # service's id-param is portal-version-specific. Confirm + enable
-  # before relying on it.
-  fetch_detail: false
-  detail_service: "proc_id_service"
-  detail_id_param: "procedure_id"
-  detail_url_template: "https://dichvucong.gov.vn/p/home/dvc-chi-tiet-thu-tuc-hanh-chinh.html?ma_thu_tuc={code}"
-
-  # Polite-crawl envelope (government host).
-  num_workers: 2
-  qps: 1.0
-  user_agent: "ViLA-research/0.1 (+https://example.vn/contact)"
-  proxy: null
+  base_url: "https://dichvucong.gov.vn"
+  formality_target_type: "VIETNAMESE_CITIZEN"
+  # Union across audiences to maximise distinct-procedure coverage. The list
+  # is the same endpoint; each audience surfaces a partly-different set.
+  formality_target_types:
+    - VIETNAMESE_CITIZEN
+    - FOREIGNER
+    - OVERSEAS_VIETNAMESE
+    - ENTERPRISE
+    - ORGANIZATION
+    - BUSINESS
+    - OTHER
+  record_per_page: 100          # list page size (lastId cursor)
+  max_pages: 100000             # safety cap; stops when lastId stalls
+  headless: true
+  browser: chromium
+  nav_timeout_s: 60.0
+  qps: 4.0                      # in-page fetch rate (polite)
+  user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
   timeout_s: 60.0
-  max_retries: 5
-  verify_tls: true
 
-stage_overrides:
-  extract_files_per_partition: 8
-
-# Downstream stages kept at schema defaults; only consumed if an
-# embed/reduce step is wired on the curated JSONL.
 embedder:
   model_id: nvidia/llama-nemotron-embed-1b-v2
   runtime: nim
-  text_field: procedure_name
-  batch_size: 16
-  max_seq_length: 8192
+  text_field: content_text
   chunking: sentence
   chunk_overlap: 128
 
 reducer:
-  methods: [pca, umap]
+  methods: [pca, umap, tsne]
   n_components: 2
   prefer_gpu: true
+  cluster: false

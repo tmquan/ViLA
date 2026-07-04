@@ -227,10 +227,10 @@ class NemotronParseExtractor(PDFExtractor):
 
 ---
 
-## Slide 25h — The 8 Vietnamese Legal Data Downloaders
+## Slide 25h — The 6 Vietnamese Legal Data Downloaders
 
 Each datasite ships a `DocumentDownloader` subclass (Advanced
-Customization pattern). Eight sources feed the same `PDFExtractor`:
+Customization pattern). Six sources feed the same `PDFExtractor`:
 
 | # | Datasite | Host | Corpus | Body | Downloader |
 |---|----------|------|--------|------|-----------|
@@ -239,13 +239,11 @@ Customization pattern). Eight sources feed the same `PDFExtractor`:
 | 3 | `vbpl` | vbpl.vn | Văn bản QPPL (statutes) | HTML+PDF | `VbplDetailDownloader` |
 | 4 | `phapdien` | phapdien.moj.gov.vn | Bộ Pháp Điển (codified) | HTML (WebForms) | `PhapdienCrawler` (no PDF) |
 | 5 | `pbgdpl` | pbgdpl.gov.vn | Phổ biến GDPL | PDF+HTML | `PbgdplDetailDownloader` |
-| 6 | `thuvienphapluat_banan` | thuvienphapluat.vn/banan | Bản án (aggregator) | HTML | `BananDetailDownloader` |
-| 7 | `thuvienphapluat_tnpl` | thuvienphapluat.vn/tnpl | Thuật ngữ pháp lý | HTML | `TnplDetailDownloader` |
-| 8 | `luutru` | luutru.gov.vn | Lưu trữ (archives) | PDF/DOCX | `LuutruDocumentDownloader` |
+| 6 | `thuvienphapluat_tnpl` | thuvienphapluat.vn/tnpl | Thuật ngữ pháp lý | HTML | `TnplDetailDownloader` |
 
-PDF-bearing sites (anle, congbobanan, vbpl, pbgdpl, luutru) flow through
-`PdfExtractStage`; HTML-only sites (phapdien, thuvienphapluat_*) bypass
-it (`PARSING.md §6.2`).
+PDF-bearing sites (anle, congbobanan, vbpl, pbgdpl) flow through
+`PdfExtractStage`; HTML-only sites (phapdien, thuvienphapluat_tnpl)
+bypass it (`PARSING.md §6`).
 
 ```python
 # Advanced Customization — every downloader follows this shape

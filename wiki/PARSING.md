@@ -464,7 +464,7 @@ oblivious to those fields — it adds the parsing-derived keys
 This makes the sidecar a *co-update* of two independent sources:
 HTML-scraped sidebar metadata and parser output.
 
-Two patterns ship today:
+One pattern ships today:
 
 ### 6.1 Congbobanan / anle / phapdien — PDF body + HTML sidebar
 
@@ -482,21 +482,7 @@ strips `pdf_bytes` out, adds `pages` / `markdown` / `parser_model`
 all originate from this HTML sidebar — they pass through the
 parse stage unchanged. See § 9 for the full schema.
 
-### 6.2 Thuvienphapluat_banan — HTML body, no PDF
-
-This site has no PDF download path (the source is a Cloudflare
-Turnstile-protected detail page). Its parser
-(`packages/datasites/thuvienphapluat_banan/components/parse.py`)
-takes the *HTML* body harvested into `docs.jsonl::body_html`,
-converts it to markdown, and writes the same `<id>.md` /
-`<id>.meta.json` shape as the PDF datasites. The sidecar is
-populated entirely from HTML-scraped fields (`ban_an_id`,
-`ten_ban_an`, `ngay_ban_an`, `cap_xet_xu`, `loai_vu_viec`,
-`html_path`, …). This datasite is the canonical reference for
-"HTML in, markdown + sidecar out" as a parsing path that bypasses
-`PypdfParser` and `HybridParser` entirely.
-
-### 6.3 Conventions for new datasites
+### 6.2 Conventions for new datasites
 
 * **Parser stage stays write-once.** Don't mutate row keys that
   the harvester already populated; only *add* parser-derived

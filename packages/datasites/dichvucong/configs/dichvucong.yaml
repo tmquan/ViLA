@@ -1,17 +1,9 @@
 _base: default.yaml
 
-# dichvucong.gov.vn — Cổng Dịch vụ công Quốc gia (national TTHC).
-#
-# The national gateway already aggregates every ministry + province, so
-# the defaults pull "everything" (no agency filter). To shard a very
-# large pull (or to dodge any deep-pagination cap), set:
-#
-#   scraper:
-#     shard_by_agency: true
-#
-# To pull only one ministry (e.g. Bộ Công An), set its impl_agency_id
-# via an override after looking it up through the agency list service.
+# New national portal (dichvucong.gov.vn /api/v1). Full structured TTHC
+# detail, all agencies, public (no VNeID). Pilot with --limit; full run
+# is resumable (cached json/<formality_id>.json skip).
 
 scraper:
-  qps: 1.0
-  record_per_page: 50
+  qps: 4.0
+  record_per_page: 100

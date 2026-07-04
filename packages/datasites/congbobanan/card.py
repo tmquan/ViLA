@@ -206,7 +206,21 @@ def _classes(stats: dict) -> str:
             return ""
         return f"### {title_vi} · {title_en}\n\n{_bar(d, **kw)}\n"
 
-    parts.append(block("Loại văn bản", "Document type (`doc_type`)", "by_doc_type"))
+    # analyze.py counts the crawl-JSONL sidebar slug (hyphenated), not the
+    # shipped parquet `doc_type` column — label the table accordingly and
+    # flag the mismatch. NOTE: keep the parquet counts in sync with corpus
+    # stats.
+    doc_type_block = block("Loại văn bản", "Document type (portal sidebar label)",
+                           "by_doc_type")
+    if doc_type_block:
+        doc_type_block += (
+            "\n> Crawl-time portal slugs (hyphenated). The shipped "
+            "`documents.doc_type` parquet column is the structure layer's "
+            "regex classification (underscored: `quyet_dinh` 761,376 / "
+            "`ban_an` 592,448 / `null` 16,786 / `an_le` 106 / "
+            "`ban_cao_trang` 10) and disagrees with the portal slug for "
+            "~2% of rows.\n")
+    parts.append(doc_type_block)
     parts.append(block("Loại vụ việc", "Case category (`loai_vu_viec`)",
                        "by_loai_vu_viec"))
     parts.append(block("Lĩnh vực", "Case type (`case_type`, from structure layer)",
@@ -371,7 +385,7 @@ The dataset ships **four** Hugging Face configs, all joinable on the
 | `issue_date` | string | ISO 8601 issue date when discoverable. |
 | `issuing_authority` | string | Full court name. |
 | `court_level` | string | `huyen` \\| `tinh` \\| `cap_cao` \\| `toi_cao`. |
-| `jurisdiction` | string | Province / city qualifier. |
+| `jurisdiction` | string | **Deprecated — do not use for legal analysis; scheduled for removal in the next schema revision.** Locality token substring-parsed out of `issuing_authority` (the token after the most-specific `huyện`/`quận`/`thị xã`/`tỉnh`/`thành phố` marker in the court name). It records the court's *seat*, **not** its territorial jurisdiction (*thẩm quyền theo lãnh thổ*). 100% re-derivable from `issuing_authority`; ~31% `null`; ~9% of rows carry 1–2-character OCR truncation noise (`T`, `Đ`, `N`, …); district values lack their province, and 73% of district-level rows carry a district name that exists in more than one province (e.g. `CHÂU THÀNH` occurs in 10+ provinces). Prefer `issuing_authority` + `court_level`. |
 
 **Sidebar metadata (HTML detail-page co-update — see *How built*)**
 
@@ -401,7 +415,7 @@ Any sidebar field may be `null` on ghost / sparse detail pages.
 | `markdown` | string | NFC-normalised, modern-orthography Vietnamese markdown (page-segmented with `## Page N`). |
 | `num_pages` / `num_sections` / `num_paragraphs` / `num_sentences` | int32 | Counts from the structure layer. |
 | `char_len` | int32 | Character length of `markdown`. |
-| `text_hash` | string | SHA-256 (first 32 hex) of `markdown`. |
+| `text_hash` | string | SHA-256 (first 32 hex) of the extract-stage markdown; stable join key across `documents` / `sentences` / `embed` / `reduce`. Computed **before** the 2026-07 tone-mark repair (see *Data-quality caveats*), so it intentionally does not re-hash the shipped `markdown`. |
 | `parser_model` / `parsed_at` | string | Parse-stage provenance. |
 | `confidence` | float64 (nullable) | Parser confidence; `null` for the default parser. |
 | `structure_json` | string | Full `DocumentStructure` (meta + stats + sections + paragraphs + sentences) as JSON. |
@@ -502,6 +516,30 @@ unchanged, making each record a *co-update* of two independent sources
 * **Free-text facets.** `quan_he_phap_luat` and `toa_an_xet_xu` are
   high-cardinality free text; the figures show only the head of a long
   tail.
+* **Tone-mark erratum (repaired 2026-07).** Parquet revisions published
+  before July 2026 carried a normalizer bug that moved tone marks inside
+  *closed* syllables (`hoạt → họat`, `toàn → tòan`, `ngoài → ngòai`),
+  affecting ≈99.7% of documents (19.5M cells). The text columns in this
+  revision are repaired (the swap is length-preserving, so `char_len`
+  and entity offsets stay valid). Two consequences remain: `text_hash` /
+  `embedding_text_hash` still hash the pre-repair text (kept as stable
+  join keys), and the shipped embeddings were computed from the
+  pre-repair sentences — the drift is confined to tone-mark placement
+  within affected syllables.
+* **`jurisdiction` is deprecated.** See the schema note: it is a lossy,
+  fully re-derivable substring of `issuing_authority`, records the
+  court's seat rather than its territorial jurisdiction, and carries
+  heavy truncation noise. It will be dropped in the next schema
+  revision.
+* **Court-taxonomy vintage.** `court_level` follows the pre-2025 court
+  organization (`huyen`/`tinh`/`cap_cao`/`toi_cao`). Vietnam's 2025
+  court reorganization replaced district-level courts with regional
+  courts (Tòa án nhân dân khu vực); judgments in this corpus predate
+  that change.
+* **Class tables and `null`s.** Sidebar-facet tables (e.g.
+  `cap_xet_xu`, `ap_dung_an_le`) count labelled rows only; sums below
+  1,370,726 are rows whose sidebar field is `null`, not a rounding
+  error.
 
 Captured: `{captured or 'n/a'}`.
 """
@@ -509,7 +547,32 @@ Captured: `{captured or 'n/a'}`.
 
 def _footer(repo: str, license_id: str, embed_dim: int) -> str:
     lic = license_id.upper()
-    return f"""## Nguồn · Source
+    return f"""## Dữ liệu cá nhân · Personal data & anonymization
+
+Bản án, quyết định trên cổng của Toà án nhân dân tối cao được mã hoá
+thông tin cá nhân trước khi công bố theo **Nghị quyết
+03/2017/NQ-HĐTP** của Hội đồng Thẩm phán: tên đương sự được thay bằng
+ký hiệu (ví dụ "Nguyễn Văn A", "bà B"), địa chỉ và số giấy tờ được rút
+gọn. — Judgments and decisions on the Supreme People's Court portal
+are anonymized by the courts before publication under **Resolution
+03/2017/NQ-HĐTP** of the Council of Judges: party names are replaced
+with coded forms (e.g. "Nguyễn Văn A", "Mrs. B"), addresses and ID
+numbers are truncated.
+
+* Names of judges, prosecutors and court clerks (public officials
+  acting in their official capacity), case numbers and dates remain in
+  the text as published.
+* At this corpus scale (~1.37M judgments), anonymization quality varies
+  by issuing court and can be incomplete in places (e.g. organization
+  names, land-parcel or vehicle identifiers, occasional missed names).
+  This dataset redistributes the portal text **verbatim** — no
+  additional anonymization and no de-anonymization was performed.
+* Do **not** attempt to re-identify anonymized parties. Downstream
+  processing of personal data must comply with Vietnam's personal-data
+  framework (Decree 13/2023/NĐ-CP and the Personal Data Protection Law
+  effective 2026) and any law applicable to you (e.g. GDPR).
+
+## Nguồn · Source
 
 * Portal: <https://congbobanan.toaan.gov.vn/>
 * Publisher: Supreme People's Court of Vietnam (Tòa án nhân dân tối cao)
@@ -517,12 +580,18 @@ def _footer(repo: str, license_id: str, embed_dim: int) -> str:
 ## Giấy phép · License
 
 Văn bản gốc được Toà án nhân dân tối cao công bố trên cổng thông tin
-công cộng. Bản phân phối lại này dùng giấy phép **{lic}**; vui lòng
+công cộng. Theo **Điều 15 Luật Sở hữu trí tuệ**, văn bản tư pháp không
+thuộc phạm vi bảo hộ quyền tác giả, nên giấy phép **{lic}** ở đây
+chỉ áp dụng cho phần tuyển chọn, cấu trúc hoá, chú giải và embedding do
+bộ dữ liệu này bổ sung — không áp dụng cho văn bản toà án gốc. Vui lòng
 kiểm tra điều khoản sử dụng của trang nguồn trước khi tái phân phối
 thương mại. — The source documents are published by the Supreme
-People's Court on a public portal. This redistribution is shared under
-**{lic}**; please check the source-website terms of use before
-commercial redistribution.
+People's Court on a public portal. Under **Article 15 of Vietnam's
+Intellectual Property Law**, judicial documents are excluded from
+copyright, so the **{lic}** grant here covers only the curation,
+structuring, annotations and embeddings added by this distribution —
+not the underlying court texts. Please check the source-website terms
+of use before commercial redistribution.
 
 ## Trích dẫn · Citation
 
