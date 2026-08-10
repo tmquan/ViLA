@@ -209,6 +209,18 @@ class ScraperCfg:
     # common headless tells (navigator.webdriver, plugins, ...). On
     # for vbpl; off for diagnostic runs.
     stealth: bool = True
+    # ---- SPA listing harvester (vbpl `harvest_spa`) ------------------
+    # Stop a listing scope after this many consecutive pages yield no
+    # NEW document ids (guards against paginating forever). ``page_param``
+    # / ``start_page`` / ``max_pages`` above are reused for pagination;
+    # tune ``page_param`` to the site's real scheme when running live.
+    stop_after_empty: int = 3
+    # Per-scope listing landing pages ({scope: url}); empty => the
+    # harvester's built-in vbpl.vn defaults.
+    listing_templates: dict[str, str] = field(default_factory=dict)
+    # CSS selector for detail-page anchors on the listing; empty => the
+    # harvester default (``a[href*="/van-ban/chi-tiet/"]``).
+    detail_link_selector: str = ""
 
     # ---- dichvucong national-TTHC crawler ----------------------------
     # dichvucong.gov.vn is crawled by a thin ``scraper.py`` (``list`` ->
@@ -555,6 +567,13 @@ class EmbedderCfg:
     chunk_overlap: int = 256    # in tokens (converted to chars via chars_per_token)
     model_dtype: str = "bfloat16"
     device: str = "auto"    # auto / cuda / cpu
+    # Instruction prefix prepended to every document before embedding,
+    # for instruction-tuned embedders that expect it (HF runtime only).
+    # NVIDIA Nemotron-3-Embed, e.g., uses ``document_prompt: "passage: "``;
+    # its ``query: `` counterpart is a search-time concern, not part of
+    # this ingestion pipeline. Empty (the default) preserves the raw
+    # mean-pool behaviour for models that take no prompt.
+    document_prompt: str = ""
     # NIM base URL for the embedder runtime. Defaults to the parser's
     # ``nim_base_url`` via OmegaConf interpolation so the common case
     # (single NIM cluster for both parser + embedder) needs no extra
@@ -763,6 +782,51 @@ class ShardsCfg:
 
 
 @dataclass
+class TriageCfg:
+    """PDF triage settings (stage 2a: native / deferred split).
+
+    Drives the GPU-free classification pass that splits a PDF corpus in
+    two before any extraction happens: documents with a trustworthy
+    embedded text layer go to the ``pdf_native`` pipeline, everything
+    else is written to a deferred manifest annotated with suggested
+    OCR / VLM models. See :mod:`packages.parser.triage`.
+
+    ``min_local_chars`` and ``max_lossy_score`` intentionally duplicate
+    the identically-named :class:`ParserCfg` knobs rather than
+    referencing them. Keeping them separate lets an operator tighten
+    triage (to shrink the expensive OCR cohort) without also changing
+    the live :class:`~packages.parser.hybrid.HybridParser` routing that
+    the existing ``parse`` pipeline depends on. Leave them equal unless
+    you specifically want the offline tag and the live route to differ.
+    """
+
+    #: Minimum stripped-markdown length before a PDF counts as having a
+    #: text layer. Below this it is tagged ``scanned_image``.
+    min_local_chars: int = 50
+    #: Maximum tolerable ``lossy_score``; above it the text layer is
+    #: unreadable and the doc is tagged ``font_corrupted``.
+    max_lossy_score: float = 0.05
+    #: Documents packed into each Ray task. Triage is pypdf-bound, so a
+    #: larger value amortises task overhead on big corpora.
+    pdfs_per_task: int = 32
+    #: Extensions enumerated from ``pdf/``. Matches the list the
+    #: existing parse pipelines hand to ``FilePartitioningStage``.
+    extensions: list[str] = field(
+        default_factory=lambda: [".pdf", ".docx", ".doc"]
+    )
+    #: Manifest output directory, relative to the site root.
+    manifest_subdir: str = "manifests"
+    #: Interleaved parquet output directory, relative to ``parquet/``.
+    interleaved_subdir: str = "interleaved"
+    #: Also write ViLA's ``md/<doc>.md`` + ``.meta.json`` tier so the
+    #: existing extract / embed / reduce pipelines can consume the
+    #: output unchanged.
+    write_markdown_sidecar: bool = True
+    #: Skip documents whose markdown already exists (resume support).
+    skip_existing: bool = False
+
+
+@dataclass
 class PipelineCfg:
     """Top-level pipeline config consumed by stage factories and the CLI.
 
@@ -779,6 +843,7 @@ class PipelineCfg:
     full_text_context: int = 32768
     scraper: ScraperCfg = field(default_factory=ScraperCfg)
     parser: ParserCfg = field(default_factory=ParserCfg)
+    triage: TriageCfg = field(default_factory=TriageCfg)
     extractor: ExtractorCfg = field(default_factory=ExtractorCfg)
     embedder: EmbedderCfg = field(default_factory=EmbedderCfg)
     reducer: ReducerCfg = field(default_factory=ReducerCfg)

@@ -1,53 +1,20 @@
-"""CLI entry for the five-pipeline congbobanan curation flow.
+"""CLI entry for the congbobanan download+extract runner.
 
-    # Run all five sequentially (download -> parse -> extract -> embed -> reduce)
-    python -m packages.datasites.congbobanan --pipeline all --executor xenna --limit 100
+Delegates to the single-IP paced runner in
+:mod:`packages.datasites.congbobanan.pipeline`::
 
-    # Re-run a single stage against existing inputs on disk
-    python -m packages.datasites.congbobanan --pipeline embed
-    python -m packages.datasites.congbobanan --pipeline reduce
+    python -m packages.datasites.congbobanan --start 1 --end 100
+    python -m packages.datasites.congbobanan --url-list urls.txt --proxy http://vn-egress:3128
 
-    # Bounded smoke test
-    python -m packages.datasites.congbobanan --pipeline download \\
-        --override scraper.start_id=1 scraper.end_id=10
-
-    # Remote Ray cluster (VN-egress mandatory: the host rejects non-VN IPs)
-    python -m packages.datasites.congbobanan --pipeline all \\
-        --executor ray_actor_pool --ray-address ray://head:10001 \\
-        --override scraper.proxy=http://vn-egress:3128
-
-All real work is delegated to
-:func:`packages.common.runner.run_curator_site`; this module only
-encodes the per-site pipeline registry + module wiring.
+congbobanan.toaan.gov.vn rejects non-VN source IPs; pass a VN-egress
+``--proxy`` or run on a VN VPS.
 """
 
 from __future__ import annotations
 
 import sys
 
-from packages.common.runner import run_curator_site
-from packages.datasites.congbobanan.pipeline import (
-    ALL_PIPELINES_ORDER,
-    PIPELINES,
-    build_pipeline,
-)
-
-
-def main(argv: list[str] | None = None) -> int:
-    return run_curator_site(
-        site="congbobanan",
-        pipelines=PIPELINES,
-        all_order=ALL_PIPELINES_ORDER,
-        build_pipeline=build_pipeline,
-        description="Run the congbobanan curation pipelines.",
-        pipeline_help=(
-            "Which pipeline to run. 'all' runs download -> parse -> extract "
-            "-> embed -> reduce in sequence; individual names re-run one "
-            "step against the prior step's on-disk output."
-        ),
-        argv=argv,
-    )
-
+from packages.datasites.congbobanan.pipeline import main
 
 if __name__ == "__main__":
     sys.exit(main())

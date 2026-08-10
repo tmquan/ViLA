@@ -26,6 +26,7 @@ class HuggingFaceEmbedder(EmbedderBackend):
         device: str = "auto",
         dtype: str = "bfloat16",
         trust_remote_code: bool = False,
+        prompt: str = "",
     ) -> None:
         from transformers import AutoModel, AutoTokenizer
 
@@ -40,6 +41,9 @@ class HuggingFaceEmbedder(EmbedderBackend):
                 model_id,
             )
         self.model_id = model_id
+        # Instruction prefix prepended to every input at embed time
+        # (empty => historical raw behaviour). See :func:`_apply_prompt`.
+        self._prompt = prompt
         self._tokenizer = AutoTokenizer.from_pretrained(
             model_id, trust_remote_code=trust_remote_code,
         )
@@ -70,6 +74,7 @@ class HuggingFaceEmbedder(EmbedderBackend):
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         import torch
 
+        texts = _apply_prompt(self._prompt, texts)
         enc = self._tokenizer(
             texts,
             padding=True,
@@ -88,6 +93,24 @@ class HuggingFaceEmbedder(EmbedderBackend):
         # Unit-normalize.
         vecs = torch.nn.functional.normalize(vecs, p=2, dim=-1)
         return [v.detach().cpu().float().tolist() for v in vecs]
+
+
+def _apply_prompt(prompt: str, texts: list[str]) -> list[str]:
+    """Prepend an instruction ``prompt`` to each text (no-op if empty).
+
+    Instruction-tuned sentence-transformers embedders expect the task
+    prompt baked into the input text. NVIDIA Nemotron-3-Embed, for
+    example, trains with ``passage: `` for documents (and ``query: ``
+    for search queries) and sets ``include_prompt: true`` so the prefix
+    participates in the mean pooling -- exactly what this backend does.
+
+    An empty ``prompt`` returns the texts unchanged, so the default
+    preserves the historical raw behaviour for models that take no
+    prompt (the current NIM/HF defaults).
+    """
+    if not prompt:
+        return texts
+    return [f"{prompt}{t}" for t in texts]
 
 
 def _resolve_device(device: str):

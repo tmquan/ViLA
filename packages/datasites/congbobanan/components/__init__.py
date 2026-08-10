@@ -2,24 +2,25 @@
 
 One subclass of each Curator abstract base:
 
-    url_generator.py  -- CongbobananURLGenerator    (URLGenerator)
-    downloader.py     -- CongbobananDocumentDownloader (DocumentDownloader)
-    iterator.py       -- CongbobananDocumentIterator (DocumentIterator)
-    extractor.py      -- CongbobananDocumentExtractor (DocumentExtractor)
+    url_generator.py  -- CongbobananURLGenerator  (URLGenerator)
+    downloader.py     -- CongbobananPDFDownloader  (PDFDownloader)
+    iterator.py       -- CongbobananIterator       (DocumentIterator)
+    extractor.py      -- CongbobananExtractor       (DocumentExtractor)
 
-Composed into :class:`nemo_curator.pipeline.Pipeline` instances by the
-top-level factories in ``packages.datasites.congbobanan.{download,parse,
-extract,embed,reduce}``.
+Composed into a :class:`nemo_curator.pipeline.Pipeline` by
+:class:`packages.datasites.congbobanan.pipeline.CongbobananDownloadExtractStage`.
 """
 
 from packages.datasites.congbobanan.components.downloader import (
-    CongbobananDocumentDownloader,
+    ACCEPTED_BODY_EXTENSIONS,
+    CongbobananPDFDownloader,
+    page_has_metadata,
 )
 from packages.datasites.congbobanan.components.extractor import (
-    CongbobananDocumentExtractor,
+    CongbobananExtractor,
 )
 from packages.datasites.congbobanan.components.iterator import (
-    CongbobananDocumentIterator,
+    CongbobananIterator,
 )
 from packages.datasites.congbobanan.components.url_generator import (
     CongbobananURLGenerator,
@@ -27,9 +28,11 @@ from packages.datasites.congbobanan.components.url_generator import (
 )
 
 __all__ = [
-    "CongbobananDocumentDownloader",
-    "CongbobananDocumentExtractor",
-    "CongbobananDocumentIterator",
+    "ACCEPTED_BODY_EXTENSIONS",
+    "CongbobananPDFDownloader",
+    "CongbobananExtractor",
+    "CongbobananIterator",
     "CongbobananURLGenerator",
     "doc_id_from_url",
+    "page_has_metadata",
 ]

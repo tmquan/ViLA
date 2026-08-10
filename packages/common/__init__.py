@@ -40,7 +40,19 @@ from packages.common.config import (
 )
 from packages.common.http import PoliteSession
 from packages.common.logging import SiteLogger
-from packages.common.schemas import ExecutorCfg, PipelineCfg, RayCfg, ShardsCfg
+from packages.common.pandas_compat import configure_pandas
+from packages.common.schemas import (
+    ExecutorCfg,
+    PipelineCfg,
+    RayCfg,
+    ShardsCfg,
+    TriageCfg,
+)
+
+# Restore pandas 2.x object-string semantics process-wide (see
+# packages.common.pandas_compat). Must run before any stage builds a
+# DataFrame from surrogate-bearing PDF metadata under pandas 3.0.
+configure_pandas()
 
 __all__ = [
     "EXECUTOR_CHOICES",
@@ -51,6 +63,7 @@ __all__ = [
     "ShardsCfg",
     "SiteLayout",
     "SiteLogger",
+    "TriageCfg",
     "apply_log_level",
     "apply_overrides",
     "build_arg_parser",

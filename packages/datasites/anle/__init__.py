@@ -1,50 +1,30 @@
 """anle.toaan.gov.vn datasite -- Vietnamese án lệ + bản án corpus.
 
-Top-level files map 1-to-1 onto the five Curator pipelines + the HF
-publish path:
+Canonical NeMo Curator structure:
 
-    download.py    -> URLs     -> PDFs
-    parse.py       -> PDFs     -> markdown
-    extract.py     -> markdown -> JSONL
-    embed.py       -> JSONL    -> embeddings parquet
-    reduce.py      -> embeddings parquet -> reduced parquet
-    pipeline.py    -> registry + ``build_pipeline(cfg, name)`` dispatch
-    hf_export.py   -> JSONL    -> hf/ (parquet + README + manifest)
-    push_to_hf.py  -> hf/      -> HuggingFace dataset repo
-
-The four Curator abstract-base subclasses (URLGenerator,
-DocumentDownloader, DocumentIterator, DocumentExtractor) live under
-:mod:`packages.datasites.anle.components`.
+    components/         the four abstract-base subclasses
+      url_generator.py  -> AnleURLGenerator  (URLGenerator)
+      downloader.py     -> AnlePDFDownloader (PDFDownloader)
+      iterator.py       -> AnleIterator      (DocumentIterator)
+      extractor.py      -> AnleExtractor     (DocumentExtractor)
+    pipeline.py         -> AnleDownloadExtractStage + paced main()
+    hf_export.py        -> JSONL -> hf/ (parquet + README + manifest)
+    push_to_hf.py       -> hf/ -> HuggingFace dataset repo
 """
 
 from packages.datasites.anle.components import (
-    AnleDocumentDownloader,
-    AnleDocumentExtractor,
-    AnleDocumentIterator,
+    AnleExtractor,
+    AnleIterator,
+    AnlePDFDownloader,
     AnleURLGenerator,
 )
-from packages.datasites.anle.pipeline import (
-    ALL_PIPELINES_ORDER,
-    PIPELINES,
-    build_download_pipeline,
-    build_embed_pipeline,
-    build_extract_pipeline,
-    build_parse_pipeline,
-    build_pipeline,
-    build_reduce_pipeline,
-)
+from packages.datasites.anle.pipeline import AnleConfig, AnleDownloadExtractStage
 
 __all__ = [
-    "ALL_PIPELINES_ORDER",
-    "PIPELINES",
-    "AnleDocumentDownloader",
-    "AnleDocumentExtractor",
-    "AnleDocumentIterator",
+    "AnleConfig",
+    "AnleDownloadExtractStage",
+    "AnleExtractor",
+    "AnleIterator",
+    "AnlePDFDownloader",
     "AnleURLGenerator",
-    "build_download_pipeline",
-    "build_embed_pipeline",
-    "build_extract_pipeline",
-    "build_parse_pipeline",
-    "build_pipeline",
-    "build_reduce_pipeline",
 ]

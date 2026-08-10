@@ -27,6 +27,10 @@ from packages.datasites.vbpl.components.harvester import (
     DEFAULT_SITEMAP_URL,
     VbplSitemapHarvester,
 )
+from packages.datasites.vbpl.components.listing_harvester import (
+    DEFAULT_LISTING_TEMPLATES,
+    VbplListingHarvester,
+)
 from packages.datasites.vbpl.components.parse import VbplDocumentParser
 from packages.datasites.vbpl.components.parser import (
     DetailRecord,
@@ -42,6 +46,7 @@ from packages.datasites.vbpl.components.rebuild import VbplDetailRebuilder
 
 __all__ = [
     "DEFAULT_API_URL_SUBSTR",
+    "DEFAULT_LISTING_TEMPLATES",
     "DEFAULT_SITEMAP_URL",
     "DEFAULT_WARMUP_URL",
     "DetailRecord",
@@ -50,6 +55,7 @@ __all__ = [
     "VbplDetailDownloader",
     "VbplDetailRebuilder",
     "VbplDocumentParser",
+    "VbplListingHarvester",
     "VbplSitemapHarvester",
     "detail_record_from_api_json",
     "item_id_from_detail_url",

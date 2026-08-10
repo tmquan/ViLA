@@ -53,6 +53,19 @@ dependencies = [
   # HuggingFace embedder) pick up the heavy deps via the optional
   # `gpu` extras-group below.
   "nemo-curator[text_cpu]>=0.7",
+  # The `pdf_triage` / `pdf_native` pipelines
+  # (packages/pipeline/pdf_triage.py) use Curator's *interleaved*
+  # namespace -- PDFPartitioningStage, InterleavedBatch and
+  # InterleavedParquetWriterStage -- whose package __init__ chain
+  # imports cv2 via nemo_curator.stages.interleaved.utils.image_utils.
+  #
+  # We deliberately do NOT take `nemo-curator[interleaved_cpu]`: that
+  # extra also pulls albumentations, open_clip_torch and timm, which
+  # only the CLIP-score / blur filter stages need. Our path is
+  # text-only (no rasterization, no vision model), so opencv alone is
+  # the whole delta. `-headless` because Ray workers have no display
+  # and the GUI variant drags in X11 shared libraries.
+  "opencv-python-headless>=4.9",
   "docx2txt>=0.9",
   # Reducer stage (packages/reducer) deps. These MUST live in the
   # locked workspace env (not just the per-datasite requirements.txt)

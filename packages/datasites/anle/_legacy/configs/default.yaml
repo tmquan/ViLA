@@ -70,6 +70,24 @@ parser:
   nim_dpi: 150                    # PDF -> PNG raster resolution
   timeout_s: 120.0
 
+# GPU-free native/deferred split (packages/pipeline/pdf_triage.py).
+# Run with `--pipeline pdf_triage` then `--pipeline pdf_native`; the
+# deferred cohort is left for a later OCR pass and is never touched
+# here. Thresholds mirror parser.min_local_chars / max_local_lossy_score
+# so the offline tag predicts the live hybrid route exactly -- change
+# them only if you deliberately want triage to disagree with parse.
+triage:
+  min_local_chars: 50
+  max_lossy_score: 0.05
+  # anle is small (~2K PDFs); a modest pack size keeps Ray tasks
+  # numerous enough to spread across workers.
+  pdfs_per_task: 32
+  extensions: [".pdf", ".docx", ".doc"]
+  manifest_subdir: manifests
+  interleaved_subdir: interleaved
+  write_markdown_sidecar: true
+  skip_existing: false
+
 extractor:
   # Declarative normalizer chain (wiki/DATASITES.md §3.5). anle ships only the
   # universal baseline -- the in-process precedent extractor

@@ -1,20 +1,14 @@
-"""Anle Curator primitives (URLGenerator / DocumentDownloader / ...).
+"""Anle Curator primitives (the four abstract-base subclasses).
 
-The four Curator abstract bases have one anle subclass each:
-
-    url_generator.py  -- AnleURLGenerator     (URLGenerator)
-    downloader.py     -- AnleDocumentDownloader (DocumentDownloader)
-    iterator.py       -- AnleDocumentIterator (DocumentIterator)
-    extractor.py      -- AnleDocumentExtractor (DocumentExtractor)
-
-These are the site-specific bricks the top-level pipeline factories
-in ``packages.datasites.anle.{download,parse,extract,embed,reduce}``
-compose into :class:`nemo_curator.pipeline.Pipeline` instances.
+    url_generator.py  -- AnleURLGenerator  (URLGenerator)
+    downloader.py     -- AnlePDFDownloader (PDFDownloader)
+    iterator.py       -- AnleIterator      (DocumentIterator)
+    extractor.py      -- AnleExtractor     (DocumentExtractor)
 """
 
-from packages.datasites.anle.components.downloader import AnleDocumentDownloader
-from packages.datasites.anle.components.extractor import AnleDocumentExtractor
-from packages.datasites.anle.components.iterator import AnleDocumentIterator
+from packages.datasites.anle.components.downloader import AnlePDFDownloader
+from packages.datasites.anle.components.extractor import AnleExtractor
+from packages.datasites.anle.components.iterator import AnleIterator
 from packages.datasites.anle.components.url_generator import (
     AnleURLGenerator,
     absolutize,
@@ -23,9 +17,9 @@ from packages.datasites.anle.components.url_generator import (
 )
 
 __all__ = [
-    "AnleDocumentDownloader",
-    "AnleDocumentExtractor",
-    "AnleDocumentIterator",
+    "AnleExtractor",
+    "AnleIterator",
+    "AnlePDFDownloader",
     "AnleURLGenerator",
     "absolutize",
     "extract_doc_name",

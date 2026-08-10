@@ -315,8 +315,13 @@ def test_extractor_on_empty_html_returns_blank_row(tmp_path: Any) -> None:
 
 
 def test_pipeline_registry_shape() -> None:
-    assert list(PIPELINES.keys()) == ["download", "parse", "extract", "embed", "reduce"]
-    assert list(PIPELINES.keys()) == ALL_PIPELINES_ORDER
+    curation = ["download", "parse", "extract", "embed", "reduce"]
+    assert curation == ALL_PIPELINES_ORDER
+    # The five curation pipelines stay first and in order; pdf_triage /
+    # pdf_native are registered alongside them but kept out of the
+    # `--pipeline all` order (packages/pipeline/pdf_triage.py).
+    assert list(PIPELINES.keys())[:5] == curation
+    assert set(PIPELINES) - set(curation) == {"pdf_triage", "pdf_native"}
 
 
 def test_every_pipeline_builds(tmp_path: Any) -> None:

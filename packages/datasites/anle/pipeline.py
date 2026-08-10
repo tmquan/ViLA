@@ -1,79 +1,194 @@
-"""Registry + dispatch for the five anle curation pipelines.
+"""Anle download+extract pipeline (canonical NeMo Curator shape).
 
-One factory per pipeline lives in its own top-level file:
+:class:`AnleDownloadExtractStage` wires the four site components into the
+Curator 3-step composite:
 
-    download.py  -> build_download_pipeline   URLs           -> PDFs
-    parse.py     -> build_parse_pipeline      PDFs           -> markdown
-    extract.py   -> build_extract_pipeline    markdown       -> JSONL
-    embed.py     -> build_embed_pipeline      JSONL          -> embeddings parquet
-    reduce.py    -> build_reduce_pipeline     embeddings     -> reduced parquet
+    URLGenerationStage(AnleURLGenerator)
+      -> DocumentDownloadStage(AnlePDFDownloader)   detail HTML -> pages/,
+                                                    binary      -> files/
+      -> DocumentIterateExtractStage(AnleIterator, AnleExtractor)
 
-This module only stitches the five factories together for the CLI and
-exposes the shared field constants re-exported from
-:mod:`packages.datasites.anle._shared` so tests / notebooks can import
-them from one place.
+Storage under ``<data-dir>/`` (default ``data/anle.toaan.gov.vn``):
+    pages/<doc>.html.gz   detail HTML
+    files/<doc>.<ext>     PDF / DOCX / DOC binary
+
+``main()`` is a self-contained single-IP paced runner (no Ray): it
+enumerates detail URLs (auto-detected page walk, an explicit
+``--start/--end`` page range, or a ``--url-list`` file), downloads each
+document, then iterate+extracts one record per doc.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any
+import argparse
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
 
-from nemo_curator.pipeline import Pipeline
+from loguru import logger
+from nemo_curator.stages.text.download.base import DocumentDownloadExtractStage
 
-from packages.datasites.anle._shared import (
-    EMBEDDER_JSONL_READ_FIELDS,
-    EMBEDDER_PARQUET_FIELDS,
-    EXTRACTOR_JSONL_FIELDS,
-    REDUCER_PARQUET_FIELDS,
+from packages.datasites.anle.components import (
+    AnleExtractor,
+    AnleIterator,
+    AnlePDFDownloader,
+    AnleURLGenerator,
 )
-from packages.datasites.anle.download import build_download_pipeline
-from packages.datasites.anle.embed import build_embed_pipeline
-from packages.datasites.anle.extract import build_extract_pipeline
-from packages.datasites.anle.parse import build_parse_pipeline
-from packages.datasites.anle.reduce import build_reduce_pipeline
+from packages.datasites.anle.components.downloader import DEFAULT_PDF_URL_TEMPLATE
+from packages.datasites.anle.components.url_generator import (
+    DEFAULT_DETAIL_TEMPLATE,
+    DEFAULT_LISTING_URL,
+)
 
-#: Pipeline name -> factory. Keys double as ``--pipeline`` CLI choices.
-PIPELINES: dict[str, Callable[[Any], Pipeline]] = {
-    "download": build_download_pipeline,
-    "parse": build_parse_pipeline,
-    "extract": build_extract_pipeline,
-    "embed": build_embed_pipeline,
-    "reduce": build_reduce_pipeline,
-}
+DEFAULT_HOST = "anle.toaan.gov.vn"
+DEFAULT_DATA_ROOT = Path("data") / DEFAULT_HOST
+#: nguonanle bulk corpus (paginated) -- the ~2K-PDF default target.
+DEFAULT_EXTRA_PARAMS: dict[str, str] = {"docType": "NguonAnLe", "mucHienThi": "9015"}
 
 
-#: Default execution order when ``--pipeline all`` is selected.
-ALL_PIPELINES_ORDER: list[str] = [
-    "download",
-    "parse",
-    "extract",
-    "embed",
-    "reduce",
-]
+@dataclass
+class AnleConfig:
+    """Plain-args config for the anle download+extract flow."""
+
+    host: str = DEFAULT_HOST
+    data_root: Path = DEFAULT_DATA_ROOT
+    listing_url: str = DEFAULT_LISTING_URL
+    detail_url_template: str = DEFAULT_DETAIL_TEMPLATE
+    pdf_url_template: str = DEFAULT_PDF_URL_TEMPLATE
+    paginated: bool = True
+    start_page: int = 1
+    max_pages: int | None = None
+    extra_params: dict[str, str] = field(
+        default_factory=lambda: dict(DEFAULT_EXTRA_PARAMS)
+    )
+    listing_pages: list[str] = field(default_factory=list)
+    proxy: str | None = None
+    num_workers: int | None = 4
+    timeout: int = 60
+    pace: float = 0.5
+
+    @property
+    def files_dir(self) -> Path:
+        return self.data_root / "files"
+
+    @property
+    def pages_dir(self) -> Path:
+        return self.data_root / "pages"
 
 
-def build_pipeline(cfg: Any, name: str) -> Pipeline:
-    """Return the named pipeline. ``name`` is one of :data:`PIPELINES`."""
-    if name not in PIPELINES:
-        raise ValueError(
-            f"unknown pipeline: {name!r}; "
-            f"expected one of {sorted(PIPELINES)}"
+def _build_components(cfg: AnleConfig, *, url_generator: AnleURLGenerator | None = None):
+    cfg.files_dir.mkdir(parents=True, exist_ok=True)
+    cfg.pages_dir.mkdir(parents=True, exist_ok=True)
+    gen = url_generator or AnleURLGenerator(
+        cfg.listing_url,
+        detail_url_template=cfg.detail_url_template,
+        paginated=cfg.paginated,
+        start_page=cfg.start_page,
+        max_pages=cfg.max_pages,
+        extra_params=cfg.extra_params,
+        listing_pages=cfg.listing_pages,
+        proxy=cfg.proxy,
+        pace=cfg.pace,
+    )
+    downloader = AnlePDFDownloader(
+        str(cfg.files_dir),
+        pages_dir=str(cfg.pages_dir),
+        pdf_url_template=cfg.pdf_url_template,
+        proxy=cfg.proxy,
+        timeout=cfg.timeout,
+        pace=cfg.pace,
+        num_workers=cfg.num_workers,
+    )
+    iterator = AnleIterator(
+        pages_dir=str(cfg.pages_dir),
+        detail_url_template=cfg.detail_url_template,
+    )
+    extractor = AnleExtractor(host=cfg.host)
+    return gen, downloader, iterator, extractor
+
+
+class AnleDownloadExtractStage(DocumentDownloadExtractStage):
+    """Composite: URL generation -> download -> iterate+extract for anle."""
+
+    def __init__(
+        self,
+        cfg: AnleConfig | None = None,
+        *,
+        url_limit: int | None = None,
+        record_limit: int | None = None,
+        add_filename_column: bool | str = True,
+    ) -> None:
+        cfg = cfg or AnleConfig()
+        gen, downloader, iterator, extractor = _build_components(cfg)
+        super().__init__(
+            url_generator=gen,
+            downloader=downloader,
+            iterator=iterator,
+            extractor=extractor,
+            url_limit=url_limit,
+            record_limit=record_limit,
+            add_filename_column=add_filename_column,
         )
-    return PIPELINES[name](cfg)
+
+
+# --------------------------------------------------------------------------- #
+# Single-IP paced runner
+# --------------------------------------------------------------------------- #
+def _load_url_list(path: str) -> list[str]:
+    return [
+        ln.strip()
+        for ln in Path(path).read_text(encoding="utf-8").splitlines()
+        if ln.strip() and not ln.lstrip().startswith("#")
+    ]
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="anle download+extract (single-IP paced).")
+    ap.add_argument("--start", type=int, default=None, help="first listing page")
+    ap.add_argument("--end", type=int, default=None, help="last listing page (inclusive)")
+    ap.add_argument("--url-list", type=str, default=None, help="file of detail URLs")
+    ap.add_argument("--proxy", type=str, default=None)
+    ap.add_argument("--download-dir", type=str, default=str(DEFAULT_DATA_ROOT),
+                    help="data root; files/ and pages/ are created under it")
+    ap.add_argument("--limit", type=int, default=None, help="cap number of docs")
+    args = ap.parse_args(argv)
+
+    cfg = AnleConfig(data_root=Path(args.download_dir), proxy=args.proxy)
+    if args.start is not None:
+        cfg.start_page = args.start
+    if args.end is not None:
+        cfg.max_pages = args.end
+
+    gen, downloader, iterator, extractor = _build_components(cfg)
+
+    if args.url_list:
+        urls = _load_url_list(args.url_list)
+    else:
+        urls = gen.generate_urls()
+    if args.limit:
+        urls = urls[: args.limit]
+    logger.info(f"anle: {len(urls)} detail URLs to process")
+
+    n_ok = n_rows = 0
+    for url in urls:
+        path = downloader.download(url)
+        if not path:
+            continue
+        n_ok += 1
+        for rec in iterator.iterate(path):
+            row = extractor.extract(rec)
+            if row is not None:
+                n_rows += 1
+    logger.info(f"anle done: {n_ok} binaries downloaded, {n_rows} rows extracted")
+    return 0
 
 
 __all__ = [
-    "ALL_PIPELINES_ORDER",
-    "EMBEDDER_JSONL_READ_FIELDS",
-    "EMBEDDER_PARQUET_FIELDS",
-    "EXTRACTOR_JSONL_FIELDS",
-    "PIPELINES",
-    "REDUCER_PARQUET_FIELDS",
-    "build_download_pipeline",
-    "build_embed_pipeline",
-    "build_extract_pipeline",
-    "build_parse_pipeline",
-    "build_pipeline",
-    "build_reduce_pipeline",
+    "AnleConfig",
+    "AnleDownloadExtractStage",
+    "main",
 ]
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,31 @@
+# anle embed/reduce override: local NVIDIA Nemotron-3-Embed-1B.
+#
+# Runs the embedder stage with the HuggingFace runtime (no NIM / no
+# NVIDIA_API_KEY) against the locally-cached
+# ``nvidia/Nemotron-3-Embed-1B-BF16`` model. The model is instruction-
+# tuned with a ``passage: `` document prefix and mean-token pooling, so
+# we set ``document_prompt`` (the opt-in knob added to the HF backend)
+# to embed documents exactly as the model card intends.
+#
+#   python -m packages.datasites.anle --pipeline embed \
+#       --config packages/datasites/anle/configs/anle_nemotron3.yaml \
+#       --output ~/data
+#
+# Reuses everything else (host, scraper, parser, extractor) from anle.yaml.
+_base: anle.yaml
+
+embedder:
+  model_id: nvidia/Nemotron-3-Embed-1B-BF16
+  runtime: hf
+  document_prompt: "passage: "
+  max_seq_length: 8192
+  batch_size: 8
+  chunking: sliding
+  chunk_overlap: 256
+  device: auto
+  model_dtype: bfloat16
+
+reducer:
+  methods: [pca, tsne, umap]
+  n_components: 2
+  prefer_gpu: false          # CPU sklearn / umap-learn (cuML not assumed on GB10)

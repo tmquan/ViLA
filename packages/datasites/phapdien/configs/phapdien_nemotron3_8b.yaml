@@ -1,0 +1,28 @@
+# phapdien article embed/reduce override: local NVIDIA Nemotron-3-Embed-8B.
+#
+# phapdien articles are embedded from their ``content_text`` field (not
+# ``markdown``), so ``embedder.text_field`` is overridden accordingly.
+# Local HuggingFace runtime (no NIM / NVIDIA_API_KEY), ``passage: ``
+# prompt + mean pooling, matching anle's 8B run.
+#
+#   python -m packages.datasites.phapdien._embed_inproc \
+#       --config packages/datasites/phapdien/configs/phapdien_nemotron3_8b.yaml \
+#       --output ~/data
+_base: default.yaml
+
+embedder:
+  model_id: nvidia/Nemotron-3-Embed-8B-BF16
+  runtime: hf
+  document_prompt: "passage: "
+  text_field: content_text
+  max_seq_length: 8192
+  batch_size: 8
+  chunking: sliding
+  chunk_overlap: 256
+  device: auto
+  model_dtype: bfloat16
+
+reducer:
+  methods: [pca, tsne, umap]
+  n_components: 2
+  prefer_gpu: false

@@ -35,20 +35,15 @@ def _cfg(tmp_path: Any) -> Any:
 
 
 def test_pipeline_registry_is_complete() -> None:
-    assert list(PIPELINES.keys()) == [
-        "download",
-        "parse",
-        "extract",
-        "embed",
-        "reduce",
-    ]
-    assert ALL_PIPELINES_ORDER == [
-        "download",
-        "parse",
-        "extract",
-        "embed",
-        "reduce",
-    ]
+    curation = ["download", "parse", "extract", "embed", "reduce"]
+    assert curation == ALL_PIPELINES_ORDER
+    # The five curation pipelines stay first and in order, so
+    # `--pipeline all` is unaffected by later registrations.
+    assert list(PIPELINES.keys())[:5] == curation
+    # pdf_triage / pdf_native are the GPU-free native-extraction
+    # alternative to `parse` (packages/pipeline/pdf_triage.py). They are
+    # selectable by name but deliberately excluded from the `all` order.
+    assert set(PIPELINES) - set(curation) == {"pdf_triage", "pdf_native"}
 
 
 def test_every_pipeline_builds(tmp_path: Any) -> None:

@@ -3,8 +3,7 @@
 Parses the Vietnamese-labeled sidebar in the detail HTML into flat
 columns. Mirrors the reference scraper's ``parse_metadata`` (see
 https://github.com/tmquan/datascraper/blob/main/congbobanan/scraper.py)
-so downstream stages see identical fields whether the pipeline was
-bootstrapped from the Curator path or the legacy scraper tree.
+so downstream stages see identical fields.
 
 Fields emitted (all strings unless noted):
 
@@ -19,12 +18,12 @@ Fields emitted (all strings unless noted):
 * ``loai_vu_viec``        -- case type (Dân sự / Hình sự / ...)
 * ``toa_an_xet_xu``       -- court name
 * ``ap_dung_an_le``       -- applied precedent (if any)
-* ``dinh_chinh``          -- corrections (``đính chính``)
+* ``dinh_chinh``          -- corrections (đính chính)
 * ``thong_tin_vu_viec``   -- case info / summary
 * ``tong_binh_chon``      -- precedent-vote count
 * ``luot_xem`` / ``luot_tai`` (int) -- view / download counts
-* ``pdf_filename``        -- original server-side filename pulled from
-                             the ``/5ta<id>t1cvn/<filename>`` link
+* ``pdf_filename``        -- original server-side filename from the
+                             ``/5ta<id>t1cvn/<filename>`` link
 """
 
 from __future__ import annotations
@@ -35,6 +34,8 @@ from typing import Any
 from urllib.parse import unquote
 
 from nemo_curator.stages.text.download.base import DocumentExtractor
+
+DEFAULT_SOURCE = "congbobanan.toaan.gov.vn"
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
@@ -77,15 +78,13 @@ def _parse_label_span(html: str, label: str) -> str:
     return _strip_tags(m.group(1)).strip() if m else ""
 
 
-class CongbobananDocumentExtractor(DocumentExtractor):
+class CongbobananExtractor(DocumentExtractor):
     """Parse the congbobanan sidebar panel into flat row fields."""
 
-    def __init__(self, cfg: Any) -> None:
-        self.cfg = cfg
-        self._host = str(cfg.host)
+    def __init__(self, source: str = DEFAULT_SOURCE) -> None:
+        self.source = source
 
     def input_columns(self) -> list[str]:
-        # Columns produced by :class:`CongbobananDocumentIterator`.
         return [
             "doc_name",
             "case_id",
@@ -130,7 +129,7 @@ class CongbobananDocumentExtractor(DocumentExtractor):
         return {
             "doc_name": case_id,
             "case_id": case_id,
-            "source": self._host,
+            "source": self.source,
             "detail_url": record.get("detail_url", ""),
             "pdf_path": record.get("pdf_path", ""),
             "pdf_bytes": record.get("pdf_bytes", b""),
@@ -171,9 +170,7 @@ class CongbobananDocumentExtractor(DocumentExtractor):
 
         m = _HEADING_RE.search(panel)
         if m:
-            out["doc_type"] = (
-                "ban-an" if "Bản án" in m.group(1) else "quyet-dinh"
-            )
+            out["doc_type"] = "ban-an" if "Bản án" in m.group(1) else "quyet-dinh"
             raw = _strip_tags(m.group(2))
             parts = re.split(r"\s*ngày\s*", raw, maxsplit=1)
             out["ban_an_so"] = parts[0].strip() or None
@@ -226,17 +223,4 @@ class CongbobananDocumentExtractor(DocumentExtractor):
         return out
 
 
-__all__ = ["CongbobananDocumentExtractor", "page_has_metadata_fields"]
-
-
-def page_has_metadata_fields(html: str) -> bool:
-    """Convenience re-export used by unit tests.
-
-    Duplicates :func:`packages.datasites.congbobanan.components.downloader.page_has_metadata`
-    to avoid a circular import between extractor and downloader modules.
-    """
-    if not html:
-        return False
-    return ("Bản án số:" in html or "Quyết định số:" in html) and (
-        "search_left_pub details_pub" in html
-    )
+__all__ = ["CongbobananExtractor"]

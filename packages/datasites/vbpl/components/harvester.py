@@ -112,6 +112,22 @@ class VbplSitemapHarvester:
             len(scoped),
             sorted(self._scopes_filter) if self._scopes_filter else "<all>",
         )
+        if not scoped:
+            # As of 2026-07 vbpl.vn publishes only a single static shard
+            # (sitemap/0.xml -> 4 landing pages) and serves its document
+            # listings from a React SPA backed by an XHR/API instead of
+            # per-document sitemap URLs. The sitemap-based harvest can no
+            # longer discover documents; a listing/API- or Playwright-based
+            # harvester is required. We surface this loudly rather than
+            # silently writing an empty sitemap.jsonl.
+            logger.warning(
+                "vbpl harvest found 0 in-scope document shards at %s. The "
+                "sitemap index no longer lists per-document URLs (site moved "
+                "to a React SPA + API). This stage cannot discover documents "
+                "until the harvester is rebuilt against the listing API. "
+                "Writing an empty sitemap.jsonl.",
+                self._sitemap_url,
+            )
 
         out_path = self.layout.jsonl_dir / "sitemap.jsonl"
         harvested_at = _utc_now_iso()

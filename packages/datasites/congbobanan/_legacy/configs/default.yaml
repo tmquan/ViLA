@@ -222,6 +222,42 @@ parser:
     - congbobanan_join_soft_wraps
     - congbobanan_strip_page_noise
 
+# GPU-free native/deferred split (packages/pipeline/pdf_triage.py).
+# Run with `--pipeline pdf_triage` then `--pipeline pdf_native`; the
+# deferred cohort is left for a later OCR pass and is never touched
+# here. Thresholds mirror parser.min_local_chars /
+# parser.max_local_lossy_score above, so the offline tag predicts the
+# live hybrid route exactly.
+#
+# Measured on a 3,000-doc uniform random sample of the 2.03M-PDF
+# corpus (2026-08-05): 69.0% native / 31.0% deferred, which matches
+# the ~70/30 quoted in the `runtime` comment above. It does NOT match
+# the ~94/6 in wiki/PARSING.md § 5: that figure is a lossy_score-only
+# statistic calibrated on a sample of `md/`, i.e. documents pypdf had
+# already parsed, so it structurally excludes image-only scans -- and
+# those are 17.5% of the corpus, the single largest deferred bucket.
+# Restricted to documents that do have a text layer, the corrupted
+# share is 11%, which is the number § 5 is really about. Budget OCR
+# capacity against 31%, not 6%.
+#
+# Deferred breakdown on that sample:
+#   scanned_image  17.5%  (no text layer at all)
+#   font_corrupted  9.1%  (text layer present but unreadable)
+#   mixed_pages     4.4%  (digital body, one or more scanned pages)
+triage:
+  min_local_chars: 50
+  max_lossy_score: 0.05
+  # congbobanan is ~2.1M PDFs. A larger pack size than anle's 32
+  # amortises Ray task overhead across the corpus; triage is pypdf-
+  # bound so each task stays CPU-saturated.
+  pdfs_per_task: 128
+  extensions: [".pdf", ".docx", ".doc"]
+  manifest_subdir: manifests
+  interleaved_subdir: interleaved
+  write_markdown_sidecar: true
+  # At this corpus size a re-run should never redo finished work.
+  skip_existing: true
+
 extractor:
   # Declarative normalizer chain (wiki/DATASITES.md §3.5). congbobanan ships
   # only the universal Vietnamese-text baseline -- the corpus is

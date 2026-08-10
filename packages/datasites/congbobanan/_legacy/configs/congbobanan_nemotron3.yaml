@@ -1,0 +1,28 @@
+# congbobanan embed/reduce override: local NVIDIA Nemotron-3-Embed-1B.
+#
+# Same idea as anle/configs/anle_nemotron3.yaml: run the embedder with the
+# local HuggingFace runtime (no NIM / no NVIDIA_API_KEY) against the
+# cached ``nvidia/Nemotron-3-Embed-1B-BF16`` model, with the ``passage: ``
+# document prompt the model was trained with. Everything else (host,
+# scraper, parser, extractor) is inherited from default.yaml.
+#
+#   python -m packages.datasites.congbobanan._embed_inproc \
+#       --config packages/datasites/congbobanan/configs/congbobanan_nemotron3.yaml \
+#       --output ~/data
+_base: default.yaml
+
+embedder:
+  model_id: nvidia/Nemotron-3-Embed-1B-BF16
+  runtime: hf
+  document_prompt: "passage: "
+  max_seq_length: 8192
+  batch_size: 8
+  chunking: sliding
+  chunk_overlap: 256
+  device: auto
+  model_dtype: bfloat16
+
+reducer:
+  methods: [pca, tsne, umap]
+  n_components: 2
+  prefer_gpu: false

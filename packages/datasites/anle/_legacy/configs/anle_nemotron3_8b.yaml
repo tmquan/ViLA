@@ -1,0 +1,27 @@
+# anle embed/reduce override: local NVIDIA Nemotron-3-Embed-8B (4096-d).
+#
+# Same as anle_nemotron3.yaml but the larger 8B model. Runs locally via
+# the HuggingFace runtime (no NIM / NVIDIA_API_KEY) with the ``passage: ``
+# document prompt + mean pooling the model card specifies. ~16GB bf16 on
+# one GPU; slower than 1B (~6x/forward pass) but higher quality.
+#
+#   python -m packages.datasites.anle._embed_inproc \
+#       --config packages/datasites/anle/configs/anle_nemotron3_8b.yaml \
+#       --output ~/data
+_base: anle.yaml
+
+embedder:
+  model_id: nvidia/Nemotron-3-Embed-8B-BF16
+  runtime: hf
+  document_prompt: "passage: "
+  max_seq_length: 8192
+  batch_size: 8
+  chunking: sliding
+  chunk_overlap: 256
+  device: auto
+  model_dtype: bfloat16
+
+reducer:
+  methods: [pca, tsne, umap]
+  n_components: 2
+  prefer_gpu: false

@@ -65,6 +65,7 @@ from packages.datasites.vbpl.components import (
     VbplDetailDownloader,
     VbplDetailRebuilder,
     VbplDocumentParser,
+    VbplListingHarvester,
     VbplSitemapHarvester,
 )
 from packages.datasites.vbpl.embed import build_embed_pipeline
@@ -87,6 +88,26 @@ def run_harvest(cfg: Any) -> Path:
         "harvest complete: rows=%d sitemap_jsonl=%s",
         total,
         sitemap_path,
+    )
+    return sitemap_path
+
+
+def run_harvest_spa(cfg: Any) -> Path:
+    """SPA listing harvest for the post-2026 reCAPTCHA-gated Next.js UI.
+
+    Replacement for the dead sitemap harvest (vbpl.vn stopped publishing
+    per-document sitemap URLs). Drives Chromium through the reCAPTCHA v3
+    flow and scrapes document links from the rendered listing, writing
+    the SAME ``sitemap.jsonl`` the detail stage consumes. Requires a
+    display for reCAPTCHA to pass -- see
+    :class:`packages.datasites.vbpl.components.listing_harvester.VbplListingHarvester`
+    (run under ``xvfb-run -a`` or with ``scraper.headless=false``).
+    """
+    layout = build_layout(cfg)
+    harv = VbplListingHarvester(cfg, layout)
+    sitemap_path, total = harv.run()
+    logger.info(
+        "harvest_spa complete: rows=%d sitemap_jsonl=%s", total, sitemap_path,
     )
     return sitemap_path
 
@@ -285,6 +306,7 @@ def run_rechunk(cfg: Any) -> Path:
 
 PIPELINES: dict[str, Callable[[Any], Path]] = {
     "harvest": run_harvest,
+    "harvest_spa": run_harvest_spa,
     "detail": run_detail,
     "rebuild_docs": run_rebuild_docs,
     "parse": run_parse,
@@ -312,6 +334,7 @@ __all__ = [
     "run_embed",
     "run_extract",
     "run_harvest",
+    "run_harvest_spa",
     "run_parse",
     "run_pipeline",
     "run_rebuild_docs",

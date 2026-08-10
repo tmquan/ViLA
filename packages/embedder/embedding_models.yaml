@@ -36,6 +36,31 @@ models:
     native_max_seq: 8192
     notes: hfdata reference; larger 8B parameters, 4096-dim output.
 
+  # ---- NVIDIA Nemotron-3-Embed (local HuggingFace, sentence-transformers) ----
+  # ministral3 backbone; sentence-transformers pooling is mean-token
+  # (pooling_mode_mean_tokens: true), which is exactly what
+  # HuggingFaceEmbedder already does -- so the local ``runtime: hf`` path
+  # is faithful to the model card with no code change. 32k native window
+  # (no chunking needed for full_text_context). The model card uses
+  # ``query: `` / ``passage: `` instruction prefixes; see the embedder
+  # notes for the optional prompt-prefix knob. Runs locally on one GPU
+  # with NO NIM endpoint / NVIDIA_API_KEY. Model *weights* are pulled once
+  # from HF -- the "no HF cache" rule in this project applies to the legal
+  # *datasets*, not to model weights.
+  - model_id: nvidia/Nemotron-3-Embed-1B-BF16
+    runtime: hf
+    embedding_dim: 2048
+    supports_32k: true
+    native_max_seq: 32768
+    notes: NVIDIA Nemotron-3 embedding, 1B params, 2048-d, mean pooling, 32k native. Local HF runtime; ~2GB bf16.
+
+  - model_id: nvidia/Nemotron-3-Embed-8B-BF16
+    runtime: hf
+    embedding_dim: 4096
+    supports_32k: true
+    native_max_seq: 32768
+    notes: NVIDIA Nemotron-3 embedding, 8B params, 4096-d, mean pooling, 32k native. Local HF runtime; ~16GB bf16, needs GPU.
+
   # ---- Multilingual sentence-transformers (HuggingFace) ----
   # Lightweight bilingual VI<->EN choice for the tnpl deep-analysis
   # stage. Same model embeds both languages so a per-row VI<->EN cosine

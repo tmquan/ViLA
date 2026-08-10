@@ -89,6 +89,20 @@ def test_mean_pool_single_vector_returns_copy() -> None:
     assert _mean_pool([[0.6, 0.8]]) == [0.6, 0.8]
 
 
+def test_apply_prompt_prepends_and_is_noop_when_empty() -> None:
+    """The HF instruction-prompt helper: empty is a no-op, else prefixes."""
+    from packages.embedder.huggingface import _apply_prompt
+
+    texts = ["bản án số 1", "án lệ số 2"]
+    # Empty prompt -> unchanged (same list object; the zero-cost path).
+    assert _apply_prompt("", texts) is texts
+    # Non-empty prompt -> prefixed on every row.
+    assert _apply_prompt("passage: ", texts) == [
+        "passage: bản án số 1",
+        "passage: án lệ số 2",
+    ]
+
+
 # --------------------------------------------------- NimEmbedderStage
 
 

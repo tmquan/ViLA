@@ -124,6 +124,7 @@ def _build_hf_backend(entry: ModelEntry, cfg: Any) -> EmbedderBackend:
         device=str(cfg.embedder.device),
         dtype=str(cfg.embedder.model_dtype),
         trust_remote_code=bool(getattr(cfg.embedder, "trust_remote_code", False)),
+        prompt=str(getattr(cfg.embedder, "document_prompt", "")),
     )
 
 

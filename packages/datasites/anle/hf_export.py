@@ -130,6 +130,8 @@ PREDEFINED_EMBED_MODELS: tuple[tuple[str, int | None, int, str], ...] = (
     ("nvidia/llama-nemotron-embed-1b-v2",                          2048, 8192,  "Default. 1B params, 8k context."),
     ("nvidia/llama-3.2-nv-embedqa-1b-v2",                          1024,  512,  "Previous ViLA default (retrieval, 512-tok window)."),
     ("nvidia/llama-embed-nemotron-8b",                             4096, 8192,  "8B params, higher quality."),
+    ("nvidia/Nemotron-3-Embed-1B-BF16",                           2048, 32768, "NVIDIA Nemotron-3 embedding, 1B params, mean pooling, 32k native (local HF)."),
+    ("nvidia/Nemotron-3-Embed-8B-BF16",                           4096, 32768, "NVIDIA Nemotron-3 embedding, 8B params, mean pooling, 32k native (local HF)."),
     ("sentence-transformers/paraphrase-multilingual-mpnet-base-v2", 768,  128,  "Multilingual MPNet (50+ langs incl. VI)."),
     ("microsoft/harrier-oss-v1-270m",                              None, 32768, "270 M params, 32k native context."),
     ("microsoft/harrier-oss-v1-0.6b",                              None, 32768, "Lightweight HF default; 32k native."),

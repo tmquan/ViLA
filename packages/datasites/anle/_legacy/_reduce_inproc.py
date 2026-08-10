@@ -84,11 +84,15 @@ def main(argv: list[str] | None = None) -> int:
         description="In-process anle Reducer (no Ray).",
     )
     parser.add_argument("--config", type=Path, default=None)
+    parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args(argv)
 
     config_path = args.config or find_site_config("anle")
+    overrides: list[str] = []
+    if args.output:
+        overrides.append(f"output_dir={args.output.expanduser().resolve()}")
     cfg = load_and_override(
-        config_path=config_path, overrides=[], schema_cls=PipelineCfg,
+        config_path=config_path, overrides=overrides, schema_cls=PipelineCfg,
     )
     n = run(cfg)
     print(f"wrote {n} reduced parquet files")
