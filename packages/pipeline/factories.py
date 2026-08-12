@@ -27,6 +27,7 @@ classes that don't fit a uniform signature.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from nemo_curator.pipeline import Pipeline
@@ -51,14 +52,28 @@ from packages.reducer.stage import ReducerStage
 # Reduce: the reducer (PCA / t-SNE / UMAP / HDBSCAN) is fit
 # per-partition. To keep coordinates and ``cluster_id`` globally
 # comparable, the reducer reader must emit ONE partition containing
-# every per-doc embedding. ``100_000`` is "every file we'd ever see"
-# for current corpora; lower only when you explicitly want
-# incremental, partition-local fits (e.g. debug runs on a slice).
+# every per-doc embedding — so ``build_reduce_pipeline`` sizes
+# ``files_per_partition`` from the ACTUAL embedding-file count rather than a
+# fixed ceiling (a hard-coded ``100_000`` silently fanned out into multiple,
+# non-comparable partitions once a corpus outgrew it — vbpl ~147K, congbobanan
+# ~2M). The value below is only a floor / debug fallback; lower it explicitly
+# via ``stage_overrides.reduce_files_per_partition`` for partition-local fits.
 DEFAULT_FPP: dict[str, int] = {
     "extract": 8,
     "embed": 4,
     "reduce": 100_000,
 }
+
+
+def _count_partition_files(directory: Path | str) -> int:
+    """Number of ``*.parquet`` shards under ``directory`` (at least 1).
+
+    Used to size the reduce reader's ``files_per_partition`` so that *every*
+    embedding lands in a single partition — a globally-consistent PCA/UMAP fit —
+    no matter how large the corpus grows. Counting beats any fixed ceiling, which
+    breaks the moment the corpus exceeds it.
+    """
+    return max(1, sum(1 for _ in Path(directory).glob("*.parquet")))
 
 
 def _stage_override(cfg: Any, key: str, default: int) -> int:
@@ -213,19 +228,23 @@ def build_reduce_pipeline(
 ) -> Pipeline:
     """Return the Reducer :class:`Pipeline`: embeddings -> reduced parquet.
 
-    Critical contract: ``files_per_partition`` defaults to a very
-    large value (``DEFAULT_FPP["reduce"]``) so the ``ParquetReader``
-    delivers every per-doc embedding in a single ``DocumentBatch``.
-    :class:`packages.reducer.stage.ReducerStage` fits PCA / t-SNE /
-    UMAP / HDBSCAN **per batch**; splitting the corpus into multiple
-    partitions yields per-partition coordinates that are not
-    comparable across the dataset (cluster IDs reused, PCA axes
-    rotated). Lower this only when an incremental / partition-local
-    fit is explicitly desired.
+    Critical contract: the ``ParquetReader`` must deliver every per-doc
+    embedding in a SINGLE ``DocumentBatch``, because
+    :class:`packages.reducer.stage.ReducerStage` fits PCA / t-SNE / UMAP /
+    HDBSCAN **per batch** — splitting the corpus into multiple partitions yields
+    per-partition coordinates that are not comparable across the dataset
+    (cluster IDs reused, PCA axes rotated). So ``files_per_partition`` is sized
+    from the ACTUAL embedding-file count (:func:`_count_partition_files`) and can
+    never fall short of the corpus. Pass an explicit ``files_per_partition`` (or
+    set ``stage_overrides.reduce_files_per_partition``) only when a smaller,
+    partition-local fit is deliberately wanted.
     """
-    fpp = files_per_partition or _stage_override(
-        cfg, "reduce_files_per_partition", DEFAULT_FPP["reduce"],
+    override = files_per_partition or cfg.get("stage_overrides", {}).get(
+        "reduce_files_per_partition"
     )
+    # No explicit override -> fit the whole corpus in one partition, sized from
+    # the real file count (never a fixed ceiling that a large corpus outgrows).
+    fpp = int(override) if override else _count_partition_files(layout.embeddings_dir)
     return Pipeline(
         name=f"{cfg.host}-reduce",
         description=(

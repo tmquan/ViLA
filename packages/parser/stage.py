@@ -350,6 +350,33 @@ class PdfParseStage(ProcessingStage[DocumentBatch, DocumentBatch]):
     def setup(self, worker_metadata: WorkerMetadata | None = None) -> None:
         self._client = build_parser(self.cfg)
 
+    def _parse_one(
+        self, pdf_bytes: Any, *, preserve_tables: bool
+    ) -> tuple[str, list[dict[str, Any]], float | None, int]:
+        """Parse one binary into ``(markdown, pages, confidence, num_pages)``.
+
+        Never raises. A malformed or unsupported input (corrupt PDF, mislabeled
+        zip, decode error) is logged and returned as an *empty* record instead of
+        propagating — so one bad document out of a million cannot abort the whole
+        Ray task. The empty row is then discarded by the empty-markdown filter at
+        the end of :meth:`process`, exactly as an image-only PDF would be.
+        """
+        assert self._client is not None
+        try:
+            resp = self._client.parse(_as_bytes(pdf_bytes), preserve_tables=preserve_tables)
+        except Exception as exc:  # noqa: BLE001 — isolate a single document's failure
+            logger.warning(f"parse failed; emitting empty record: {type(exc).__name__}: {exc}")
+            return "", [], None, 0
+        pages = list(resp.get("pages") or [])
+        markdown = str(resp.get("markdown") or _join_markdown(pages))
+        confidence = resp.get("confidence")
+        return (
+            markdown,
+            pages,
+            float(confidence) if confidence is not None else None,
+            len(pages) if pages else _count_markdown_pages(markdown),
+        )
+
     def process(self, task: DocumentBatch) -> DocumentBatch:
         if self._client is None:
             self.setup(None)
@@ -363,21 +390,13 @@ class PdfParseStage(ProcessingStage[DocumentBatch, DocumentBatch]):
 
         preserve_tables = bool(self.cfg.parser.get("preserve_tables", True))
         for pdf_bytes in df["pdf_bytes"]:
-            resp = self._client.parse(
-                _as_bytes(pdf_bytes),
-                preserve_tables=preserve_tables,
+            markdown, pages, confidence, num_pages = self._parse_one(
+                pdf_bytes, preserve_tables=preserve_tables
             )
-            pages = list(resp.get("pages") or [])
-            markdown = str(resp.get("markdown") or _join_markdown(pages))
-            confidence = resp.get("confidence")
             markdowns.append(markdown)
             pages_col.append(pages)
-            confidences.append(
-                float(confidence) if confidence is not None else None
-            )
-            num_pages_col.append(
-                len(pages) if pages else _count_markdown_pages(markdown)
-            )
+            confidences.append(confidence)
+            num_pages_col.append(num_pages)
 
         df["markdown"] = markdowns
         df["pages"] = pages_col

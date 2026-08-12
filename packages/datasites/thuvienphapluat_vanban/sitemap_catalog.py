@@ -22,8 +22,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-sys.path.insert(0, "/home/tranminhq/ViLA")
-from packages.datasites.thuvienphapluat_hdpl.crawl import make_session
+from packages.datasites._curator.base import make_session
 
 OUT = Path("~/data/thuvienphapluat.vn-vbpl").expanduser()
 CAT = OUT / "vbpl_catalog.jsonl"

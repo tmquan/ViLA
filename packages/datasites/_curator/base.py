@@ -261,6 +261,35 @@ class PDFDownloader(DocumentDownloader):
             ct = "application/pdf"
         return _MIME_TO_EXT.get(ct, ".pdf"), (ct if ct in _MIME_TO_EXT else "application/pdf")
 
+    def _get_with_retry(self, session, url: str, *, check_challenge: bool = True):
+        """GET ``url`` with the downloader's resilience policy; return the final
+        ``Response`` or ``None`` if every attempt failed.
+
+        Retries cover BOTH server throttling (a ``THROTTLE`` status or a
+        Cloudflare "just a moment" challenge) AND transient network faults
+        (timeout, connection reset, TLS error): each such attempt cools down,
+        re-arms the session via :meth:`_on_block`, then tries again — so a single
+        network hiccup can never silently defeat ``max_retries`` (which is what a
+        bare, un-retried ``session.get`` inside the loop used to do). A clean,
+        non-throttled response (200, 404, …) is returned immediately for the
+        caller to classify. Pass ``check_challenge=False`` for binary responses,
+        whose bytes must not be decoded as text to probe for a challenge page.
+        """
+        for _ in range(self.max_retries + 1):
+            try:
+                resp = session.get(url, timeout=self.timeout, allow_redirects=True)
+            except Exception as exc:  # noqa: BLE001 — transient fault: retry, don't abort
+                logger.warning(f"transient GET error ({type(exc).__name__}); retrying: {url}")
+                time.sleep(self.cooldown)
+                self._on_block()
+                continue
+            if resp.status_code in THROTTLE or (check_challenge and is_challenge(resp.text)):
+                time.sleep(self.cooldown)
+                self._on_block()
+                continue
+            return resp
+        return None
+
     def download(self, url: str) -> str | None:
         doc = self._doc_name(url)
         if not doc:
@@ -273,18 +302,15 @@ class PDFDownloader(DocumentDownloader):
                 return str(existing)
         s = self._session()
         try:
+            # 1) detail HTML (metadata source) — retries cover throttles + faults
             detail_html = ""
             if self.fetch_detail:
-                for _ in range(self.max_retries + 1):
-                    r = s.get(url, timeout=self.timeout, allow_redirects=True)
-                    if r.status_code == 200 and not is_challenge(r.text):
-                        detail_html = r.text; break
-                    if r.status_code in THROTTLE or is_challenge(r.text):
-                        time.sleep(self.cooldown); self._on_block(); continue
-                    break
-                if detail_html:
+                r = self._get_with_retry(s, url)
+                if r is not None and r.status_code == 200 and not is_challenge(r.text):
+                    detail_html = r.text
                     self._save_html(doc, detail_html)
 
+            # 2) resolve + stream the binary attachment (atomic .tmp -> final)
             bin_url = self._resolve_binary_url(url, detail_html, doc)
             if not bin_url:
                 logger.warning(f"no binary url for {url}")
@@ -292,20 +318,16 @@ class PDFDownloader(DocumentDownloader):
             ext, _ = self._head_ext(bin_url)
             final = Path(self._download_dir) / f"{doc}{ext}"
             tmp = str(final) + ".tmp"
-            for _ in range(self.max_retries + 1):
-                r = s.get(bin_url, timeout=self.timeout, allow_redirects=True)
-                if r.status_code == 200 and r.content:
-                    with open(tmp, "wb") as f:
-                        f.write(r.content)
-                    os.replace(tmp, final)
-                    time.sleep(self.pace)
-                    return str(final)
-                if r.status_code in THROTTLE:
-                    time.sleep(self.cooldown); self._on_block(); continue
-                break
+            r = self._get_with_retry(s, bin_url, check_challenge=False)
+            if r is not None and r.status_code == 200 and r.content:
+                with open(tmp, "wb") as f:
+                    f.write(r.content)
+                os.replace(tmp, final)
+                time.sleep(self.pace)
+                return str(final)
             logger.warning(f"binary download failed {bin_url}")
             return None
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — final net for resolve / file-write errors
             logger.error(f"download failed {url}: {exc}")
             return None
 
