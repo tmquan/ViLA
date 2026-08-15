@@ -114,7 +114,7 @@ def find_site_config(name: str, *, repo_root: Path | None = None) -> Path:
     get a clear error rather than a later OmegaConf parse failure.
 
     Used by every site-agnostic stage CLI (parser, extractor, embedder,
-    reducer, visualizer) and by :class:`packages.runner.PipelineRunner`
+    reducer, visualizer) and by :func:`packages.common.runner.run_curator_site`
     so operators can say ``--config-name anle`` from the repo root
     without knowing exactly where the YAML lives under
     ``packages/datasites/``.

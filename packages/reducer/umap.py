@@ -52,8 +52,10 @@ class UMAPReducer(ReducerAlgorithm):
             from cuml.manifold import UMAP as CumlUMAP
 
             X = cp.asarray(matrix)
+            # random_state pins the embedding (cuML runs single-threaded when
+            # set) so the GPU path is as reproducible as the CPU path below.
             out = CumlUMAP(
-                n_components=n_components, n_neighbors=n_neighbors
+                n_components=n_components, n_neighbors=n_neighbors, random_state=0
             ).fit_transform(X)
             return out.get()
         if not _have_umap():

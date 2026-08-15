@@ -148,8 +148,13 @@ def test_run_crawler_site_returns_one_on_failure(tmp_path: Path) -> None:
 
 
 def test_per_site_main_modules_load_without_error() -> None:
-    """All four datasite __main__ modules import + expose `main`."""
-    from packages.datasites.anle import __main__ as anle_main
+    """Each datasite's runnable entry imports + exposes `main`.
+
+    anle migrated its CLI to the in-process ``pipeline`` runner (the old
+    top-level ``__main__`` moved to ``anle/_legacy/``); the Family-B
+    harvesters and congbobanan keep a ``__main__`` shell.
+    """
+    from packages.datasites.anle import pipeline as anle_main
     from packages.datasites.congbobanan import __main__ as cong_main
     from packages.datasites.pbgdpl import __main__ as pbgdpl_main
     from packages.datasites.phapdien import __main__ as phap_main

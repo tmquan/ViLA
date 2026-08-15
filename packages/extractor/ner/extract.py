@@ -22,10 +22,16 @@ import threading
 import time
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+from nemo_curator.backends.base import WorkerMetadata
+from nemo_curator.stages.base import ProcessingStage
+from nemo_curator.stages.resources import Resources
+from nemo_curator.tasks import DocumentBatch
 from pydantic import ValidationError
 
 from packages.extractor.ner.client import ChatClient
@@ -258,6 +264,70 @@ def extract_one(
 # --------------------------------------------------------------------- bulk
 
 
+@dataclass
+class NerExtractStage(ProcessingStage[DocumentBatch, DocumentBatch]):
+    """Per-document NER extraction expressed as a Curator stage.
+
+    ``process`` runs :func:`extract_one` over the batch's ``doc_name``
+    column. The I/O-bound LLM round-trips within a batch are fanned out
+    across a bounded thread pool (``workers``) — the same concurrency the
+    module used to run ad-hoc, now a composable
+    :class:`ProcessingStage` (cf. the embed stage
+    :class:`packages.datasites.thuvienphapluat_hdpl.components.embed_stage.TVPLQAEmbedStage`,
+    which parallelises its vLLM calls the same way).
+
+    Determinism is unchanged: every on-disk artefact is a byte-stable
+    function of the cache key, so which worker produced a given doc
+    never affects the bytes. Results are returned in input order in an
+    object-typed ``ner_extraction`` column.
+    """
+
+    md_dir: Path
+    output_root: Path
+    client: ChatClient
+    kb: KnowledgeBase
+    run_id: str
+    workers: int = 1
+    name: str = "ner_extract"
+    resources: Resources = field(default_factory=lambda: Resources(cpus=1.0))
+
+    def inputs(self) -> tuple[list[str], list[str]]:
+        return (["data"], ["doc_name"])
+
+    def outputs(self) -> tuple[list[str], list[str]]:
+        return (["data"], ["ner_extraction"])
+
+    def _extract_one(self, doc_name: str) -> PersistedExtraction:
+        return extract_one(
+            doc_name=doc_name,
+            md_dir=self.md_dir,
+            output_root=self.output_root,
+            client=self.client,
+            kb=self.kb,
+            run_id=self.run_id,
+        )
+
+    def process(self, task: DocumentBatch) -> DocumentBatch:
+        df = task.to_pandas().copy()
+        docs = [str(x) for x in df["doc_name"].tolist()]
+        if self.workers <= 1 or len(docs) <= 1:
+            by_name = {d: self._extract_one(d) for d in docs}
+        else:
+            by_name: dict[str, PersistedExtraction] = {}
+            with ThreadPoolExecutor(max_workers=self.workers) as ex:
+                futures = {ex.submit(self._extract_one, d): d for d in docs}
+                for fut in as_completed(futures):
+                    by_name[futures[fut]] = fut.result()
+        df["ner_extraction"] = [by_name[d] for d in docs]
+        return DocumentBatch(
+            task_id=task.task_id,
+            dataset_name=task.dataset_name,
+            data=df,
+            _metadata=task._metadata,
+            _stage_perf=task._stage_perf,
+        )
+
+
 def extract_all(
     *,
     doc_names: Iterable[str],
@@ -268,52 +338,35 @@ def extract_all(
     run_id: str,
     workers: int = 1,
 ) -> list[PersistedExtraction]:
-    """Run :func:`extract_one` over every doc in ``doc_names``.
+    """Run :func:`extract_one` over every doc via :class:`NerExtractStage`.
 
-    Cache-aware and deterministic per-doc: the cache key only depends
-    on inputs, not on the worker that produced it. With
-    ``workers > 1`` the manifest is re-sorted at the end so the file
-    order remains byte-stable regardless of the order the workers
-    completed in.
-
-    The returned list preserves the input ``doc_names`` order; the
-    LLM client is shared across workers (``requests.Session`` is
-    thread-safe enough for our purposes).
+    Thin in-process driver: wraps ``doc_names`` in a single
+    :class:`DocumentBatch` and runs it through the stage. Cache-aware and
+    deterministic per-doc (the cache key depends only on inputs, not on
+    the worker that produced it); with ``workers > 1`` the manifest is
+    re-sorted at the end so its line order stays byte-stable regardless
+    of completion order. The returned list preserves input order.
     """
     docs = list(doc_names)
-    if workers <= 1 or len(docs) <= 1:
-        return [
-            extract_one(
-                doc_name=d,
-                md_dir=md_dir,
-                output_root=output_root,
-                client=client,
-                kb=kb,
-                run_id=run_id,
-            )
-            for d in docs
-        ]
-
-    by_name: dict[str, PersistedExtraction] = {}
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = {
-            ex.submit(
-                extract_one,
-                doc_name=d,
-                md_dir=md_dir,
-                output_root=output_root,
-                client=client,
-                kb=kb,
-                run_id=run_id,
-            ): d
-            for d in docs
-        }
-        for fut in as_completed(futures):
-            d = futures[fut]
-            by_name[d] = fut.result()
-
-    _sort_manifest(output_root / "manifest.jsonl")
-    return [by_name[d] for d in docs]
+    if not docs:
+        return []
+    stage = NerExtractStage(
+        md_dir=md_dir,
+        output_root=output_root,
+        client=client,
+        kb=kb,
+        run_id=run_id,
+        workers=workers,
+    )
+    batch = DocumentBatch(
+        task_id="ner_extract",
+        dataset_name="ner",
+        data=pd.DataFrame({"doc_name": docs}),
+    )
+    out = stage.process(batch).to_pandas()
+    if workers > 1 and len(docs) > 1:
+        _sort_manifest(output_root / "manifest.jsonl")
+    return list(out["ner_extraction"])
 
 
 # --------------------------------------------------------------------- canonical

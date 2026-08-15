@@ -21,7 +21,7 @@ from packages.datasites.congbobanan.components.url_generator import (
 )
 
 
-class CongbobananIterator(DocumentIterator):
+class CBBADocumentIterator(DocumentIterator):
     """One record per congbobanan case.
 
     ``pages_dir`` locates the gzipped detail HTML. When ``None`` it is
@@ -79,4 +79,4 @@ class CongbobananIterator(DocumentIterator):
         ]
 
 
-__all__ = ["CongbobananIterator"]
+__all__ = ["CBBADocumentIterator"]

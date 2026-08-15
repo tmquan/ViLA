@@ -46,6 +46,11 @@ _TOPIC_PALETTE = [
     "#636363", "#bdbdbd", "#e7298a", "#fdbf6f",
 ]
 
+# Treemap canvas + container-layout constants (data units).
+_TREEMAP_CANVAS_W, _TREEMAP_CANVAS_H = 1600.0, 1000.0
+_TREEMAP_HEADER_STRIP = 26.0  # top strip reserved for the container header
+_TREEMAP_INSET = 5.0          # margin around children inside the container
+
 
 def _configure_matplotlib() -> None:
     import matplotlib
@@ -106,111 +111,36 @@ def render_treemap(
     only a thin top margin reserved for the title.
     """
     import matplotlib.pyplot as plt
-    import squarify
     from matplotlib.patches import Rectangle
 
     _configure_matplotlib()
 
-    topics_full = sorted(analytics["topics"], key=lambda r: -r["article_count"])
-    head = topics_full[:top_k]
-    tail = topics_full[top_k:]
-    tail_count = sum(t["article_count"] for t in tail)
-    total = sum(t["article_count"] for t in topics_full)
-
-    head_cells: list[dict[str, Any]] = []
-    for i, t in enumerate(head):
-        head_cells.append({
-            "kind":   "topic",
-            "size":   t["article_count"],
-            "color":  _color_for_index(i),
-            "vi":     t["topic_title"],
-            "en":     (en_titles or {}).get(str(t["topic_number"]), "") or "",
-            "number": str(t["topic_number"]),
-            "count":  t["article_count"],
-        })
-    tail_cells: list[dict[str, Any]] = []
-    for i, t in enumerate(tail):
-        tail_cells.append({
-            "kind":   "subtopic",
-            "size":   t["article_count"],
-            "color":  _shade_color(_color_for_index(top_k + i), 0.55),
-            "vi":     t["topic_title"],
-            "en":     (en_titles or {}).get(str(t["topic_number"]), "") or "",
-            "number": str(t["topic_number"]),
-            "count":  t["article_count"],
-        })
-
-    # Top-level layout: head cells + one container for the tail (if any).
-    top_cells = list(head_cells)
-    if tail_cells:
-        top_cells.append({
-            "kind":      "container",
-            "size":      tail_count,
-            "color":     "#dcdcdc",
-            "vi":        f"Other {len(tail)} topics · {len(tail)} chủ đề khác",
-            "en":        "",
-            "number":    "",
-            "count":     tail_count,
-            "children":  tail_cells,
-        })
-
-    # ---- compute cell rectangles ---------------------------------------
-
-    # Canvas in data units. 16:10 (slightly taller than 16:9) lets
-    # squarify produce more square-ish cells in the lower-right region
-    # where many small head topics + the recursive Other block live.
-    canvas_w, canvas_h = 1600.0, 1000.0
-    sizes = squarify.normalize_sizes(
-        [c["size"] for c in top_cells],
-        canvas_w, canvas_h,
-    )
-    rects = squarify.squarify(sizes, 0, 0, canvas_w, canvas_h)
-    for cell, r in zip(top_cells, rects):
-        cell["x"], cell["y"]   = r["x"], r["y"]
-        cell["dx"], cell["dy"] = r["dx"], r["dy"]
-
-    # ---- second-level layout for the Other container -------------------
+    # ---- data -> cells -> geometry (pure) ------------------------------
+    top_cells = _build_treemap_cells(analytics, top_k, en_titles)
+    _layout_cells(top_cells, _TREEMAP_CANVAS_W, _TREEMAP_CANVAS_H)
     container = next(
         (c for c in top_cells if c["kind"] == "container"), None,
     )
-    HEADER_STRIP = 26.0   # data-unit strip reserved at the top for the title
-    INSET = 5.0           # margin around the children inside the container
-    if container is not None:
-        # Reserve a top strip for the container header so the children
-        # don't paint over it.
-        cx = container["x"] + INSET
-        cy = container["y"] + INSET
-        cdx = container["dx"] - 2 * INSET
-        cdy = container["dy"] - INSET - HEADER_STRIP
-        # Sort children by size desc so squarify lays out predictably.
-        container["children"].sort(key=lambda r: -r["size"])
-        sub_sizes = squarify.normalize_sizes(
-            [c["size"] for c in container["children"]],
-            cdx, cdy,
-        )
-        sub_rects = squarify.squarify(sub_sizes, cx, cy, cdx, cdy)
-        for child, r in zip(container["children"], sub_rects):
-            child["x"], child["y"]   = r["x"], r["y"]
-            child["dx"], child["dy"] = r["dx"], r["dy"]
-        # Stash where the header should land for the renderer below.
-        container["header_y"] = (
-            container["y"] + container["dy"] - HEADER_STRIP / 2
-        )
+
+    # Title stats, derived from the cell list (head cells + tail children).
+    n_tail = len(container["children"]) if container is not None else 0
+    n_topics = len(top_cells) - (1 if container is not None else 0) + n_tail
+    total = sum(c["size"] for c in top_cells)
 
     # ---- layout the figure ---------------------------------------------
 
     fig = plt.figure(figsize=(13.0, 8.4))
     ax = fig.add_axes([0.005, 0.005, 0.99, 0.93])  # left, bottom, w, h
-    ax.set_xlim(0, canvas_w)
-    ax.set_ylim(0, canvas_h)
+    ax.set_xlim(0, _TREEMAP_CANVAS_W)
+    ax.set_ylim(0, _TREEMAP_CANVAS_H)
     ax.set_aspect("auto")
     ax.set_axis_off()
     fig.suptitle(
-        f"Bộ Pháp Điển — All {len(topics_full)} Chủ đề  ·  "
-        f"All {len(topics_full)} topics by article count "
+        f"Bộ Pháp Điển — All {n_topics} Chủ đề  ·  "
+        f"All {n_topics} topics by article count "
         f"({total:,} articles; "
         f"top {top_k} drawn at full size, smallest "
-        f"{len(tail)} grouped in the lower-right block)",
+        f"{n_tail} grouped in the lower-right block)",
         fontsize=12.5, y=0.985,
     )
 
@@ -280,14 +210,134 @@ def render_treemap(
                 line_data_h=line_data_h * 0.78,
             )
 
-    # ---- post-render shrink-fit -----------------------------------------
-    #
-    # The data-unit char-width estimate is conservative but not exact;
-    # for the worst few rectangles + font combinations the rendered
-    # text can still overshoot by a couple of glyphs. Force a draw
-    # so each text artist has a real bounding box, then for any text
-    # that exceeds its cell width, repeatedly drop two characters from
-    # the longest line until it fits. Cheap (~20 ms) and bulletproof.
+    _refit_labels(fig, ax, top_cells, container)
+
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    logger.info("wrote %s", out_path)
+    return out_path
+
+
+def _build_treemap_cells(
+    analytics: dict[str, Any],
+    top_k: int,
+    en_titles: dict[str, str] | None,
+) -> list[dict[str, Any]]:
+    """Turn analytics topics into the top-level treemap cell list.
+
+    The ``top_k`` largest chủ-đề become full ``topic`` cells; the
+    remainder are wrapped in a single grey ``container`` cell whose
+    ``children`` are desaturated ``subtopic`` cells. Pure data shaping —
+    no geometry and no matplotlib.
+    """
+    topics_full = sorted(analytics["topics"], key=lambda r: -r["article_count"])
+    head = topics_full[:top_k]
+    tail = topics_full[top_k:]
+    tail_count = sum(t["article_count"] for t in tail)
+
+    head_cells: list[dict[str, Any]] = []
+    for i, t in enumerate(head):
+        head_cells.append({
+            "kind":   "topic",
+            "size":   t["article_count"],
+            "color":  _color_for_index(i),
+            "vi":     t["topic_title"],
+            "en":     (en_titles or {}).get(str(t["topic_number"]), "") or "",
+            "number": str(t["topic_number"]),
+            "count":  t["article_count"],
+        })
+    tail_cells: list[dict[str, Any]] = []
+    for i, t in enumerate(tail):
+        tail_cells.append({
+            "kind":   "subtopic",
+            "size":   t["article_count"],
+            "color":  _shade_color(_color_for_index(top_k + i), 0.55),
+            "vi":     t["topic_title"],
+            "en":     (en_titles or {}).get(str(t["topic_number"]), "") or "",
+            "number": str(t["topic_number"]),
+            "count":  t["article_count"],
+        })
+
+    # Top-level layout: head cells + one container for the tail (if any).
+    top_cells = list(head_cells)
+    if tail_cells:
+        top_cells.append({
+            "kind":      "container",
+            "size":      tail_count,
+            "color":     "#dcdcdc",
+            "vi":        f"Other {len(tail)} topics · {len(tail)} chủ đề khác",
+            "en":        "",
+            "number":    "",
+            "count":     tail_count,
+            "children":  tail_cells,
+        })
+    return top_cells
+
+
+def _layout_cells(
+    top_cells: list[dict[str, Any]], canvas_w: float, canvas_h: float,
+) -> None:
+    """Assign ``x/y/dx/dy`` rectangles to every cell via squarify.
+
+    The top-level cells tile the whole canvas; the ``container`` cell's
+    children are recursively squarified into an inset region below a
+    reserved header strip. Cells are mutated in place. Deterministic —
+    squarify is a pure function of the (size, region) inputs.
+
+    Canvas is 16:10 (slightly taller than 16:9) so squarify produces
+    more square-ish cells in the lower-right region where the small head
+    topics + the recursive Other block live.
+    """
+    import squarify
+
+    sizes = squarify.normalize_sizes(
+        [c["size"] for c in top_cells], canvas_w, canvas_h,
+    )
+    rects = squarify.squarify(sizes, 0, 0, canvas_w, canvas_h)
+    for cell, r in zip(top_cells, rects):
+        cell["x"], cell["y"]   = r["x"], r["y"]
+        cell["dx"], cell["dy"] = r["dx"], r["dy"]
+
+    container = next(
+        (c for c in top_cells if c["kind"] == "container"), None,
+    )
+    if container is None:
+        return
+    # Reserve a top strip for the container header so the children
+    # don't paint over it.
+    cx = container["x"] + _TREEMAP_INSET
+    cy = container["y"] + _TREEMAP_INSET
+    cdx = container["dx"] - 2 * _TREEMAP_INSET
+    cdy = container["dy"] - _TREEMAP_INSET - _TREEMAP_HEADER_STRIP
+    # Sort children by size desc so squarify lays out predictably.
+    container["children"].sort(key=lambda r: -r["size"])
+    sub_sizes = squarify.normalize_sizes(
+        [c["size"] for c in container["children"]], cdx, cdy,
+    )
+    sub_rects = squarify.squarify(sub_sizes, cx, cy, cdx, cdy)
+    for child, r in zip(container["children"], sub_rects):
+        child["x"], child["y"]   = r["x"], r["y"]
+        child["dx"], child["dy"] = r["dx"], r["dy"]
+    # Stash where the header should land for the renderer.
+    container["header_y"] = (
+        container["y"] + container["dy"] - _TREEMAP_HEADER_STRIP / 2
+    )
+
+
+def _refit_labels(
+    fig: Any, ax: Any,
+    top_cells: list[dict[str, Any]],
+    container: dict[str, Any] | None,
+) -> None:
+    """Post-render shrink-fit: trim any label that overshoots its cell.
+
+    The data-unit char-width estimate is conservative but not exact, so
+    a few rectangle/font combinations still overshoot by a glyph or two.
+    Force a draw so each text artist has a real bounding box, then for
+    any label wider than its cell repeatedly drop two characters from the
+    longest non-count line until it fits (hiding it as a last resort).
+    Cheap (~20 ms) and bulletproof.
+    """
     fig.canvas.draw()
     renderer = fig.canvas.get_renderer()
     refit_targets: list[dict[str, Any]] = list(top_cells)
@@ -322,11 +372,6 @@ def render_treemap(
                 break
             artist.set_text(new_text)
             fig.canvas.draw()
-
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    logger.info("wrote %s", out_path)
-    return out_path
 
 
 def _render_treemap_label(
@@ -592,48 +637,6 @@ def render_instrument_hierarchy(out_path: Path) -> Path:
         "Hệ thống văn bản quy phạm pháp luật của Việt Nam · "
         "Vietnamese legal-instrument hierarchy",
         fontsize=13, pad=10,
-    )
-    fig.tight_layout()
-    fig.savefig(out_path)
-    plt.close(fig)
-    logger.info("wrote %s", out_path)
-    return out_path
-
-
-# ---- legacy treemap kept for callers that still want the old layout
-# ----------------------------------------------------------------------
-
-
-def render_treemap_legacy(analytics: dict[str, Any], out_path: Path) -> Path:
-    """All 42 topics in a single treemap (cramped).
-
-    Kept only so older callers that referenced ``render_treemap`` with
-    no kwargs still find a "show every topic" mode; new code should
-    prefer :func:`render_treemap` (top-K) or
-    :func:`render_topic_bars_bilingual` (full list, readable).
-    """
-    import matplotlib.pyplot as plt
-    import squarify
-
-    _configure_matplotlib()
-    topics = sorted(analytics["topics"], key=lambda r: -r["article_count"])
-    sizes = [t["article_count"] for t in topics]
-    labels = [
-        f"#{t['topic_number']} {_shorten(t['topic_title'], 22)}\n{t['article_count']:,}"
-        for t in topics
-    ]
-    colors = [_color_for_index(i) for i in range(len(topics))]
-    fig, ax = plt.subplots(figsize=(13.5, 8.5))
-    squarify.plot(
-        sizes=sizes, label=labels, color=colors, alpha=0.85,
-        text_kwargs={"fontsize": 8, "color": "#111", "linespacing": 1.15},
-        ax=ax, pad=True,
-    )
-    ax.set_axis_off()
-    ax.set_title(
-        f"Bộ Pháp Điển — Phân bố Điều luật theo Chủ đề (full)  ·  "
-        f"All {len(topics)} topics ({sum(sizes):,} articles)",
-        fontsize=12, pad=14,
     )
     fig.tight_layout()
     fig.savefig(out_path)

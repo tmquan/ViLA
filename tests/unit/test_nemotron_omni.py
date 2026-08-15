@@ -45,6 +45,10 @@ def _make_client(
     client._dpi = 300
     client._max_tokens = max_tokens
     client._temperature = temperature
+    # Nemotron forwards neither top_p nor seed, so its base sets both to
+    # None and _parse_image omits them from the create() call.
+    client._top_p = None
+    client._seed = None
     client._canvas_size = CANVAS_SIZE
     client._max_retries = 5
     client._prompt = DEFAULT_PROMPT
@@ -109,7 +113,7 @@ def test_parse_consolidates_multi_page_into_contract_shape(
 
     fake_pages = [b"\x89PNG-page-1", b"\x89PNG-page-2"]
     monkeypatch.setattr(
-        "packages.parser.nemotron_omni._rasterize_pdf",
+        "packages.parser._openai_vlm._rasterize_pdf",
         lambda pdf_bytes, *, dpi, canvas_size: fake_pages,
     )
 
@@ -148,7 +152,7 @@ def test_parse_passes_sampling_knobs_to_nim(
     client = _make_client(_create, max_tokens=8192, temperature=0.2)
 
     monkeypatch.setattr(
-        "packages.parser.nemotron_omni._rasterize_pdf",
+        "packages.parser._openai_vlm._rasterize_pdf",
         lambda pdf_bytes, *, dpi, canvas_size: [b"p1"],
     )
 
@@ -188,7 +192,7 @@ def test_parse_image_base64_encodes_png_into_data_url(
     expected_b64 = base64.b64encode(raw_png).decode("ascii")
 
     monkeypatch.setattr(
-        "packages.parser.nemotron_omni._rasterize_pdf",
+        "packages.parser._openai_vlm._rasterize_pdf",
         lambda pdf_bytes, *, dpi, canvas_size: [raw_png],
     )
 
@@ -213,7 +217,7 @@ def test_parse_handles_empty_response(
     client = _make_client(_create)
 
     monkeypatch.setattr(
-        "packages.parser.nemotron_omni._rasterize_pdf",
+        "packages.parser._openai_vlm._rasterize_pdf",
         lambda pdf_bytes, *, dpi, canvas_size: [b"p1", b"p2"],
     )
 
@@ -243,7 +247,7 @@ def test_parse_handles_none_message_content(
 
     client = _make_client(_create)
     monkeypatch.setattr(
-        "packages.parser.nemotron_omni._rasterize_pdf",
+        "packages.parser._openai_vlm._rasterize_pdf",
         lambda pdf_bytes, *, dpi, canvas_size: [b"p1"],
     )
     out = client.parse(b"%PDF-1.4 fake")
@@ -270,7 +274,7 @@ def test_parse_tolerates_per_page_failure(
     client = _make_client(_create)
 
     monkeypatch.setattr(
-        "packages.parser.nemotron_omni._rasterize_pdf",
+        "packages.parser._openai_vlm._rasterize_pdf",
         lambda pdf_bytes, *, dpi, canvas_size: [b"p1", b"p2", b"p3"],
     )
 
@@ -313,7 +317,7 @@ def test_parse_swallows_pdfium_load_failure(
         raise RuntimeError("Failed to load document (PDFium: Success).")
 
     monkeypatch.setattr(
-        "packages.parser.nemotron_omni._rasterize_pdf",
+        "packages.parser._openai_vlm._rasterize_pdf",
         _raise,
     )
 
@@ -339,7 +343,7 @@ def test_parse_logs_rate_limit_distinctly(
     client = _make_client(_create)
 
     monkeypatch.setattr(
-        "packages.parser.nemotron_omni._rasterize_pdf",
+        "packages.parser._openai_vlm._rasterize_pdf",
         lambda pdf_bytes, *, dpi, canvas_size: [b"p1"],
     )
 
@@ -443,7 +447,7 @@ def test_parse_single_page_happy_path(
         return b"\x89PNG-page-3"
 
     monkeypatch.setattr(
-        "packages.parser.nemotron_omni._rasterize_pdf_page",
+        "packages.parser._openai_vlm._rasterize_pdf_page",
         _fake_rasterize_page,
     )
 
@@ -489,7 +493,7 @@ def test_parse_single_page_propagates_rasterize_failure(
         raise RuntimeError("Failed to load document (PDFium: Success).")
 
     monkeypatch.setattr(
-        "packages.parser.nemotron_omni._rasterize_pdf_page", _raise,
+        "packages.parser._openai_vlm._rasterize_pdf_page", _raise,
     )
 
     with pytest.raises(RuntimeError, match="Failed to load document"):
@@ -521,7 +525,7 @@ def test_parse_single_page_propagates_index_error(
         )
 
     monkeypatch.setattr(
-        "packages.parser.nemotron_omni._rasterize_pdf_page", _raise_index,
+        "packages.parser._openai_vlm._rasterize_pdf_page", _raise_index,
     )
 
     with pytest.raises(IndexError, match="out of range"):
@@ -539,7 +543,7 @@ def test_parse_single_page_with_empty_response_returns_empty_markdown(
     client = _make_client(_create)
 
     monkeypatch.setattr(
-        "packages.parser.nemotron_omni._rasterize_pdf_page",
+        "packages.parser._openai_vlm._rasterize_pdf_page",
         lambda pdf_bytes, *, page_index, dpi, canvas_size: b"\x89PNG",
     )
 

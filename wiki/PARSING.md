@@ -197,7 +197,7 @@ Operators flip the fallback per-deploy via the env var:
 
 ```bash
 HYBRID_FALLBACK_RUNTIME=nemotron_omni \
-  python -m packages.datasites.congbobanan --pipeline parse
+  python -m packages.datasites.congbobanan.extract_text --shard 0 --nshards 1
 ```
 
 ---

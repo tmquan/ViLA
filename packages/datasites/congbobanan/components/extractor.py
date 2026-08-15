@@ -78,7 +78,7 @@ def _parse_label_span(html: str, label: str) -> str:
     return _strip_tags(m.group(1)).strip() if m else ""
 
 
-class CongbobananExtractor(DocumentExtractor):
+class CBBADocumentExtractor(DocumentExtractor):
     """Parse the congbobanan sidebar panel into flat row fields."""
 
     def __init__(self, source: str = DEFAULT_SOURCE) -> None:
@@ -223,4 +223,4 @@ class CongbobananExtractor(DocumentExtractor):
         return out
 
 
-__all__ = ["CongbobananExtractor"]
+__all__ = ["CBBADocumentExtractor"]

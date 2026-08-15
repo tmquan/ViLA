@@ -155,10 +155,20 @@ class HTMLDownloader(DocumentDownloader):
         output_file = os.path.join(self._download_dir, self._get_output_filename(url))
         if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
             return output_file
-        temp_file = output_file + ".tmp"
+        # Per-process temp name so two concurrent lanes sharing this download dir
+        # (e.g. dual-IP crawl) never collide on the same ``.tmp`` and race each
+        # other's ``os.rename`` — the FileNotFoundError that used to abort a lane.
+        temp_file = f"{output_file}.{os.getpid()}.tmp"
         ok, err = self._download_to_path(url, temp_file)
         if ok:
-            os.rename(temp_file, output_file)
+            # ``os.replace`` (atomic overwrite) tolerates the other lane having
+            # already produced ``output_file``; if our temp vanished mid-race,
+            # the file still exists, so treat that as success rather than crash.
+            try:
+                os.replace(temp_file, output_file)
+            except FileNotFoundError:
+                if not (os.path.exists(output_file) and os.path.getsize(output_file) > 0):
+                    return None
             return output_file
         if os.path.exists(temp_file):
             try:

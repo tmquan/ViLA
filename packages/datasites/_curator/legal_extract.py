@@ -11,7 +11,7 @@ reference (normative: NĐ/NQ/TT/PL/SL/HP/L, UBTVQH, admin QĐ-UBND/QĐ-TTg).
 
 Public API (used by ``anle`` / ``congbobanan`` ``build_documents``):
     denoise, extract_own, extract_numbers, extract_laws, extract_date,
-    extract_court, court_from_header, code_domain_level, hyphenate_code, norm_id.
+    court_from_header, code_domain_level, hyphenate_code, norm_id.
 """
 from __future__ import annotations
 
@@ -80,7 +80,6 @@ def own_eligible(code: str) -> bool:
 DATE_SLASH_RE = re.compile(
     r"[Nn]gày\s*:?\s*(\d{1,2})\s*[-–/.]\s*(\d{1,2})\s*[-–/.]\s*(\d{4})")
 DATE_WORD_RE = re.compile(r"[Nn]gày\s+(\d{1,2})\s+tháng\s+(\d{1,2})\s+năm\s+(\d{4})")
-COURT_RE = re.compile(r"TÒA\s+ÁN\s+NHÂN\s+DÂN[\s\S]{0,70}")
 
 # English enums (classification metadata we assign -> English for adoption);
 # the Vietnamese is recoverable from the canonical `code` field.
@@ -245,19 +244,6 @@ def extract_date(full: str, own):
         if m:
             return _fmt_date(m)
     return None
-
-
-def extract_court(full: str):
-    m = COURT_RE.search(full)
-    if not m:
-        return None
-    s = m.group(0)
-    s = re.split(
-        r"CỘNG\s+HÒA|ĐỘC\s+LẬP|NHÂN\s+DANH|Bản\s*án|Quyết\s*định|\bSố\b|"
-        r"Thành\s+phần|[-–—]{1,}|\bNgày\b",
-        s)[0]
-    s = re.sub(r"\s+", " ", s).strip(" ,.-")
-    return s or None
 
 
 # Robust court-level parse: read the level keyword from the window AFTER

@@ -3,33 +3,33 @@
 Four Curator abstract-base subclasses under
 :mod:`packages.datasites.congbobanan.components`:
 
-    url_generator.py  -- CongbobananURLGenerator  (URLGenerator)
-    downloader.py     -- CongbobananPDFDownloader  (PDFDownloader)
-    iterator.py       -- CongbobananIterator       (DocumentIterator)
-    extractor.py      -- CongbobananExtractor       (DocumentExtractor)
+    url_generator.py  -- CBBADocumentURLGenerator  (URLGenerator)
+    downloader.py     -- CBBADocumentPDFDownloader  (PDFDownloader)
+    iterator.py       -- CBBADocumentIterator       (DocumentIterator)
+    extractor.py      -- CBBADocumentExtractor       (DocumentExtractor)
 
-wired by :class:`packages.datasites.congbobanan.pipeline.CongbobananDownloadExtractStage`
+wired by :class:`packages.datasites.congbobanan.pipeline.CBBADocumentDownloadExtractStage`
 (+ a single-IP paced ``main()`` runner).
 """
 
 from packages.datasites.congbobanan.components import (
-    CongbobananExtractor,
-    CongbobananIterator,
-    CongbobananPDFDownloader,
-    CongbobananURLGenerator,
+    CBBADocumentExtractor,
+    CBBADocumentIterator,
+    CBBADocumentPDFDownloader,
+    CBBADocumentURLGenerator,
     doc_id_from_url,
 )
 from packages.datasites.congbobanan.pipeline import (
-    CongbobananDownloadExtractStage,
+    CBBADocumentDownloadExtractStage,
     main,
 )
 
 __all__ = [
-    "CongbobananDownloadExtractStage",
-    "CongbobananExtractor",
-    "CongbobananIterator",
-    "CongbobananPDFDownloader",
-    "CongbobananURLGenerator",
+    "CBBADocumentDownloadExtractStage",
+    "CBBADocumentExtractor",
+    "CBBADocumentIterator",
+    "CBBADocumentPDFDownloader",
+    "CBBADocumentURLGenerator",
     "doc_id_from_url",
     "main",
 ]

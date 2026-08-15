@@ -12,8 +12,9 @@ Why this crawler is shaped differently from anle / congbobanan:
   endpoint that returns the codified HTML body. The crawler walks
   both surfaces in two stages (``tree`` + ``detail``).
 * The output is article-shaped (one row per ``Điều``), not
-  document-shaped, so there is no parse / extract / embed / reduce
-  pipeline -- the scraper writes JSONL directly.
+  document-shaped: the scraper writes JSONL directly (no PDF parse /
+  extract stage). Embeddings + 2-D coords are added by the in-process
+  ``_embed_inproc`` / ``_reduce_inproc`` drivers on the GB10.
 
 Top-level surface:
 

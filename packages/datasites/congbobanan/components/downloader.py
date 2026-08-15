@@ -1,6 +1,6 @@
 """congbobanan PDF/binary downloader (self-contained curl_cffi).
 
-Given a detail-page URL produced by :class:`CongbobananURLGenerator`,
+Given a detail-page URL produced by :class:`CBBADocumentURLGenerator`,
 this downloader:
 
 1. GETs the detail HTML (best-effort: empty sidebars are tolerated) and
@@ -37,7 +37,6 @@ from pathlib import Path
 from loguru import logger
 
 from packages.datasites._curator.base import (
-    THROTTLE,
     PDFDownloader,
     is_challenge,
     make_session,
@@ -135,7 +134,7 @@ def _is_valid_pdf(path: str) -> bool:
     return _sniff_body_ext(path) == ".pdf"
 
 
-class CongbobananPDFDownloader(PDFDownloader):
+class CBBADocumentPDFDownloader(PDFDownloader):
     """Ghost-aware downloader for congbobanan detail + body endpoints.
 
     Subclasses :class:`packages.datasites._curator.base.PDFDownloader`:
@@ -200,22 +199,12 @@ class CongbobananPDFDownloader(PDFDownloader):
         return None
 
     def _fetch_detail_html(self, url: str) -> str:
-        s = self._session()
-        for _ in range(self.max_retries + 1):
-            try:
-                r = s.get(url, timeout=self.timeout, allow_redirects=True)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(f"detail fetch failed for {url}: {exc}")
-                time.sleep(self.cooldown)
-                self._on_block()
-                continue
-            if r.status_code == 200 and not is_challenge(r.text):
-                return r.text
-            if r.status_code in THROTTLE or is_challenge(r.text):
-                time.sleep(self.cooldown)
-                self._on_block()
-                continue
-            break
+        # Shared resilience policy (throttle + Cloudflare challenge + transient
+        # network faults) lives in PDFDownloader._get_with_retry; text response,
+        # so challenge-probing stays on.
+        resp = self._get_with_retry(self._session(), url, check_challenge=True)
+        if resp is not None and resp.status_code == 200 and not is_challenge(resp.text):
+            return resp.text
         return ""
 
     # -- Curator contract -------------------------------------------------- #
@@ -259,24 +248,13 @@ class CongbobananPDFDownloader(PDFDownloader):
 
             tmp_path = str(download_dir / f"{case_id}.body.tmp")
             got = False
-            for _ in range(self.max_retries + 1):
-                try:
-                    r = s.get(body_url, timeout=self.timeout, allow_redirects=True)
-                except Exception as exc:  # noqa: BLE001
-                    logger.info(f"case {case_id}: body fetch error ({exc})")
-                    time.sleep(self.cooldown)
-                    self._on_block()
-                    continue
-                if r.status_code == 200 and r.content:
-                    with open(tmp_path, "wb") as f:
-                        f.write(r.content)
-                    got = True
-                    break
-                if r.status_code in THROTTLE:
-                    time.sleep(self.cooldown)
-                    self._on_block()
-                    continue
-                break
+            # Binary response: same shared retry policy, challenge-probing OFF
+            # (raw bytes must not be decoded as text to sniff a challenge page).
+            r = self._get_with_retry(s, body_url, check_challenge=False)
+            if r is not None and r.status_code == 200 and r.content:
+                with open(tmp_path, "wb") as f:
+                    f.write(r.content)
+                got = True
 
             if not got:
                 if os.path.exists(tmp_path):
@@ -316,6 +294,6 @@ class CongbobananPDFDownloader(PDFDownloader):
 
 __all__ = [
     "ACCEPTED_BODY_EXTENSIONS",
-    "CongbobananPDFDownloader",
+    "CBBADocumentPDFDownloader",
     "page_has_metadata",
 ]

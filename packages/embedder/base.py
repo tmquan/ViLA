@@ -7,7 +7,7 @@ every embedding backend must expose; concrete implementations live in
 
 :class:`ModelEntry` + :func:`load_registry` describe the pluggable
 model roster (``packages/embedder/embedding_models.yaml``). The
-:class:`~packages.embedder.stage.EmbedStage` selects a backend at
+:class:`~packages.embedder.stage.NimEmbedderStage` selects a backend at
 runtime from ``cfg.embedder.model_id`` + ``cfg.embedder.runtime``.
 """
 

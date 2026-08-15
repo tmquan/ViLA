@@ -2,7 +2,7 @@
 
 Follows the NeMo Curator ``html_extractors`` layout: one tiny ABC here,
 one concrete subclass per algorithm file (``generic.py``,
-``precedent.py``). The :class:`~packages.extractor.stage.ExtractStage`
+``precedent.py``). The :class:`~packages.extractor.stage.LegalExtractStage`
 runs them in sequence and wires each to its own JSONL output.
 
 Record types declared here are shared across generic and site-specific

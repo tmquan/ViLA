@@ -35,12 +35,15 @@ def render_distribution(
         return False
     counts = df[col].value_counts(dropna=False).rename_axis(col).reset_index(name="count")
     # Enforce ontology value order where known; append off-ontology at end.
+    # Off-ontology values share a constant primary key, then break ties by
+    # count desc, then value name — a fully deterministic order (Python's
+    # ``hash`` is per-process salted, so it must not drive the ordering).
     vocab = onto.enums.get(enum_name, [])
     ordering = {v: i for i, v in enumerate(vocab)}
-    counts["__order"] = counts[col].map(
-        lambda v: ordering.get(v, 10_000 + hash(v) % 10_000)
-    )
-    counts = counts.sort_values("__order").drop(columns="__order")
+    counts["__order"] = counts[col].map(lambda v: ordering.get(v, 10_000))
+    counts = counts.sort_values(
+        ["__order", "count", col], ascending=[True, False, True], kind="stable"
+    ).drop(columns="__order")
     counts["percent"] = counts["count"] / counts["count"].sum() * 100.0
 
     fig = px.bar(

@@ -1006,48 +1006,9 @@ def _embed_viz_section(
     return "\n".join(blocks) + "\n"
 
 
-def _render_card(
-    manifest: dict[str, Any],
-    repo_owner: str,
-    repo_name: str,
-    license_id: str,
-    viz_paths: dict[str, Path] | None = None,
-    embed_model_id: str | None = None,
-    embed_dim: int | None = None,
-) -> str:
-    n = manifest["corpus"]["documents"]
-    raw = manifest["corpus"]["raw_rows"]
-    dropped = manifest["corpus"]["dropped_empty"]
-    cl = manifest["corpus"]["char_len"]
-    pa_ = manifest["corpus"]["paragraphs"]
-    se = manifest["corpus"]["sentences"]
-    pg = manifest["corpus"]["pages"]
-    front = _yaml_frontmatter(manifest, license_id)
-    overview_block = _overview_viz_section(viz_paths or {})
-    viz_block = _embed_viz_section(
-        viz_paths or {},
-        embed_model_id=embed_model_id,
-        embed_dim=embed_dim,
-    )
-    # The "How the corpus was built" prose mentions the embedder; thread
-    # the actual model+dim through so the card matches what shipped.
-    embed_model_pretty = embed_model_id or "nvidia/llama-nemotron-embed-1b-v2"
-    embed_dim_pretty = embed_dim or 2048
-    # Embeddable-row count for the recovery prose: total documents
-    # minus rows that ship with markdown=null (shell_html-after-retry
-    # bucket only -- the legacy "Lỗi" prefix rule was retired in
-    # May 2026 because audit showed those titles are legitimate uses
-    # of the Vietnamese noun for "fault / error").
-    shell_html_count = manifest.get(
-        "by_body_source", {},
-    ).get("shell_html", {}).get("count", 0)
-    null_markdown_count = manifest["corpus"].get(
-        "null_markdown_rows", shell_html_count,
-    )
-    embeddable_corpus_size = max(
-        0, manifest["corpus"]["documents"] - null_markdown_count,
-    )
-    body = rf"""
+def _card_header() -> str:
+    """Static title + bilingual summary blockquote heading the card."""
+    return rf"""
 # Vietnamese National Legal Database — `vbpl.vn`
 
 > 🇻🇳 **Tóm tắt.** Bộ dữ liệu mức **văn bản** của
@@ -1073,7 +1034,16 @@ def _render_card(
 > **document → section → paragraph → sentence**, every unit
 > carrying a stable id + char span back into the markdown.
 
-## Tổng quan · At a glance
+"""
+
+
+def _card_at_a_glance(
+    n: int, raw: int, dropped: int, null_markdown_count: int,
+    manifest: dict[str, Any], cl: dict[str, Any], pg: dict[str, Any],
+    pa_: dict[str, Any], se: dict[str, Any],
+) -> str:
+    """The "At a glance" corpus-metrics table."""
+    return rf"""## Tổng quan · At a glance
 
 | Chỉ số · Metric | Giá trị · Value |
 |---|---:|
@@ -1088,7 +1058,12 @@ def _render_card(
 | Trung vị đoạn văn · Median paragraphs / doc | {_format_int(pa_['median']) if pa_['median'] else '–'} |
 | Trung vị câu · Median sentences / doc | {_format_int(se['median']) if se['median'] else '–'} |
 
-{overview_block}## Phạm vi · Scope split
+"""
+
+
+def _card_scope(overview_block: str, manifest: dict[str, Any]) -> str:
+    """Optional visual-overview block plus the scope (central/provincial) split."""
+    return rf"""{overview_block}## Phạm vi · Scope split
 
 Bộ dữ liệu chia làm hai nhánh: ``trung_uong`` (văn bản pháp luật do
 Quốc hội + Chính phủ + các bộ ngành Trung ương ban hành) và
@@ -1099,7 +1074,12 @@ cities, mostly People's Council / People's Committee output).
 
 {_bar(manifest['by_scope'])}
 
-## Loại văn bản · `doc_type` + `legal_type`
+"""
+
+
+def _card_doc_type(manifest: dict[str, Any]) -> str:
+    """The `doc_type` slug + `legal_type` full-name explainer and bars."""
+    return rf"""## Loại văn bản · `doc_type` + `legal_type`
 
 Mỗi văn bản được gắn **slug tiếng Việt không dấu** (`doc_type`,
 ví dụ `quyet_dinh`, `nghi_dinh`, `thong_tu_lien_tich`) lẫn tên đầy
@@ -1134,7 +1114,12 @@ Pháp luật 2015 — `hien_phap` / `bo_luat` / `luat` / `phap_lenh` /
 
 {_bar(manifest['by_legal_type'])}
 
-## Lĩnh vực pháp luật · `legal_area`
+"""
+
+
+def _card_legal_area(manifest: dict[str, Any]) -> str:
+    """The `legal_area` subject-domain distribution."""
+    return rf"""## Lĩnh vực pháp luật · `legal_area`
 
 `legal_area` is the canonical Vietnamese label pulled from the
 ``documentFields[]`` block on each detail-API response (~250
@@ -1146,7 +1131,12 @@ show the structural overlap between adjacent areas.
 
 {_bar(manifest['by_legal_area'], top_n=20)}
 
-## Cơ quan ban hành · Issuing agency
+"""
+
+
+def _card_agency(manifest: dict[str, Any]) -> str:
+    """The top issuing-agency distribution."""
+    return rf"""## Cơ quan ban hành · Issuing agency
 
 Top issuing agencies (top 15). Quốc hội + Chính phủ + Bộ Tài chính
 + Bộ Tư pháp + ... thường chiếm phần lớn `trung_uong`; các tỉnh
@@ -1154,7 +1144,12 @@ chia khá đều phần `dia_phuong`.
 
 {_bar(manifest['by_agency'], top_n=15)}
 
-## Năm ban hành · Year of issue
+"""
+
+
+def _card_year(manifest: dict[str, Any]) -> str:
+    """The year-of-issue distribution."""
+    return rf"""## Năm ban hành · Year of issue
 
 Phân bố năm theo `issue_date` (ISO `YYYY-MM-DD`); rỗng nếu cổng
 không cung cấp được trường này. — Year distribution from
@@ -1163,7 +1158,12 @@ date.
 
 {_year_block(manifest['by_year'])}
 
-## Nguồn nội dung · Body provenance
+"""
+
+
+def _card_body_source(manifest: dict[str, Any]) -> str:
+    """The body-provenance (file/html/shell) breakdown."""
+    return rf"""## Nguồn nội dung · Body provenance
 
 Một văn bản trên `vbpl.vn` có thể có **HTML thân bài** (do API SPA
 trả về sau khi qua reCAPTCHA) và/hoặc một **tệp đính kèm**
@@ -1176,7 +1176,12 @@ otherwise.
 
 {_bar(manifest['by_body_source'])}
 
-## Lược đồ bảng `documents` · `documents` schema
+"""
+
+
+def _card_schema(repo_owner: str, repo_name: str) -> str:
+    """The three-family `documents` schema tables plus the quick-load snippet."""
+    return rf"""## Lược đồ bảng `documents` · `documents` schema
 
 The parquet has three families of columns:
 
@@ -1240,7 +1245,15 @@ for sec in structure.get("sections", []):
     print(sec["kind"], sec["label"])
 ```
 
-## Embedding + reduction artefacts
+"""
+
+
+def _card_embedding_artefacts(
+    embed_dim_pretty: int, embed_model_pretty: str,
+    embeddable_corpus_size: int,
+) -> str:
+    """The note on the embedding/reduction artefacts not bundled on the Hub."""
+    return rf"""## Embedding + reduction artefacts
 
 The Hub ships the **`documents` config only**
 (`documents-*.parquet`, one row per document, with text +
@@ -1265,7 +1278,15 @@ which yields `parquet/embeddings/<doc_name>.parquet` and
 `parquet/reduced/<doc_name>.parquet` per-doc shards keyed back to
 `documents.doc_name`.
 
-{viz_block}## Cách thu thập + chuẩn hoá · How the corpus was built
+"""
+
+
+def _card_how_built(
+    viz_block: str, embed_model_pretty: str, embed_dim_pretty: int,
+    embeddable_corpus_size: int, manifest: dict[str, Any],
+) -> str:
+    """Embedding scatters plus the how-the-corpus-was-built pipeline prose."""
+    return rf"""{viz_block}## Cách thu thập + chuẩn hoá · How the corpus was built
 
 The crawler is a six-stage pipeline (`harvest` → `detail` → `parse`
 → `extract` → `embed` → `reduce`) that walks vbpl.vn's public
@@ -1327,14 +1348,24 @@ embeddable rows only ({_format_int(embeddable_corpus_size)}-row corpus).
 
 Captured: `{manifest.get('completed_at')}`.
 
-## Nguồn · Source
+"""
+
+
+def _card_source() -> str:
+    """Static source-portal provenance links."""
+    return rf"""## Nguồn · Source
 
 * Portal: <https://vbpl.vn/>
 * Backend gateway: `vbpl-bientap-gateway.moj.gov.vn`
 * Publisher: Ministry of Justice of Vietnam (Bộ Tư pháp)
 * Sitemap: <https://vbpl.vn/sitemap.xml>
 
-## Giấy phép · License
+"""
+
+
+def _card_license(license_id: str) -> str:
+    """The bilingual license clause."""
+    return rf"""## Giấy phép · License
 
 Văn bản gốc được Bộ Tư pháp công bố trên cổng thông tin công cộng
 (`Allow: /` trong `robots.txt`). Bản phân phối lại này dùng giấy
@@ -1346,7 +1377,12 @@ public portal (its `robots.txt` allows `/` and disallows only
 **{license_id.upper()}**; please check the source-website terms of
 use before commercial redistribution.
 
-## Trích dẫn · Citation
+"""
+
+
+def _card_citation(repo_owner: str, repo_name: str) -> str:
+    """The bilingual citation guidance with both BibTeX entries."""
+    return rf"""## Trích dẫn · Citation
 
 If you use this dataset, please cite both **the redistribution on
 Hugging Face** and **the original source** (Cơ sở dữ liệu Quốc gia
@@ -1370,6 +1406,78 @@ về pháp luật, Bộ Tư pháp Việt Nam):
 }}
 ```
 """
+
+
+def _render_card(
+    manifest: dict[str, Any],
+    repo_owner: str,
+    repo_name: str,
+    license_id: str,
+    viz_paths: dict[str, Path] | None = None,
+    embed_model_id: str | None = None,
+    embed_dim: int | None = None,
+) -> str:
+    """Assemble the bilingual dataset-card README from section builders.
+
+    Binds the manifest roll-up + repo/license/embedder context into
+    scalars, then concatenates the per-section markdown fragments. The
+    returned string is the YAML front matter followed by the body.
+    """
+    n = manifest["corpus"]["documents"]
+    raw = manifest["corpus"]["raw_rows"]
+    dropped = manifest["corpus"]["dropped_empty"]
+    cl = manifest["corpus"]["char_len"]
+    pa_ = manifest["corpus"]["paragraphs"]
+    se = manifest["corpus"]["sentences"]
+    pg = manifest["corpus"]["pages"]
+    front = _yaml_frontmatter(manifest, license_id)
+    overview_block = _overview_viz_section(viz_paths or {})
+    viz_block = _embed_viz_section(
+        viz_paths or {},
+        embed_model_id=embed_model_id,
+        embed_dim=embed_dim,
+    )
+    # The "How the corpus was built" prose mentions the embedder; thread
+    # the actual model+dim through so the card matches what shipped.
+    embed_model_pretty = embed_model_id or "nvidia/llama-nemotron-embed-1b-v2"
+    embed_dim_pretty = embed_dim or 2048
+    # Embeddable-row count for the recovery prose: total documents
+    # minus rows that ship with markdown=null (shell_html-after-retry
+    # bucket only -- the legacy "Lỗi" prefix rule was retired in
+    # May 2026 because audit showed those titles are legitimate uses
+    # of the Vietnamese noun for "fault / error").
+    shell_html_count = manifest.get(
+        "by_body_source", {},
+    ).get("shell_html", {}).get("count", 0)
+    null_markdown_count = manifest["corpus"].get(
+        "null_markdown_rows", shell_html_count,
+    )
+    embeddable_corpus_size = max(
+        0, manifest["corpus"]["documents"] - null_markdown_count,
+    )
+    body = (
+        _card_header()
+        + _card_at_a_glance(
+            n, raw, dropped, null_markdown_count, manifest, cl, pg, pa_, se,
+        )
+        + _card_scope(overview_block, manifest)
+        + _card_doc_type(manifest)
+        + _card_legal_area(manifest)
+        + _card_agency(manifest)
+        + _card_year(manifest)
+        + _card_body_source(manifest)
+        + _card_schema(repo_owner, repo_name)
+        + _card_embedding_artefacts(
+            embed_dim_pretty, embed_model_pretty, embeddable_corpus_size,
+        )
+        + _card_how_built(
+            viz_block, embed_model_pretty, embed_dim_pretty,
+            embeddable_corpus_size, manifest,
+        )
+        + _card_source()
+        + _card_license(license_id)
+        + _card_citation(repo_owner, repo_name)
+    )
     return front + body
 
 

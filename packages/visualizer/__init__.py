@@ -1,6 +1,6 @@
 """Visualizer renderers + dataset loader (consumes pipeline parquet output).
 
-This package is no longer a pipeline stage. Each file here is a
+Each file here is a
 :class:`Renderer` that takes a pandas :class:`DataFrame` (loaded from
 the Curator pipeline's :class:`ParquetWriter` output) and writes one
 or more artifacts under an ``out_dir``.

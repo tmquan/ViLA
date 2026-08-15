@@ -32,15 +32,18 @@ def render_notebook(out_path: Path, slug: str, title: str) -> None:
             f"# {title}\n\nInteractive exploration of the corpus."
         ),
         v4.new_code_cell(
-            "import pathlib\n"
             "from packages.common.config import find_site_config, load_config\n"
+            "from packages.common.base import build_layout\n"
             "from packages.common.ontology import load_ontology\n"
             "from packages.visualizer.base import build_dataset\n"
             "\n"
             f"slug = {_json.dumps(slug)}\n"
             "cfg = load_config(find_site_config(slug))\n"
             "onto = load_ontology()\n"
-            "df = build_dataset(cfg, onto)\n"
+            "layout = build_layout(cfg)\n"
+            "# build_dataset(parquet_dir, onto, jsonl_dir): joins reducer parquet\n"
+            "# (embeddings + coords) with extractor jsonl (text + entities).\n"
+            "df = build_dataset(layout.reduced_dir, onto, jsonl_dir=layout.jsonl_dir)\n"
             "df.head()"
         ),
         v4.new_markdown_cell("## Counts by applied article"),

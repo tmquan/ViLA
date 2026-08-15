@@ -22,11 +22,13 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pandas as pd
+from nemo_curator.tasks import DocumentBatch
 from omegaconf import OmegaConf
 
 from packages.extractor.development.build import (
+    DevelopmentBuildStage,
     aggregate_developments_jsonl,
-    build_one,
     list_doc_names,
 )
 
@@ -139,24 +141,24 @@ def main(argv: list[str] | None = None) -> int:
     built_at = args.built_at or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     logger.info("built_at      = %s", built_at)
 
-    n_phases_total = 0
-    n_routed_total = 0
-    n_unrouted_total = 0
-    n_meta_intro_total = 0
-    n_main_intro_total = 0
-    for doc_name in doc_names:
-        dev = build_one(
-            doc_name=doc_name,
-            canonical_dir=canonical_dir,
-            md_dir=md_dir,
-            output_root=output_root,
-            built_at=built_at,
-        )
-        n_phases_total += dev.stats.n_phases
-        n_routed_total += dev.stats.n_entities_routed
-        n_unrouted_total += dev.stats.n_unrouted
-        n_meta_intro_total += dev.stats.n_metadata_introduced
-        n_main_intro_total += dev.stats.n_maindata_introduced
+    stage = DevelopmentBuildStage(
+        canonical_dir=canonical_dir,
+        md_dir=md_dir,
+        output_root=output_root,
+        built_at=built_at,
+    )
+    batch = DocumentBatch(
+        task_id="development_build",
+        dataset_name="development",
+        data=pd.DataFrame({"doc_name": doc_names}),
+    )
+    developments = list(stage.process(batch).to_pandas()["development"])
+
+    n_phases_total = sum(d.stats.n_phases for d in developments)
+    n_routed_total = sum(d.stats.n_entities_routed for d in developments)
+    n_unrouted_total = sum(d.stats.n_unrouted for d in developments)
+    n_meta_intro_total = sum(d.stats.n_metadata_introduced for d in developments)
+    n_main_intro_total = sum(d.stats.n_maindata_introduced for d in developments)
 
     out = aggregate_developments_jsonl(
         output_root=output_root, doc_names=doc_names,

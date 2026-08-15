@@ -1,6 +1,6 @@
 """congbobanan native text extraction — NeMo Curator, sharded, resumable.
 
-Drives the Curator :class:`~packages.datasites.congbobanan.components.parser.CongbobananParser`
+Drives the Curator :class:`~packages.datasites.congbobanan.components.parser.CBBADocumentParser`
 (which wraps :class:`packages.parser.stage.PdfParseStage`, runtime=local pypdf +
 cmap healing) in-process over batches of files. Keeps NATIVE / CMAP_REPAIRABLE /
 OFFICE_DOCUMENT markdown; DEFERS OCR types (scanned/font-corrupted/mixed) and
@@ -13,15 +13,13 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, "/home/tranminhq/ViLA")
 
 import pandas as pd  # noqa: E402
 
-from packages.datasites.congbobanan.components.parser import CongbobananParser  # noqa: E402
+from packages.datasites.congbobanan.components.parser import CBBADocumentParser  # noqa: E402
 from packages.parser.pypdf import PypdfParser  # noqa: E402
 from packages.parser.types import (  # noqa: E402
     DEFAULT_MAX_LOSSY,
@@ -72,7 +70,7 @@ def main() -> int:
     rec_path = OUT / f"records_{a.shard:02d}.jsonl"
     def_path = OUT / f"deferred_{a.shard:02d}.jsonl"
     done = _done_ids(rec_path, def_path)
-    parser = CongbobananParser()          # Curator PdfParseStage, in-process
+    parser = CBBADocumentParser()          # Curator PdfParseStage, in-process
     raw = PypdfParser()                   # for classifying the deferred minority
     recf, deff = rec_path.open("a"), def_path.open("a")
 

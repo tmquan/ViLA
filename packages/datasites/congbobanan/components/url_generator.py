@@ -47,7 +47,7 @@ def doc_id_from_url(url: str) -> str | None:
     return m.group(1) if m else None
 
 
-class CongbobananURLGenerator(URLGenerator):
+class CBBADocumentURLGenerator(URLGenerator):
     """Enumerate congbobanan detail-page URLs from an integer ID range.
 
     Plain constructor args (no Hydra/OmegaConf):
@@ -90,6 +90,6 @@ class CongbobananURLGenerator(URLGenerator):
 __all__ = [
     "DEFAULT_DETAIL_URL_TEMPLATE",
     "DEFAULT_PDF_URL_TEMPLATE",
-    "CongbobananURLGenerator",
+    "CBBADocumentURLGenerator",
     "doc_id_from_url",
 ]

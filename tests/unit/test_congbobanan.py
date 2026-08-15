@@ -5,50 +5,27 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from nemo_curator.pipeline import Pipeline
-from nemo_curator.stages.base import CompositeStage, ProcessingStage
-from omegaconf import OmegaConf
 
-from packages.common.schemas import PipelineCfg
 from packages.datasites.congbobanan.components import (
-    CongbobananDocumentExtractor,
-    CongbobananURLGenerator,
+    CBBADocumentExtractor,
+    CBBADocumentURLGenerator,
     doc_id_from_url,
 )
 from packages.datasites.congbobanan.components.downloader import (
     _MIN_VALID_PDF_BYTES,
     ACCEPTED_BODY_EXTENSIONS,
-    CongbobananDocumentDownloader,
+    CBBADocumentPDFDownloader,
     _is_valid_pdf,
     _sniff_body_ext,
     page_has_metadata,
 )
-from packages.datasites.congbobanan.pipeline import (
-    ALL_PIPELINES_ORDER,
-    PIPELINES,
-    build_pipeline,
-)
-
-
-def _cfg(tmp_path: Any, **overrides: Any) -> Any:
-    cfg = OmegaConf.structured(PipelineCfg)
-    cfg.host = "congbobanan.toaan.gov.vn"
-    cfg.output_dir = str(tmp_path)
-    cfg.parser.runtime = "local"
-    cfg.extractor.run_site_layer = False
-    cfg.scraper.start_id = 1
-    cfg.scraper.end_id = 5
-    cfg.scraper.verify_tls = False
-    for k, v in overrides.items():
-        OmegaConf.update(cfg, k, v, merge=False)
-    return cfg
 
 
 # --------------------------------------------------------------------- URL generator
 
 
-def test_url_generator_emits_integer_id_range(tmp_path: Any) -> None:
-    gen = CongbobananURLGenerator(_cfg(tmp_path, **{"scraper.start_id": 10, "scraper.end_id": 12}))
+def test_url_generator_emits_integer_id_range() -> None:
+    gen = CBBADocumentURLGenerator(start_id=10, end_id=12)
     urls = gen.generate_urls()
     assert urls == [
         "https://congbobanan.toaan.gov.vn/2ta10t1cvn/chi-tiet-ban-an",
@@ -57,9 +34,9 @@ def test_url_generator_emits_integer_id_range(tmp_path: Any) -> None:
     ]
 
 
-def test_url_generator_raises_on_inverted_range(tmp_path: Any) -> None:
+def test_url_generator_raises_on_inverted_range() -> None:
     with pytest.raises(ValueError):
-        CongbobananURLGenerator(_cfg(tmp_path, **{"scraper.start_id": 100, "scraper.end_id": 10}))
+        CBBADocumentURLGenerator(start_id=100, end_id=10)
 
 
 def test_doc_id_from_url_handles_every_url_family() -> None:
@@ -197,20 +174,21 @@ def test_existing_body_path_finds_any_accepted_extension(tmp_path: Any) -> None:
     Locks the contract that prevents the downloader from re-fetching a
     case that was already saved under a non-``.pdf`` extension.
     """
+    dl = CBBADocumentPDFDownloader(str(tmp_path), pages_dir=str(tmp_path / "pages"))
     for ext in ACCEPTED_BODY_EXTENSIONS:
         case_id = f"42{ext.replace('.', '_')}"
         body = tmp_path / f"{case_id}{ext}"
         body.write_bytes(b"\x00" * 4096)
-        found = CongbobananDocumentDownloader._existing_body_path(case_id, tmp_path)
+        found = dl._existing_body_path(case_id)
         assert found == body, f"missed {ext}"
 
     # Empty body must be ignored (otherwise we'd skip a re-download that needs to happen).
     empty_id = "99"
     (tmp_path / f"{empty_id}.pdf").write_bytes(b"")
-    assert CongbobananDocumentDownloader._existing_body_path(empty_id, tmp_path) is None
+    assert dl._existing_body_path(empty_id) is None
 
     # Truly absent case_id returns None.
-    assert CongbobananDocumentDownloader._existing_body_path("does-not-exist", tmp_path) is None
+    assert dl._existing_body_path("does-not-exist") is None
 
 
 # --------------------------------------------------------------------- extractor
@@ -239,7 +217,7 @@ _FIXTURE_HTML = """
 
 
 def test_extractor_parses_every_sidebar_field(tmp_path: Any) -> None:
-    ex = CongbobananDocumentExtractor(_cfg(tmp_path))
+    ex = CBBADocumentExtractor()
     out = ex.extract(
         {
             "doc_name": "1213296",
@@ -275,7 +253,7 @@ def test_extractor_handles_quyet_dinh_variant(tmp_path: Any) -> None:
         "</div>"
         '<div class="Detail_Feedback_pub"></div>'
     )
-    ex = CongbobananDocumentExtractor(_cfg(tmp_path))
+    ex = CBBADocumentExtractor()
     out = ex.extract(
         {
             "doc_name": "99",
@@ -293,7 +271,7 @@ def test_extractor_handles_quyet_dinh_variant(tmp_path: Any) -> None:
 
 
 def test_extractor_on_empty_html_returns_blank_row(tmp_path: Any) -> None:
-    ex = CongbobananDocumentExtractor(_cfg(tmp_path))
+    ex = CBBADocumentExtractor()
     out = ex.extract(
         {
             "doc_name": "42",
@@ -311,38 +289,8 @@ def test_extractor_on_empty_html_returns_blank_row(tmp_path: Any) -> None:
     assert out["luot_xem"] == 0
 
 
-# --------------------------------------------------------------------- pipeline build
-
-
-def test_pipeline_registry_shape() -> None:
-    curation = ["download", "parse", "extract", "embed", "reduce"]
-    assert curation == ALL_PIPELINES_ORDER
-    # The five curation pipelines stay first and in order; pdf_triage /
-    # pdf_native are registered alongside them but kept out of the
-    # `--pipeline all` order (packages/pipeline/pdf_triage.py).
-    assert list(PIPELINES.keys())[:5] == curation
-    assert set(PIPELINES) - set(curation) == {"pdf_triage", "pdf_native"}
-
-
-def test_every_pipeline_builds(tmp_path: Any) -> None:
-    for name in ALL_PIPELINES_ORDER:
-        pipeline = build_pipeline(_cfg(tmp_path), name)
-        assert isinstance(pipeline, Pipeline)
-        assert name in pipeline.name
-
-
-def test_every_stage_is_a_processing_or_composite_stage(tmp_path: Any) -> None:
-    for name in ALL_PIPELINES_ORDER:
-        pipeline = build_pipeline(_cfg(tmp_path), name)
-        for stage in pipeline.stages:
-            assert isinstance(stage, (ProcessingStage, CompositeStage)), (
-                f"pipeline={name} stage={stage!r} is not a Curator stage"
-            )
-
-
-def test_every_pipeline_describes_without_error(tmp_path: Any) -> None:
-    for name in ALL_PIPELINES_ORDER:
-        pipeline = build_pipeline(_cfg(tmp_path), name)
-        text = pipeline.describe()
-        assert "Pipeline:" in text
-        pipeline.build()
+# NOTE: congbobanan's retired five-pipeline `--pipeline` registry
+# (ALL_PIPELINES_ORDER / build_pipeline) moved out with the migration to
+# the single-IP in-process runner; those build-shape tests were removed
+# with it. The crawl+extract composite is exercised end-to-end via
+# `pipeline.py` / `extract_text.py`.

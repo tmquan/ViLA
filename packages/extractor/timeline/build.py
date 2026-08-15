@@ -31,8 +31,14 @@ from __future__ import annotations
 import json
 import logging
 import unicodedata
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+
+import pandas as pd
+from nemo_curator.stages.base import ProcessingStage
+from nemo_curator.stages.resources import Resources
+from nemo_curator.tasks import DocumentBatch
 
 from packages.extractor.ner.schema import (
     METADATA_TYPES,
@@ -844,7 +850,57 @@ def build_one(
     return timeline
 
 
+@dataclass
+class TimelineBuildStage(ProcessingStage[DocumentBatch, DocumentBatch]):
+    """Per-document timeline build as a Curator stage.
+
+    ``process`` runs :func:`build_one` over the batch's ``doc_name`` column
+    (read the canonical NER record + source markdown, cluster events, persist
+    ``timelines/<doc>.json``) and returns the in-memory
+    :class:`~packages.extractor.timeline.schema.CaseTimeline` objects in an
+    object-typed ``timeline`` column. The ``__main__`` driver is a thin wrapper
+    that feeds one :class:`DocumentBatch` through this stage — mirroring
+    :class:`packages.extractor.ner.extract.NerExtractStage`.
+    """
+
+    canonical_dir: Path
+    md_dir: Path
+    output_root: Path
+    cluster_window_chars: int
+    built_at: str | None = None
+    name: str = "timeline_build"
+    resources: Resources = field(default_factory=lambda: Resources(cpus=1.0))
+
+    def inputs(self) -> tuple[list[str], list[str]]:
+        return (["data"], ["doc_name"])
+
+    def outputs(self) -> tuple[list[str], list[str]]:
+        return (["data"], ["timeline"])
+
+    def process(self, task: DocumentBatch) -> DocumentBatch:
+        df = task.to_pandas().copy()
+        df["timeline"] = [
+            build_one(
+                doc_name=str(d),
+                canonical_dir=self.canonical_dir,
+                md_dir=self.md_dir,
+                output_root=self.output_root,
+                cluster_window_chars=self.cluster_window_chars,
+                built_at=self.built_at,
+            )
+            for d in df["doc_name"]
+        ]
+        return DocumentBatch(
+            task_id=task.task_id,
+            dataset_name=task.dataset_name,
+            data=df,
+            _metadata=task._metadata,
+            _stage_perf=task._stage_perf,
+        )
+
+
 __all__ = [
+    "TimelineBuildStage",
     "aggregate_timelines_jsonl",
     "build_one",
     "build_timeline",

@@ -263,9 +263,16 @@ ALL_PIPELINES_ORDER: list[str] = [
 ## 2.5 End-to-end reproduction (`anle.toaan.gov.vn`, download → HF push)
 
 The canonical, copy-pasteable command sequence that takes
-`anle.toaan.gov.vn` from zero to a live HF dataset. Every other
-Family A site (`congbobanan`) follows the same shape — just swap
-the package name.
+`anle.toaan.gov.vn` from zero to a live HF dataset. anle runs as a
+single-IP, **in-process driver chain on the GB10 GPU** (Ray/xenna
+can't see that device), so this is a set of per-phase `python -m`
+modules rather than the distributed `--pipeline`/`--executor` CLI.
+That distributed design still describes the architecture (§1–§2d)
+and stays live for `vbpl` (§13.5); see
+[`packages/datasites/anle/README.md`](../packages/datasites/anle/README.md)
+for these same commands in reference form. Its Family A sibling
+`congbobanan` uses the same in-process pattern, with a sharded
+crawl/extract/build (§2.5.1).
 
 ### 2.5.0 Prerequisites
 
@@ -277,128 +284,110 @@ uv sync
 # Site-specific extras (BeautifulSoup, lxml, pypdf, ...).
 pip install -r packages/datasites/anle/requirements.txt
 
-# Cloud-NIM credentials (parser hybrid fallback + default embedder).
+# Cloud-NIM credentials (PDF parse hybrid fallback + default embedder).
 # Required by:
-#   * --pipeline parse (when scraper hits an image-only PDF and
-#     parser.runtime=hybrid kicks the fallback in)
-#   * --pipeline embed (cfg.embedder.runtime=nim by default)
+#   * the crawl+extract runner, when it hits an image-only PDF and
+#     parser.runtime=hybrid kicks the nemoretriever-parse fallback in
+#   * embed_reduce (cfg.embedder.runtime=nim by default)
 export NVIDIA_API_KEY=nvapi-...
 
 # HF auth (publish only; not needed for the pipeline itself).
 huggingface-cli login   # or: export HF_TOKEN=hf_...
 ```
 
-Smoke-test a single document with the lightest possible setup
+Smoke-test a handful of documents with the lightest possible setup
 before you commit to the full corpus:
 
 ```bash
-python -m packages.datasites.anle \
-    --pipeline all --executor xenna --limit 1 \
-    --override parser.runtime=local
+export DATA=~/data/anle.toaan.gov.vn
+
+# Crawl + extract just three records (writes pages/, files/, records).
+python -m packages.datasites.anle.pipeline \
+    --records-out "$DATA/anle_records.jsonl" --limit 3
 ```
 
-The `--override parser.runtime=local` keeps the smoke run offline
-(no NIM round-trip); flip to `hybrid` once you have the API key
-in place.
+`--limit 3` caps the crawl; a bare smoke run parses locally and
+needs no API key unless an image-only PDF forces the NIM fallback.
 
-### 2.5.1 The five pipelines, one at a time
+### 2.5.1 The phases, one at a time
 
-For production-scale operation we run the five pipelines
-sequentially so each writes its on-disk artefact before the next
-reads it. The site shares a single Ray cluster across all five
-when `--executor xenna` and `--ray-address` are not overridden.
-
-`--config-name` is omitted on every command below: the runner falls
-back to `find_site_config(args.config_name or site)` and ``site``
-is already `"anle"`, so `configs/anle.yaml` is picked automatically.
-Pass `--config-name <name>` (or `--config /abs/path.yaml`) only to
-target a non-default config file.
+Run the drivers in order — each writes its on-disk artefact before
+the next reads it. These are plain in-process modules: no Ray
+bootstrap, no `--executor`, one GB10 GPU. `--config-name` is not
+needed; each driver resolves `configs/anle.yaml` from its own
+package.
 
 ```bash
-# ----- 1. Download -----
-# URLs (Oracle ADF nguonanle pagination) -> PDFs.
-# Output: data/anle.toaan.gov.vn/pdf/<doc_name>.{pdf,docx,doc}
-#         + sibling <doc_name>.html + <doc_name>.url sidecars.
-python -m packages.datasites.anle --pipeline download \
-    --executor xenna
+export DATA=~/data/anle.toaan.gov.vn
 
-# ----- 2. Parse -----
-# PDF / DOCX -> <doc_name>.md + <doc_name>.meta.json.
-# Hybrid runtime: pypdf first, NIM nemoretriever-parse fallback
-# on image-only scans (gated by cfg.parser.min_local_chars).
-# Output: data/anle.toaan.gov.vn/md/<doc_name>.md + .meta.json
-python -m packages.datasites.anle --pipeline parse \
-    --executor xenna
+# ----- 1. Crawl + extract -----
+# Single-IP paced runner. URLs (Oracle ADF nguonanle pagination)
+# -> pages/<...>.html.gz, files/<doc_name>.{pdf,docx,doc}, and the
+# JSONL record file. PDF/DOCX text extraction runs here (pypdf
+# local, NIM nemoretriever-parse fallback on image-only scans,
+# gated by cfg.parser.min_local_chars). NFC + Vietnamese tone
+# canonicalisation, the regex GenericExtractor, the PrecedentExtractor
+# (án-lệ metadata) and the LegalStructureExtractor (5-section
+# canonical template) all run over the extracted text.
+# Range: --start P --end Q ; smoke: --limit N.
+python -m packages.datasites.anle.pipeline \
+    --records-out "$DATA/anle_records.jsonl"
 
-# ----- 3. Extract -----
-# markdown -> JSONL with text + extracted entities + structure.
-# Runs NFC + Vietnamese tone canonicalisation, the regex
-# GenericExtractor, the PrecedentExtractor (án-lệ metadata),
-# and the LegalStructureExtractor (5-section canonical template).
-# Output: data/anle.toaan.gov.vn/jsonl/<doc_name>.jsonl
-python -m packages.datasites.anle --pipeline extract \
-    --executor xenna
+# ----- 2. Documents HF table -----
+# Doc-level rows (markdown + extracted entities + the 5-section
+# canonical legal structure) assembled from the crawl output.
+python -m packages.datasites.anle.build_documents
 
-# ----- 4. Embed -----
-# JSONL -> embeddings parquet (one row per doc).
-# Default model: nvidia/llama-nemotron-embed-1b-v2 (2048-D, 8k window)
-# via NIM. Sliding-window chunking + mean-pool covers the 32 k doc
-# context against the 8 k window.
-#
-# We pick ray_actor_pool here (vs xenna for the other four stages)
-# because the NIM client is held as long-lived per-actor state:
-# RayActorPoolExecutor amortises the OpenAI client + HTTP connection
-# setup across every doc routed to the same actor. xenna spawns
-# short-lived workers per batch, so the embedder pays the
-# client-handshake tax on every fan-out.
-#
-# Output: data/anle.toaan.gov.vn/parquet/embeddings/<doc_name>.parquet
-python -m packages.datasites.anle --pipeline embed \
-    --executor ray_actor_pool
-# Optional: raise embedder.batch_size from the default 8 only after
-# you've confirmed your NIM tier won't 429. The default is tuned for
-# the free-tier integrate.api.nvidia.com endpoint; paid tiers can
-# usually take 16-32 safely.
-#   ... --override embedder.batch_size=16
+# ----- 3. Sentences HF table -----
+# Explodes the documents into sentence-level rows.
+python -m packages.datasites.anle.build_sentences
 
-# ----- 5. Reduce -----
-# embeddings -> reduced parquet (PCA + t-SNE + UMAP + HDBSCAN
-# cluster ids over the full matrix). GPU path: cuml when available;
-# sklearn / umap-learn / hdbscan fallback otherwise.
-# Output: data/anle.toaan.gov.vn/parquet/reduced/<doc_name>.parquet
-python -m packages.datasites.anle --pipeline reduce \
-    --executor xenna
+# ----- 4. Embed + reduce (GB10) -----
+# Embeddings (default nvidia/llama-nemotron-embed-1b-v2, 2048-D via
+# NIM) plus PCA / t-SNE / UMAP / HDBSCAN over the full matrix, in a
+# single driver. `--chunking sentence` is the canonical chunking.
+python -m packages.datasites.anle.embed_reduce --chunking sentence
 ```
 
-Or run them all in one shot — the CLI bootstraps Ray once and
-streams the five through the same cluster. Note `--executor xenna`
-applies to **all five** pipelines; the embed stage still works
-under `xenna`, just without the per-actor NIM-client amortisation
-described in stage 4 above. For a clean separation, prefer the
-five sequential commands so you can swap the embed executor.
+`congbobanan` follows the same in-process pattern, but its crawl,
+extract and document build take explicit shard flags (and it keeps
+a top-level `__main__` for the crawl):
 
 ```bash
-python -m packages.datasites.anle --pipeline all --executor xenna
+python -m packages.datasites.congbobanan --start 1 --end 10           # crawl
+python -m packages.datasites.congbobanan.extract_text   --shard 0 --nshards 8
+python -m packages.datasites.congbobanan.build_documents --shard 0 --nshards 8
 ```
 
-### 2.5.2 Visualizer (off-pipeline)
-
-After `reduce` finishes, render the dashboard + per-facet scatter
-HTMLs + notebook. The renderer reads the reducer parquet + the
-extractor JSONL and joins on `doc_name`; idempotent re-runs are
-no-ops unless `--force` is passed.
+Or run the whole anle chain in one shot:
 
 ```bash
-# Output: data/anle.toaan.gov.vn/viz/
-#   dashboard.html                                top-level dashboard (iframes the rest)
-#   scatter-<color_by>-<dim>-<model_slug>.html    one per (color_by, dim) pair
-#   distribution-<enum>.html                      one per cfg.visualizer.distribution_enums entry
-#   timeline.html
-#   taxonomy.html
-#   relations.html
-#   citations.html
-#   explorer.ipynb                                Jupyter notebook entry point
-python -m apps.visualizer --config-name anle
+python -m packages.datasites.anle.pipeline \
+        --records-out "$DATA/anle_records.jsonl" \
+  && python -m packages.datasites.anle.build_documents \
+  && python -m packages.datasites.anle.build_sentences \
+  && python -m packages.datasites.anle.embed_reduce --chunking sentence
+```
+
+To re-run just one half of the embed/reduce driver — a model bump
+needs a fresh embed; a projection tweak only needs a re-fit — pass
+the matching flag instead of redoing both:
+
+```bash
+python -m packages.datasites.anle.embed_reduce --embed-only    # re-embed only
+python -m packages.datasites.anle.embed_reduce --reduce-only   # re-fit PCA/t-SNE/UMAP only
+```
+
+### 2.5.2 Analytics (off the main chain)
+
+Once `embed_reduce` has written the reduced coordinates, render the
+Sankey + scatter datacard figures. Both read the document/sentence
+tables plus the reduced parquet and join on `doc_name`; re-runs are
+idempotent.
+
+```bash
+python -m packages.datasites.anle.viz_sankey    # flow / taxonomy Sankey
+python -m packages.datasites.anle.viz_scatter   # 2D projection scatter facets
 ```
 
 ### 2.5.3 HuggingFace materialisation
@@ -445,14 +434,20 @@ python -m packages.datasites.anle.push_to_hf \
 ### 2.5.5 The full chain on one line (for cron)
 
 ```bash
-python -m packages.datasites.anle --pipeline all --executor xenna \
-    && python -m apps.visualizer --config-name anle \
-    && python -m packages.datasites.anle.hf_export \
-    && python -m packages.datasites.anle.push_to_hf
+export DATA=~/data/anle.toaan.gov.vn
+python -m packages.datasites.anle.pipeline \
+        --records-out "$DATA/anle_records.jsonl" \
+  && python -m packages.datasites.anle.build_documents \
+  && python -m packages.datasites.anle.build_sentences \
+  && python -m packages.datasites.anle.embed_reduce --chunking sentence \
+  && python -m packages.datasites.anle.viz_sankey \
+  && python -m packages.datasites.anle.viz_scatter \
+  && python -m packages.datasites.anle.hf_export \
+  && python -m packages.datasites.anle.push_to_hf
 ```
 
 A typical nightly cron drops the final `push_to_hf` step and
-publishes weekly; the first three commands are cheap enough to
+publishes weekly; everything up to `hf_export` is cheap enough to
 run on every cycle. See §10.1 for the cadence table.
 
 ### 2.5.6 Cost / wall-clock budget (rough orders of magnitude)
@@ -995,7 +990,7 @@ OmegaConf dotlist overrides are accepted via `--override
 KEY=VALUE`. Lists are **replaced**, mappings are **deep-merged**.
 
 ```bash
-python -m packages.datasites.anle --pipeline embed \
+python -m packages.datasites.vbpl --pipeline embed \
     --override embedder.batch_size=16 executor.mode=batch
 ```
 

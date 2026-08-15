@@ -21,6 +21,7 @@ document, then iterate+extracts one record per doc.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -151,6 +152,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--download-dir", type=str, default=str(DEFAULT_DATA_ROOT),
                     help="data root; files/ and pages/ are created under it")
     ap.add_argument("--limit", type=int, default=None, help="cap number of docs")
+    ap.add_argument(
+        "--records-out", type=str, default=None,
+        help="persist one extracted record per line to this JSONL path "
+             "(the `anle_records.jsonl` that build_documents / build_sentences / "
+             "embed_reduce consume). Omit to only count rows.",
+    )
     args = ap.parse_args(argv)
 
     cfg = AnleConfig(data_root=Path(args.download_dir), proxy=args.proxy)
@@ -169,17 +176,32 @@ def main(argv: list[str] | None = None) -> int:
         urls = urls[: args.limit]
     logger.info(f"anle: {len(urls)} detail URLs to process")
 
+    records_out = None
+    if args.records_out:
+        records_out = Path(args.records_out)
+        records_out.parent.mkdir(parents=True, exist_ok=True)
+        records_out = records_out.open("w", encoding="utf-8")
+
     n_ok = n_rows = 0
-    for url in urls:
-        path = downloader.download(url)
-        if not path:
-            continue
-        n_ok += 1
-        for rec in iterator.iterate(path):
-            row = extractor.extract(rec)
-            if row is not None:
-                n_rows += 1
-    logger.info(f"anle done: {n_ok} binaries downloaded, {n_rows} rows extracted")
+    try:
+        for url in urls:
+            path = downloader.download(url)
+            if not path:
+                continue
+            n_ok += 1
+            for rec in iterator.iterate(path):
+                row = extractor.extract(rec)
+                if row is not None:
+                    n_rows += 1
+                    if records_out is not None:
+                        records_out.write(
+                            json.dumps(row, ensure_ascii=False, default=str) + "\n"
+                        )
+    finally:
+        if records_out is not None:
+            records_out.close()
+    sink = f" -> {args.records_out}" if args.records_out else ""
+    logger.info(f"anle done: {n_ok} binaries downloaded, {n_rows} rows extracted{sink}")
     return 0
 
 

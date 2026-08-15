@@ -139,29 +139,30 @@ ViLA/
       relations.py, citations.py, dashboard.py, notebook.py
                                   # one Renderer subclass per artifact
     datasites/                    # per-site crawlers (see "Package boundaries" -> two families)
-      anle/                       # Family A (Curator multi-stage): anle.toaan.gov.vn (precedents)
-        __init__.py               # re-exports components + pipeline registry
-        __main__.py               # CLI: --pipeline {download,parse,extract,embed,reduce,all}
-        pipeline.py               # PIPELINES registry + build_pipeline(cfg, name) dispatch
-        download.py               # build_download_pipeline   URLs      -> PDFs
-        parse.py                  # build_parse_pipeline      PDFs      -> markdown
-        extract.py                # build_extract_pipeline    markdown  -> JSONL
-        embed.py                  # build_embed_pipeline      JSONL     -> embeddings parquet
-        reduce.py                 # build_reduce_pipeline     embeddings -> reduced parquet
-        _shared.py                # build_layout + field constants (private)
+      anle/                       # Family A (Curator): anle.toaan.gov.vn (precedents)
+        __init__.py               # re-exports the components
+        pipeline.py               # AnleDownloadExtractStage composite + single-IP paced main() (--records-out)
+        build_documents.py        # anle_records.jsonl -> parquet/documents.parquet (documents HF table)
+        build_sentences.py        # md/*.md            -> parquet/sentences.parquet (sentence table)
+        embed_reduce.py           # in-process GB10 embed (Nemotron-3-Embed-8B) + PCA/t-SNE/UMAP reduce
+        viz_sankey.py viz_scatter.py  # citation Sankey + 2-D projection scatter
+        hf_export.py push_to_hf.py    # materialise + publish the HF bundle
         components/               # Curator primitives (one subclass per base)
           __init__.py
-          url_generator.py        # AnleURLGenerator       (nemo_curator URLGenerator)
-          downloader.py           # AnleDocumentDownloader (nemo_curator DocumentDownloader)
-          iterator.py             # AnleDocumentIterator   (nemo_curator DocumentIterator)
-          extractor.py            # AnleDocumentExtractor  (nemo_curator DocumentExtractor)
+          url_generator.py        # AnleURLGenerator   (nemo_curator URLGenerator)
+          downloader.py           # AnlePDFDownloader  (nemo_curator DocumentDownloader)
+          iterator.py             # AnleIterator       (nemo_curator DocumentIterator)
+          extractor.py            # AnleExtractor      (nemo_curator DocumentExtractor)
+          embedder.py reducer.py sentences.py  # embed / reduce / sentence-span helpers
+        _legacy/                  # RETIRED Ray/xenna --pipeline {download,parse,extract,embed,reduce,all} CLI
         configs/                  # anle.yaml, default.yaml
-      # Family A siblings: congbobanan (integer-ID PDF crawler) ships
-      # the same five-pipeline Curator chain as anle. vbpl is a hybrid
-      # (Playwright detail fetch + Curator embed/reduce) -- its scraper
-      # is registered with run_crawler_site(accept_ray_flags=True), not
-      # run_curator_site. thuvienphapluat_tnpl is Family B (HTML
-      # harvester + LLM translator), NOT Family A.
+      # Family A siblings: anle and congbobanan (integer-ID PDF crawler)
+      # both run their crawl+extract as a single-IP in-process runner on
+      # the GB10 (the Ray/xenna executors can't see the GB10 GPU). vbpl
+      # keeps the distributed `--pipeline {harvest..embed,reduce,all}`
+      # + `--executor` CLI and is registered with
+      # run_crawler_site(accept_ray_flags=True). thuvienphapluat_tnpl is
+      # Family B (HTML harvester + LLM translator), NOT Family A.
       pbgdpl/                     # Family B (HTML crawler): pbgdpl.gov.vn (legal Q&A)
         __main__.py               # CLI: --pipeline {harvest,detail,all}
         scraper.py                # PIPELINES + run_pipeline(cfg, name)
@@ -267,18 +268,27 @@ ViLA/
   the per-site `_shared.py` layout helper, but the orchestration
   entry-point and contracted files differ.
 
-  **Family A — Curator multi-stage** (`anle`, `congbobanan`).
+  **Family A — Curator multi-stage** (`vbpl`, `anle`, `congbobanan`).
   For source corpora that ship as PDF / DOCX (digital or scanned) and
-  need the full parse → extract → embed → reduce chain. Entry-point
-  is `packages/common/runner.py::run_curator_site`. `vbpl` is a
-  closely-related hybrid: same downstream Curator stages, but its
-  detail fetcher is Playwright-driven and dispatched via
-  `run_crawler_site(accept_ray_flags=True)` so it can mix in-process
-  stages with the Curator embed / reduce sub-pipeline. Depends on
-  `packages/common` + `packages/pipeline` +
+  need the full parse → extract → embed → reduce chain over Curator
+  primitives. Two orchestration styles share these primitives:
+
+  * **Distributed CLI** (`vbpl`): the canonical
+    `run_curator_site` / `--pipeline {name|all}` / `--executor` shape
+    documented below. `vbpl` mixes a Playwright detail fetcher
+    (`run_crawler_site(accept_ray_flags=True)`) with the Curator
+    embed / reduce sub-pipeline.
+  * **Single-IP in-process drivers** (`anle`, `congbobanan`): the
+    Ray/xenna executors can't see the GB10 GPU, so these run their
+    crawl+extract as a paced single-process runner (`pipeline.py`,
+    `extract_text.py`) and their embed/reduce as thin `python -m`
+    drivers on the GB10. The retired distributed CLI lives under
+    `anle/_legacy/`.
+
+  Depends on `packages/common` + `packages/pipeline` +
   `nemo_curator.stages.text.download.base` + the stage-wrapper
-  packages (parser / extractor / embedder / reducer). Each site
-  exports:
+  packages (parser / extractor / embedder / reducer). A distributed
+  Family-A site (e.g. `vbpl`) exports:
     - four Curator primitive subclasses (under `<site>/components/`):
       `URLGenerator`, `DocumentDownloader`, `DocumentIterator`,
       `DocumentExtractor`;

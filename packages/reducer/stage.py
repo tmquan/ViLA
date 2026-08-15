@@ -54,8 +54,8 @@ class ReducerStage(ProcessingStage[DocumentBatch, DocumentBatch]):
     Reducer fits are PER-BATCH. The Curator pipeline contract therefore
     requires the upstream reader to deliver every per-doc embedding in
     a single :class:`DocumentBatch`; that is enforced by
-    :func:`packages.pipeline.factories.build_reduce_pipeline` setting
-    ``DEFAULT_FPP["reduce"]`` to a corpus-large value. If the reducer
+    :func:`packages.pipeline.factories._count_partition_files`, which
+    sizes the reduce partition to the whole corpus. If the reducer
     sees multiple batches, the resulting ``cluster_id`` and reducer
     coordinates will be partition-local and NOT comparable across the
     dataset -- a silent semantic corruption for visualization and HF

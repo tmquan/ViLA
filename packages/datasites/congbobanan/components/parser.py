@@ -23,7 +23,7 @@ def build_parser_cfg(runtime: str = "local") -> Any:
     )
 
 
-class CongbobananParser:
+class CBBADocumentParser:
     """The Curator :class:`PdfParseStage`, driven in-process (local pypdf)."""
 
     def __init__(self, cfg: Any | None = None) -> None:
@@ -39,4 +39,4 @@ class CongbobananParser:
         return self.stage.process(batch).to_pandas()
 
 
-__all__ = ["CongbobananParser", "build_parser_cfg"]
+__all__ = ["CBBADocumentParser", "build_parser_cfg"]

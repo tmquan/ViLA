@@ -324,29 +324,30 @@ finally:
 | `"auto"`                       | Attach to an already-running local Ray runtime (`RAY_ADDRESS` / `ray_bootstrap`).  |
 | `"ray://<head>:10001"`         | Ray Client mode: driver runs locally, stages run on the remote cluster.           |
 
-Full CLI:
+Full CLI (the distributed `--pipeline` + `--executor` path is now carried by
+**vbpl** and the Family-B harvesters; `anle` and `congbobanan` have moved to
+single-IP in-process drivers on the GB10 — see their READMEs):
 
 ```bash
-# Run everything (download -> extract -> embed -> reduce)
-python -m packages.datasites.anle --pipeline all --executor xenna --limit 3
+# Run everything (harvest -> parse -> extract -> embed -> reduce)
+python -m packages.datasites.vbpl --pipeline all --executor xenna
 
 # Re-run one stage against existing on-disk inputs
-python -m packages.datasites.anle --pipeline embed \
+python -m packages.datasites.vbpl --pipeline embed \
     --executor ray_actor_pool --ray-address ray://head.example:10001
 
 # Dotlist overrides
-python -m packages.datasites.anle --pipeline all \
-    --override executor.mode=batch scraper.qps=3.0 \
-               embedder.batch_size=16
+python -m packages.datasites.vbpl --pipeline all \
+    --override executor.mode=batch embedder.batch_size=16
 ```
 
 ## 10. Update cadence
 
 | Pipeline           | Cadence    | Trigger                                                        |
 |---                 |---         |---                                                             |
-| anle daily         | every 24 h | cron that launches `python -m packages.datasites.anle` on the Ray head. |
-| anle weekly sweep  | every 7 d  | cron with `--override scraper.paginated=true` to re-crawl nguonanle. |
-| re-reduce          | on demand  | `--override executor.mode=batch` + tightened cluster (same pipeline). |
+| anle daily         | every 24 h | cron that launches `python -m packages.datasites.anle.pipeline --records-out $DATA/anle_records.jsonl`. |
+| anle weekly sweep  | every 7 d  | same runner with an explicit `--start/--end` page range to re-crawl nguonanle. |
+| re-embed / reduce  | on demand  | `python -m packages.datasites.anle.embed_reduce --chunking sentence` (`--reduce-only` to re-project). |
 | full re-embed      | on model-version change | bump `cfg.embedder.model_id`; `ParquetWriter` content-hash changes, new files land. |
 
 ## 11. Quality assurance summary

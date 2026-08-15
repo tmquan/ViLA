@@ -24,13 +24,17 @@ download primitives into Curator's
 :class:`DocumentDownloadExtractStage` composite and chains the
 site-agnostic stages onto the end.
 
-Operators run a site's pipeline via:
+Operators run a site's pipeline in one of two styles (see each site's
+README):
 
-    python -m packages.datasites.anle --pipeline all --executor xenna --limit 3
-    python -m packages.datasites.congbobanan --pipeline download \\
-        --override scraper.start_id=1 scraper.end_id=100
-    python -m packages.datasites.<site> --pipeline all \\
+    # Distributed CLI (vbpl + the Family-B harvesters):
+    python -m packages.datasites.vbpl --pipeline all --executor xenna
+    python -m packages.datasites.vbpl --pipeline embed \\
         --executor ray_actor_pool --ray-address ray://<head>:10001
+
+    # Single-IP in-process drivers on the GB10 (anle, congbobanan):
+    python -m packages.datasites.anle.pipeline --records-out anle_records.jsonl
+    python -m packages.datasites.congbobanan.extract_text --shard 0 --nshards 1
 
 Currently shipping datasites:
 

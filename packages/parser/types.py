@@ -165,8 +165,9 @@ def _is_encrypted(pdf_bytes: bytes) -> bool:
     does not raise on an encrypted file -- it constructs fine and sets
     ``is_encrypted``; the failure surfaces later when
     :meth:`packages.parser.pypdf.PypdfParser._parse_pdf` touches
-    ``reader.pages``, and that exception is swallowed by the defensive
-    handler at ``pypdf.py:161``. The result is an empty record with no
+    ``reader.pages``, and that exception is swallowed by
+    :meth:`packages.parser.pypdf.PypdfParser._parse_pdf`'s defensive
+    handler. The result is an empty record with no
     ``parse_error`` key, byte-identical to what an image-only scan
     produces.
 

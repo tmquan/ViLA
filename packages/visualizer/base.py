@@ -1,8 +1,7 @@
 """Abstract :class:`Renderer` base + pipeline-output loader.
 
-The visualizer is no longer a pipeline stage. Every :class:`Renderer`
-takes a pandas :class:`DataFrame` and writes one or more files under
-``out_dir``. :func:`load_pipeline_output` reads the two output trees
+Each :class:`Renderer` takes a pandas :class:`DataFrame` and writes one
+or more files under ``out_dir``. :func:`load_pipeline_output` reads the two output trees
 the five-stage Curator chain (download → parse → extract → embed →
 reduce) leaves on disk:
 

@@ -22,11 +22,13 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pandas as pd
+from nemo_curator.tasks import DocumentBatch
 from omegaconf import OmegaConf
 
 from packages.extractor.timeline.build import (
+    TimelineBuildStage,
     aggregate_timelines_jsonl,
-    build_one,
     list_doc_names,
 )
 
@@ -145,23 +147,24 @@ def main(argv: list[str] | None = None) -> int:
     built_at = args.built_at or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     logger.info("built_at      = %s", built_at)
 
-    n_dated_total = 0
-    n_ambient_total = 0
-    n_events_total = 0
-    n_unlocated_total = 0
-    for doc_name in doc_names:
-        timeline = build_one(
-            doc_name=doc_name,
-            canonical_dir=canonical_dir,
-            md_dir=md_dir,
-            output_root=output_root,
-            cluster_window_chars=window_chars,
-            built_at=built_at,
-        )
-        n_dated_total += timeline.stats.n_dated
-        n_ambient_total += timeline.stats.n_ambient
-        n_events_total += timeline.stats.n_events
-        n_unlocated_total += timeline.stats.n_unlocated_entities
+    stage = TimelineBuildStage(
+        canonical_dir=canonical_dir,
+        md_dir=md_dir,
+        output_root=output_root,
+        cluster_window_chars=window_chars,
+        built_at=built_at,
+    )
+    batch = DocumentBatch(
+        task_id="timeline_build",
+        dataset_name="timeline",
+        data=pd.DataFrame({"doc_name": doc_names}),
+    )
+    timelines = list(stage.process(batch).to_pandas()["timeline"])
+
+    n_dated_total = sum(t.stats.n_dated for t in timelines)
+    n_ambient_total = sum(t.stats.n_ambient for t in timelines)
+    n_events_total = sum(t.stats.n_events for t in timelines)
+    n_unlocated_total = sum(t.stats.n_unlocated_entities for t in timelines)
 
     out = aggregate_timelines_jsonl(output_root=output_root, doc_names=doc_names)
     logger.info("timelines.jsonl: %s (%d docs)", out, len(doc_names))

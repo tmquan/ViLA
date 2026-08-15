@@ -2,37 +2,37 @@
 
 One subclass of each Curator abstract base:
 
-    url_generator.py  -- CongbobananURLGenerator  (URLGenerator)
-    downloader.py     -- CongbobananPDFDownloader  (PDFDownloader)
-    iterator.py       -- CongbobananIterator       (DocumentIterator)
-    extractor.py      -- CongbobananExtractor       (DocumentExtractor)
+    url_generator.py  -- CBBADocumentURLGenerator  (URLGenerator)
+    downloader.py     -- CBBADocumentPDFDownloader  (PDFDownloader)
+    iterator.py       -- CBBADocumentIterator       (DocumentIterator)
+    extractor.py      -- CBBADocumentExtractor       (DocumentExtractor)
 
 Composed into a :class:`nemo_curator.pipeline.Pipeline` by
-:class:`packages.datasites.congbobanan.pipeline.CongbobananDownloadExtractStage`.
+:class:`packages.datasites.congbobanan.pipeline.CBBADocumentDownloadExtractStage`.
 """
 
 from packages.datasites.congbobanan.components.downloader import (
     ACCEPTED_BODY_EXTENSIONS,
-    CongbobananPDFDownloader,
+    CBBADocumentPDFDownloader,
     page_has_metadata,
 )
 from packages.datasites.congbobanan.components.extractor import (
-    CongbobananExtractor,
+    CBBADocumentExtractor,
 )
 from packages.datasites.congbobanan.components.iterator import (
-    CongbobananIterator,
+    CBBADocumentIterator,
 )
 from packages.datasites.congbobanan.components.url_generator import (
-    CongbobananURLGenerator,
+    CBBADocumentURLGenerator,
     doc_id_from_url,
 )
 
 __all__ = [
     "ACCEPTED_BODY_EXTENSIONS",
-    "CongbobananPDFDownloader",
-    "CongbobananExtractor",
-    "CongbobananIterator",
-    "CongbobananURLGenerator",
+    "CBBADocumentPDFDownloader",
+    "CBBADocumentExtractor",
+    "CBBADocumentIterator",
+    "CBBADocumentURLGenerator",
     "doc_id_from_url",
     "page_has_metadata",
 ]

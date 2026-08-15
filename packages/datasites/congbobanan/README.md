@@ -17,8 +17,8 @@ integer-ID enumeration against the portal's
 
 | Pipeline     | Reads                                                              | Writes                                                       | Stages                                                                                                                              |
 |---           |---                                                                 |---                                                           |---                                                                                                                                   |
-| `download`   | integer IDs in `[cfg.scraper.start_id .. cfg.scraper.end_id]`       | `<host>/pdf/<case_id>.pdf` + `.html` / `.url` sidecars        | `URLGenerationStage` (`CongbobananURLGenerator`) -> `DocumentDownloadStage` (`CongbobananDocumentDownloader`)                         |
-| `parse`      | `<host>/pdf/*.pdf`                                                  | `<host>/md/<case_id>.md` + `<case_id>.meta.json`              | `FilePartitioningStage` -> `DocumentIterateExtractStage` (`CongbobananDocumentIterator` + `CongbobananDocumentExtractor`) -> `PdfParseStage` -> `MarkdownPerDocWriter` |
+| `download`   | integer IDs in `[cfg.scraper.start_id .. cfg.scraper.end_id]`       | `<host>/pdf/<case_id>.pdf` + `.html` / `.url` sidecars        | `URLGenerationStage` (`CBBADocumentURLGenerator`) -> `DocumentDownloadStage` (`CBBADocumentPDFDownloader`)                         |
+| `parse`      | `<host>/pdf/*.pdf`                                                  | `<host>/md/<case_id>.md` + `<case_id>.meta.json`              | `FilePartitioningStage` -> `DocumentIterateExtractStage` (`CBBADocumentIterator` + `CBBADocumentExtractor`) -> `PdfParseStage` -> `MarkdownPerDocWriter` |
 | `extract`    | `<host>/md/*.md`                                                    | `<host>/jsonl/*.jsonl`                                       | `MarkdownReader` -> `LegalExtractStage` -> `JsonlWriter`                                                                             |
 | `embed`      | `<host>/jsonl/*.jsonl`                                              | `<host>/parquet/embeddings/*.parquet`                        | `JsonlReader` -> `NimEmbedderStage` or `EmbeddingCreatorStage` -> `ParquetWriter`                                                     |
 | `reduce`     | `<host>/parquet/embeddings/*.parquet`                               | `<host>/parquet/reduced/*.parquet`                           | `ParquetReader` -> `ReducerStage` (PCA / t-SNE / UMAP + HDBSCAN) -> `ParquetWriter`                                                   |
@@ -40,10 +40,10 @@ packages/datasites/congbobanan/
   _shared.py                    build_layout + field constants (private)
   components/
     __init__.py
-    url_generator.py            CongbobananURLGenerator      (integer-ID range)
-    downloader.py               CongbobananDocumentDownloader (ghost-page skip + atomic tmp->final)
-    iterator.py                 CongbobananDocumentIterator
-    extractor.py                CongbobananDocumentExtractor (Vietnamese-label sidebar parser)
+    url_generator.py            CBBADocumentURLGenerator      (integer-ID range)
+    downloader.py               CBBADocumentPDFDownloader (ghost-page skip + atomic tmp->final)
+    iterator.py                 CBBADocumentIterator
+    extractor.py                CBBADocumentExtractor (Vietnamese-label sidebar parser)
   configs/                      default.yaml, congbobanan.yaml
   README.md
   requirements.txt
@@ -76,28 +76,27 @@ session auto-picks up `HTTP_PROXY` / `HTTPS_PROXY` env vars.
 
 ## Usage
 
+congbobanan runs the same single-IP in-process shape as `anle` (the
+Ray/xenna executors can't see the GB10 GPU). Crawl+extract is one paced
+runner; the dataset tiers are thin, sharded, resumable `python -m`
+drivers.
+
 ```bash
-# Smoke test: 10 IDs, local parser, no NIM key required
-python -m packages.datasites.congbobanan --pipeline all \
-    --override scraper.start_id=1 scraper.end_id=10 \
-               parser.runtime=local scraper.verify_tls=false
+# 1. Crawl (body -> files/, detail HTML -> pages/). Requires VN egress.
+#    Smoke test: 10 IDs. Full corpus: widen --start/--end (~2.1 M IDs).
+python -m packages.datasites.congbobanan --start 1 --end 10
+python -m packages.datasites.congbobanan --start 1 --end 2181300 \
+    --proxy socks5h://vn-proxy:1080
 
-# Full corpus (2.1 M IDs; long run; requires VN egress)
-python -m packages.datasites.congbobanan --pipeline all \
-    --config-name congbobanan \
-    --override scraper.proxy=socks5h://vn-proxy:1080
+# 2. Native text extraction (pypdf + cmap heal; OCR types deferred).
+#    Shard across processes; each shard is resumable.
+python -m packages.datasites.congbobanan.extract_text --shard 0 --nshards 8
 
-# Re-run a single step against existing on-disk inputs
-python -m packages.datasites.congbobanan --pipeline parse
-python -m packages.datasites.congbobanan --pipeline embed --executor ray_actor_pool
-python -m packages.datasites.congbobanan --pipeline reduce
+# 3. Build the documents HF table (anle-identical schema, regex citations).
+python -m packages.datasites.congbobanan.build_documents --shard 0 --nshards 8
 
-# Remote Ray cluster
-python -m packages.datasites.congbobanan \
-    --pipeline all \
-    --executor ray_actor_pool \
-    --ray-address ray://head.example:10001 \
-    --override scraper.start_id=1 scraper.end_id=1000
+# 4. Embed + reduce run on the GB10 exactly as anle does
+#    (python -m packages.datasites.anle.embed_reduce over the shared schema).
 ```
 
 ## Category filter (planned)
@@ -112,11 +111,15 @@ alongside the Postgres / Mongo / Milvus sink stages.
 
 ## Resume semantics
 
-* `download`: file-level idempotent. Existing `<case_id>.pdf` files
-  are skipped. Re-running picks up missing IDs only.
-* `parse` / `extract` / `embed` / `reduce`: writer `mode="ignore"`;
-  filenames are content- / name-deterministic. Upstream stages
-  re-compute in memory, but no outputs are destroyed on re-run.
+* **Crawl**: file-level idempotent. Existing `files/<case_id>.*` and
+  `pages/<case_id>.html.gz` are skipped; re-running picks up missing
+  IDs only.
+* **extract_text / build_documents**: each shard appends to its own
+  `records_<NN>.jsonl` / `documents_<NN>.parquet` and skips
+  `doc_name`s already written, so an interrupted shard resumes exactly
+  where it stopped. Non-native PDFs (scanned / font-corrupted) are
+  written to a `deferred_<NN>.jsonl` manifest for a later GPU OCR pass,
+  never silently dropped.
 
 ## References
 

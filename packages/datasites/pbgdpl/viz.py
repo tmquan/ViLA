@@ -22,8 +22,9 @@ the HuggingFace dataset card README:
 * ``ontology_mindmap.mmd``     -- mermaid ``mindmap`` source listing
   the top-30 LinhVuc with Q&A counts.
 
-The sunburst uses plotly + kaleido (PNG export); every other figure
-is matplotlib. Reads ``analytics.json`` produced by
+Every figure is matplotlib — the sunburst mimics a plotly sunburst with
+Wedges, so no kaleido / headless-Chrome install is needed. Reads
+``analytics.json`` produced by
 :mod:`packages.datasites.pbgdpl.analyze`.
 """
 

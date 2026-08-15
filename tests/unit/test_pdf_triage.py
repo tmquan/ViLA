@@ -801,11 +801,7 @@ def test_native_pipeline_builds_after_triage(tmp_path: Path) -> None:
     ]
 
 
-def test_pipelines_registered_but_not_in_all_order() -> None:
-    from packages.datasites.anle.pipeline import ALL_PIPELINES_ORDER, PIPELINES
-
-    assert "pdf_triage" in PIPELINES
-    assert "pdf_native" in PIPELINES
-    # --pipeline all must behave exactly as it did before.
-    assert "pdf_triage" not in ALL_PIPELINES_ORDER
-    assert "pdf_native" not in ALL_PIPELINES_ORDER
+# NOTE: the "pdf_triage / pdf_native registered in PIPELINES but excluded
+# from --pipeline all" test was removed with the retired anle pipeline
+# registry (anle migrated to in-process drivers). The pdf_triage / pdf_native
+# STAGES remain live and are covered by the stage tests above.

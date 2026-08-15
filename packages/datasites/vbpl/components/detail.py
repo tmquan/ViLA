@@ -403,7 +403,12 @@ class VbplDetailDownloader:
         write_lock: asyncio.Lock,
         bearer_box: dict[str, str | None],
     ) -> None:
-        """Fetch one detail page and write its row."""
+        """Fetch one detail page and write its row.
+
+        Slim orchestrator over four cohesive steps: skip-if-cached,
+        :meth:`_snapshot_page` (browser fetch), :meth:`_persist_artefacts`
+        (raw html/api dump), and record parse + JSONL append.
+        """
         item_id = str(row["item_id"])
         scope = str(row["scope"])
         url = str(row["url"])
@@ -415,64 +420,21 @@ class VbplDetailDownloader:
         if html_path.exists() and html_path.stat().st_size > 0:
             return
 
-        captured: list[tuple[str, Any]] = []
-        page = await ctx.new_page()
         try:
-            page.on("response", _make_response_listener(
-                api_substr=self._api_substr,
-                captured=captured,
-                bearer_box=bearer_box,
-            ))
-            try:
-                await page.goto(
-                    url,
-                    timeout=self._nav_timeout_ms,
-                    wait_until="domcontentloaded",
-                )
-            except Exception as exc:
-                await self._write_failed(
-                    row=row, status="nav_failed", error=repr(exc),
-                    out_f=out_f, write_lock=write_lock,
-                )
-                return
-            # Spin until at least one /api/qtdc/... response was
-            # captured OR the api_wait budget is spent. networkidle
-            # alone is unreliable on this site because reCAPTCHA's
-            # background polls keep the network busy.
-            deadline = asyncio.get_event_loop().time() + self._api_wait_s
-            while not captured:
-                if asyncio.get_event_loop().time() >= deadline:
-                    break
-                await asyncio.sleep(0.5)
-            # One more short settle so any sibling API responses
-            # (related-file, preview-by-target) land before we
-            # snapshot.
-            try:
-                await page.wait_for_load_state(
-                    "networkidle",
-                    timeout=5000,
-                )
-            except Exception:
-                pass
-
-            page_html = await page.content()
-        finally:
-            await page.close()
+            page_html, captured = await self._snapshot_page(
+                ctx=ctx, url=url, bearer_box=bearer_box,
+            )
+        except _NavFailed as exc:
+            await self._write_failed(
+                row=row, status="nav_failed", error=str(exc),
+                out_f=out_f, write_lock=write_lock,
+            )
+            return
 
         # Persist raw artefacts before parsing so a parser bug doesn't
         # cost us the slow browser fetch.
-        html_path.parent.mkdir(parents=True, exist_ok=True)
-        html_path.write_text(page_html or "", encoding="utf-8")
-
-        api_path = html_path.with_suffix(".api.json")
-        api_path.write_text(
-            json.dumps(
-                {u: payload for u, payload in captured},
-                ensure_ascii=False,
-                indent=2,
-                default=_json_default,
-            ),
-            encoding="utf-8",
+        self._persist_artefacts(
+            html_path=html_path, page_html=page_html, captured=captured,
         )
 
         rec = detail_record_from_api_json(
@@ -500,6 +462,100 @@ class VbplDetailDownloader:
             html_path=html_path,
             host=self.layout.host,
         )
+        await self._append_row(
+            out_row=out_row, out_f=out_f, write_lock=write_lock,
+        )
+
+    async def _snapshot_page(
+        self,
+        *,
+        ctx: Any,
+        url: str,
+        bearer_box: dict[str, str | None],
+    ) -> tuple[str, list[tuple[str, Any]]]:
+        """Drive one tab to ``url`` and return ``(page_html, captured)``.
+
+        Installs the API-response listener, navigates, spins until the
+        first ``/api/qtdc/...`` XHR lands (or the ``api_wait_s`` budget is
+        spent), then snapshots the DOM. Raises :class:`_NavFailed` if the
+        initial navigation itself throws.
+        """
+        captured: list[tuple[str, Any]] = []
+        page = await ctx.new_page()
+        try:
+            page.on("response", _make_response_listener(
+                api_substr=self._api_substr,
+                captured=captured,
+                bearer_box=bearer_box,
+            ))
+            try:
+                await page.goto(
+                    url,
+                    timeout=self._nav_timeout_ms,
+                    wait_until="domcontentloaded",
+                )
+            except Exception as exc:
+                raise _NavFailed(repr(exc)) from exc
+            # Spin until at least one /api/qtdc/... response was
+            # captured OR the api_wait budget is spent. networkidle
+            # alone is unreliable on this site because reCAPTCHA's
+            # background polls keep the network busy.
+            deadline = asyncio.get_event_loop().time() + self._api_wait_s
+            while not captured:
+                if asyncio.get_event_loop().time() >= deadline:
+                    break
+                await asyncio.sleep(0.5)
+            # One more short settle so any sibling API responses
+            # (related-file, preview-by-target) land before we
+            # snapshot.
+            try:
+                await page.wait_for_load_state(
+                    "networkidle",
+                    timeout=5000,
+                )
+            except Exception:
+                pass
+
+            return (await page.content() or ""), captured
+        finally:
+            await page.close()
+
+    def _persist_artefacts(
+        self,
+        *,
+        html_path: Path,
+        page_html: str,
+        captured: list[tuple[str, Any]],
+    ) -> None:
+        """Dump the page HTML and the captured API map next to it on disk.
+
+        Written verbatim before parsing so a downstream parser bug never
+        costs the slow browser fetch; the ``.api.json`` sibling lets a
+        future extractor re-parse without re-running Playwright.
+        """
+        html_path.parent.mkdir(parents=True, exist_ok=True)
+        html_path.write_text(page_html or "", encoding="utf-8")
+
+        api_path = html_path.with_suffix(".api.json")
+        api_path.write_text(
+            json.dumps(
+                {u: payload for u, payload in captured},
+                ensure_ascii=False,
+                indent=2,
+                default=_json_default,
+            ),
+            encoding="utf-8",
+        )
+
+    async def _append_row(
+        self,
+        *,
+        out_row: dict[str, Any],
+        out_f: Any,
+        write_lock: asyncio.Lock,
+    ) -> None:
+        """Serialise ``out_row`` (projected to the canonical field order) and
+        append one JSONL line under the shared write lock."""
         async with write_lock:
             out_f.write(json.dumps(
                 {k: out_row.get(k) for k in DETAIL_JSONL_FIELDS},
@@ -588,14 +644,9 @@ class VbplDetailDownloader:
             html_path=html_path,
             host=self.layout.host,
         )
-        async with write_lock:
-            out_f.write(json.dumps(
-                {k: out_row.get(k) for k in DETAIL_JSONL_FIELDS},
-                ensure_ascii=False,
-                default=_json_default,
-            ))
-            out_f.write("\n")
-            out_f.flush()
+        await self._append_row(
+            out_row=out_row, out_f=out_f, write_lock=write_lock,
+        )
 
     # ------------------------------------------------------ manifest
 
@@ -619,6 +670,14 @@ class VbplDetailDownloader:
 
 
 # ---- helpers -------------------------------------------------------------
+
+
+class _NavFailed(Exception):
+    """Signals that the initial ``page.goto`` in :meth:`_snapshot_page` failed.
+
+    Carries ``repr(original_exc)`` so the caller can write the same
+    ``nav_failed`` JSONL error string the inline code used to emit.
+    """
 
 
 class _Tally:

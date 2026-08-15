@@ -45,23 +45,19 @@ from packages.pipeline.io import (
 )
 from packages.reducer.stage import ReducerStage
 
-# Default ``files_per_partition`` for each stage. Sites with smaller
-# corpora typically lower these; sites with larger corpora raise them.
-# Override per-site via ``cfg.stage_overrides.<stage>_files_per_partition``.
+# Default ``files_per_partition`` for the fan-out stages. Sites with smaller
+# corpora typically lower these; larger corpora raise them. Override per-site
+# via ``cfg.stage_overrides.<stage>_files_per_partition``.
 #
-# Reduce: the reducer (PCA / t-SNE / UMAP / HDBSCAN) is fit
-# per-partition. To keep coordinates and ``cluster_id`` globally
-# comparable, the reducer reader must emit ONE partition containing
-# every per-doc embedding — so ``build_reduce_pipeline`` sizes
-# ``files_per_partition`` from the ACTUAL embedding-file count rather than a
-# fixed ceiling (a hard-coded ``100_000`` silently fanned out into multiple,
-# non-comparable partitions once a corpus outgrew it — vbpl ~147K, congbobanan
-# ~2M). The value below is only a floor / debug fallback; lower it explicitly
-# via ``stage_overrides.reduce_files_per_partition`` for partition-local fits.
+# Reduce is deliberately absent: the reducer (PCA / t-SNE / UMAP / HDBSCAN) is
+# fit per-partition, so to keep coordinates and ``cluster_id`` globally
+# comparable ``build_reduce_pipeline`` sizes ``files_per_partition`` from the
+# ACTUAL embedding-file count (:func:`_count_partition_files`), not a fixed
+# ceiling (a hard-coded value silently fans a grown corpus — vbpl ~147K,
+# congbobanan ~2M — into multiple, non-comparable partitions).
 DEFAULT_FPP: dict[str, int] = {
     "extract": 8,
     "embed": 4,
-    "reduce": 100_000,
 }
 
 

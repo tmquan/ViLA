@@ -548,95 +548,73 @@ def _split_pages(markdown: str) -> list[tuple[int, str, int]]:
 # ----------------------------------------------------- segmentation
 
 
-def _segment_pages(
-    doc_id: str,
-    pages: list[tuple[int, str, int]],
-) -> tuple[list[Section], list[Paragraph], list[Sentence]]:
-    """Walk pages line-by-line and emit (sections, paragraphs, sentences).
+class _PageSegmenter:
+    """Stateful driver that turns page-segmented markdown into
+    ``(sections, paragraphs, sentences)``.
+
+    Replaces the old ``flush()`` closure + 7 ``nonlocal`` buffers: the
+    paragraph buffer now lives in instance attributes, and :meth:`feed`
+    / :meth:`flush` / :meth:`result` make the state transitions
+    explicit. :func:`_segment_pages` owns one instance per document.
 
     PDF text extractors produce one visual line per ``\\n`` with
-    inconsistent blank-line separation between paragraphs, so we scan
-    line-by-line within each page. Three signals trigger a paragraph
-    boundary:
-
-    1. A section-heading line (closes the current paragraph and opens
-       a new section -- the heading is consumed, not emitted as a
-       paragraph).
-    2. A line whose leading text matches a paragraph marker
-       (``[1]``, ``[4.1]``, ``1.``, ``- ``, ``* ``, ...).
-    3. One or more blank lines.
-
-    Inside a paragraph, soft-wrapped lines are joined with single
-    spaces by :func:`_normalise_paragraph` at finalisation time.
+    inconsistent blank-line separation, so :meth:`feed` scans line by
+    line. Three signals close the current paragraph: a section-heading
+    line (consumed, not emitted), a leading paragraph marker (``[1]``,
+    ``4.1``, ``1.``, ``- ``, ``* ``, ...), or one or more blank lines.
+    Soft-wrapped lines are joined with single spaces by
+    :func:`_normalise_paragraph` when a paragraph is flushed.
     """
-    sections: list[Section] = []
-    paragraphs: list[Paragraph] = []
-    sentences: list[Sentence] = []
 
-    cur_section = _open_section(
-        doc_id=doc_id, index=0, kind="header", label=None,
-        page_start=pages[0][0] if pages else 1,
-        char_start=pages[0][2] if pages else 0,
-    )
-    sections.append(cur_section)
+    def __init__(self, doc_id: str, pages: list[tuple[int, str, int]]) -> None:
+        self._doc_id = doc_id
+        self._pages = pages
+        self.sections: list[Section] = []
+        self.paragraphs: list[Paragraph] = []
+        self.sentences: list[Sentence] = []
 
-    # Paragraph buffer
-    buf_lines: list[str] = []
-    buf_offset = 0
-    buf_page = pages[0][0] if pages else 1
-    buf_marker: str | None = None
-    buf_kind: str = "text"
-    para_index = 0
-    sent_global_index = 0
-
-    def flush() -> None:
-        nonlocal para_index, sent_global_index, buf_lines, buf_marker, buf_kind
-        if not buf_lines:
-            return
-        raw = "".join(buf_lines)
-        clean = _normalise_paragraph(raw)
-        if not clean:
-            buf_lines = []
-            buf_marker = None
-            buf_kind = "text"
-            return
-        paragraph = Paragraph(
-            paragraph_id=_paragraph_id(doc_id, para_index),
-            index=para_index,
-            section_id=cur_section.section_id,
-            section_kind=cur_section.kind,
-            page=buf_page,
-            char_start=buf_offset,
-            char_end=buf_offset + len(raw),
-            text=clean,
-            kind=buf_kind,
-            marker=buf_marker,
+        first_page = pages[0][0] if pages else 1
+        first_offset = pages[0][2] if pages else 0
+        self._cur_section = _open_section(
+            doc_id=doc_id, index=0, kind="header", label=None,
+            page_start=first_page, char_start=first_offset,
         )
-        cur_section.paragraph_ids.append(paragraph.paragraph_id)
-        paragraphs.append(paragraph)
+        self.sections.append(self._cur_section)
 
-        for sent in _iter_sentences(
-            paragraph=paragraph,
-            sent_global_index=sent_global_index,
-        ):
-            sentences.append(sent)
-            paragraph.sentence_ids.append(sent.sentence_id)
-            sent_global_index += 1
+        # Paragraph buffer state.
+        self._buf_lines: list[str] = []
+        self._buf_offset = 0
+        self._buf_page = first_page
+        self._buf_marker: str | None = None
+        self._buf_kind: str = "text"
+        self._para_index = 0
+        self._sent_global_index = 0
 
-        para_index += 1
-        buf_lines = []
-        buf_marker = None
-        buf_kind = "text"
+    def run(self) -> tuple[list[Section], list[Paragraph], list[Sentence]]:
+        """Segment every page, close the final section, return the result."""
+        for page_no, page_text, page_offset in self._pages:
+            self.feed(page_no, page_text, page_offset)
 
-    for page_no, page_text, page_offset in pages:
-        line_cursor = page_offset
-        for line in _iter_lines_with_offset(page_text):
-            line_text, rel_off = line
+        if self._pages:
+            last_page_no = self._pages[-1][0]
+            last_offset = self._pages[-1][2] + len(self._pages[-1][1])
+        else:
+            last_page_no = 1
+            last_offset = 0
+        _close_section(self._cur_section, page_end=last_page_no, char_end=last_offset)
+        return self.result()
+
+    def feed(self, page_no: int, page_text: str, page_offset: int) -> None:
+        """Scan one page line by line, growing the buffer and sections.
+
+        Flushes at end of page so paragraphs never span a page boundary.
+        """
+        for line_text, rel_off in _iter_lines_with_offset(page_text):
             abs_off = page_offset + rel_off
             stripped = line_text.strip()
 
             if not stripped:
-                flush()
+                self.flush()
                 continue
 
             # Drop standalone page-number lines ("1", "2", ...).
@@ -645,49 +623,105 @@ def _segment_pages(
 
             section_kind = _line_section_kind(line_text)
             if section_kind is not None:
-                flush()
-                _close_section(cur_section, page_end=page_no, char_end=abs_off)
-                cur_section = _open_section(
-                    doc_id=doc_id,
-                    index=len(sections),
-                    kind=section_kind,
-                    label=_normalise_inline(line_text),
-                    page_start=page_no,
-                    char_start=abs_off,
-                )
-                sections.append(cur_section)
+                self._open_new_section(section_kind, line_text, page_no, abs_off)
                 # Footer's "Nơi nhận:" line frequently carries the
-                # first recipient on the same physical line. Keep
-                # parsing it as paragraph content for footer; for
-                # other section kinds the heading is its own line.
+                # first recipient on the same physical line, so it also
+                # becomes paragraph content; for other kinds the heading
+                # is its own line.
                 if section_kind != "footer":
                     continue
-                # Fall through: heading line *also* becomes paragraph
-                # content for the footer section.
 
             marker, kind = _detect_paragraph_marker(line_text)
-            if marker is not None and buf_lines:
-                flush()
-            if not buf_lines:
-                buf_offset = abs_off
-                buf_page = page_no
-                buf_marker = marker
-                buf_kind = kind if marker else "text"
-            # Trailing space + newline so soft-wrap join works cleanly.
-            buf_lines.append(line_text if line_text.endswith("\n") else line_text + "\n")
-            line_cursor += len(line_text)
+            if marker is not None and self._buf_lines:
+                self.flush()
+            if not self._buf_lines:
+                self._buf_offset = abs_off
+                self._buf_page = page_no
+                self._buf_marker = marker
+                self._buf_kind = kind if marker else "text"
+            # Trailing newline so the soft-wrap join works cleanly.
+            self._buf_lines.append(
+                line_text if line_text.endswith("\n") else line_text + "\n"
+            )
 
-        # End of page: flush so paragraphs don't span page boundaries.
-        flush()
+        self.flush()
 
-    if pages:
-        last_page_no = pages[-1][0]
-        last_offset = pages[-1][2] + len(pages[-1][1])
-    else:
-        last_page_no = 1
-        last_offset = 0
-    _close_section(cur_section, page_end=last_page_no, char_end=last_offset)
-    return sections, paragraphs, sentences
+    def flush(self) -> None:
+        """Finalise the buffered lines into a Paragraph (+ its Sentences).
+
+        A no-op on an empty or whitespace-only buffer; either way the
+        buffer is reset for the next paragraph.
+        """
+        if not self._buf_lines:
+            return
+        raw = "".join(self._buf_lines)
+        clean = _normalise_paragraph(raw)
+        if not clean:
+            self._reset_buffer()
+            return
+        paragraph = Paragraph(
+            paragraph_id=_paragraph_id(self._doc_id, self._para_index),
+            index=self._para_index,
+            section_id=self._cur_section.section_id,
+            section_kind=self._cur_section.kind,
+            page=self._buf_page,
+            char_start=self._buf_offset,
+            char_end=self._buf_offset + len(raw),
+            text=clean,
+            kind=self._buf_kind,
+            marker=self._buf_marker,
+        )
+        self._cur_section.paragraph_ids.append(paragraph.paragraph_id)
+        self.paragraphs.append(paragraph)
+
+        for sent in _iter_sentences(
+            paragraph=paragraph,
+            sent_global_index=self._sent_global_index,
+        ):
+            self.sentences.append(sent)
+            paragraph.sentence_ids.append(sent.sentence_id)
+            self._sent_global_index += 1
+
+        self._para_index += 1
+        self._reset_buffer()
+
+    def result(self) -> tuple[list[Section], list[Paragraph], list[Sentence]]:
+        """Return the accumulated ``(sections, paragraphs, sentences)``."""
+        return self.sections, self.paragraphs, self.sentences
+
+    def _open_new_section(
+        self, kind: str, line_text: str, page_no: int, abs_off: int
+    ) -> None:
+        """Flush the buffer, close the current section, open a new one."""
+        self.flush()
+        _close_section(self._cur_section, page_end=page_no, char_end=abs_off)
+        self._cur_section = _open_section(
+            doc_id=self._doc_id,
+            index=len(self.sections),
+            kind=kind,
+            label=_normalise_inline(line_text),
+            page_start=page_no,
+            char_start=abs_off,
+        )
+        self.sections.append(self._cur_section)
+
+    def _reset_buffer(self) -> None:
+        """Clear the paragraph buffer back to its default (text) state."""
+        self._buf_lines = []
+        self._buf_marker = None
+        self._buf_kind = "text"
+
+
+def _segment_pages(
+    doc_id: str,
+    pages: list[tuple[int, str, int]],
+) -> tuple[list[Section], list[Paragraph], list[Sentence]]:
+    """Walk pages line-by-line and emit (sections, paragraphs, sentences).
+
+    Thin facade over :class:`_PageSegmenter`; see that class for the
+    paragraph-boundary rules.
+    """
+    return _PageSegmenter(doc_id, pages).run()
 
 
 # ----------------------------------------------------- line iteration

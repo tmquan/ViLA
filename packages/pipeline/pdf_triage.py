@@ -12,12 +12,12 @@ Two pipelines, registered by every PDF-bearing datasite:
     :class:`PDFPartitioningStage`, extract the embedded text layer, and
     write Curator interleaved parquet plus ViLA's ``md/`` per-doc tier.
 
-Both are additive: the existing ``parse`` pipeline is untouched, and
-neither appears in a site's ``ALL_PIPELINES_ORDER``, so ``--pipeline
-all`` behaves exactly as before. Run them explicitly::
-
-    python -m packages.datasites.anle --pipeline pdf_triage
-    python -m packages.datasites.anle --pipeline pdf_native
+Both are additive and never appear in a site's ``ALL_PIPELINES_ORDER``.
+They were wired as explicit stages in the retired distributed anle CLI
+(now under ``packages/datasites/anle/_legacy/``); the ``pdf_triage`` /
+``pdf_native`` stages themselves (:mod:`packages.parser.triage`,
+:mod:`packages.parser.native_interleaved`) remain live and are composed
+directly by the in-process GB10 drivers.
 
 The deferred manifest is left for a later GPU pass. Because it is
 written in Curator's manifest format, that pass needs no glue::
@@ -160,8 +160,8 @@ def build_pdf_native_pipeline(cfg: Any) -> Pipeline:
     if not manifest_path.exists():
         msg = (
             f"native manifest not found: {manifest_path}\n"
-            f"Run the triage pipeline first:\n"
-            f"    python -m packages.datasites.<site> --pipeline pdf_triage"
+            f"Produce it by running the pdf_triage stage first "
+            f"(packages.pipeline.pdf_triage, composed by the in-process parse driver)."
         )
         raise FileNotFoundError(msg)
 

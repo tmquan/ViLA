@@ -44,10 +44,12 @@ DEFAULT_REPO_ID = "tmquan/thuvienphapluat-vn-tnpl"
 #: if any are missing -- prevents accidentally publishing a partial
 #: repo.
 #:
-#: NOTE: figures live under ``figures/`` to match the dataset card's
-#: relative image links; sidecar manifests (``manifest.json`` /
-#: ``translation_manifest.json`` / ``analytics.json``) are operator-
-#: facing only and intentionally NOT mirrored to the public repo.
+#: NOTE: figures live at the folder ROOT (``ontology_sunburst.png``,
+#: not ``figures/…``) to match where :func:`viz.render_all` writes
+#: them and the dataset card's ``./<name>.png`` image links; sidecar
+#: manifests (``manifest.json`` / ``translation_manifest.json`` /
+#: ``analytics.json``) are operator-facing only and intentionally NOT
+#: mirrored to the public repo.
 #:
 #: ``data/terms-*-of-*.jsonl`` and ``data/terms_translated-*-of-*.jsonl``
 #: are the sharded JSONL globs the dataset card points the viewer at
@@ -63,11 +65,11 @@ REQUIRED_FILES = (
     "taxonomy.json",
     # Visualisations rendered by `packages.datasites.thuvienphapluat_tnpl.viz`
     # and embedded inline in the dataset card.
-    "figures/ontology_sunburst.png",
-    "figures/ontology_topics.png",
-    "figures/temporal_year.png",
-    "figures/english_coverage.png",
-    "figures/cross_reference_network.png",
+    "ontology_sunburst.png",
+    "ontology_topics.png",
+    "temporal_year.png",
+    "english_coverage.png",
+    "cross_reference_network.png",
     # Optional embedding scatter grid + crosslingual / coherence
     # figures; we don't require these so a publication that skipped
     # the embed+reduce step still validates. Add them here manually

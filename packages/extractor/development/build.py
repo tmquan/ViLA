@@ -20,9 +20,14 @@ import json
 import logging
 import unicodedata
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+
+import pandas as pd
+from nemo_curator.stages.base import ProcessingStage
+from nemo_curator.stages.resources import Resources
+from nemo_curator.tasks import DocumentBatch
 
 from packages.extractor.development.schema import (
     BUILDER_VERSION,
@@ -48,11 +53,9 @@ logger = logging.getLogger("packages.extractor.development")
 # --------------------------------------------------------------------- locator
 #
 # We re-implement a tiny literal-substring locator here rather than
-# importing from packages.extractor.timeline.locator. The
-# development package must stay independent of the timeline
-# package at runtime (sibling, not child) — and a separate worker
-# is currently renaming the timeline submodules, so any timeline
-# import would race the rename.
+# importing from packages.extractor.timeline.locator: the development
+# package stays independent of the timeline package at runtime
+# (sibling, not child).
 
 
 @dataclass(frozen=True)
@@ -449,7 +452,55 @@ def build_one(
     return development
 
 
+@dataclass
+class DevelopmentBuildStage(ProcessingStage[DocumentBatch, DocumentBatch]):
+    """Per-document development build as a Curator stage.
+
+    ``process`` runs :func:`build_one` over the batch's ``doc_name`` column
+    (read the canonical NER record + source markdown, route entities into
+    phases, persist ``developments/<doc>.json``) and returns the in-memory
+    :class:`~packages.extractor.development.schema.CaseDevelopment` objects in
+    an object-typed ``development`` column. The ``__main__`` driver is a thin
+    wrapper that feeds one :class:`DocumentBatch` through this stage — mirroring
+    :class:`packages.extractor.ner.extract.NerExtractStage`.
+    """
+
+    canonical_dir: Path
+    md_dir: Path
+    output_root: Path
+    built_at: str | None = None
+    name: str = "development_build"
+    resources: Resources = field(default_factory=lambda: Resources(cpus=1.0))
+
+    def inputs(self) -> tuple[list[str], list[str]]:
+        return (["data"], ["doc_name"])
+
+    def outputs(self) -> tuple[list[str], list[str]]:
+        return (["data"], ["development"])
+
+    def process(self, task: DocumentBatch) -> DocumentBatch:
+        df = task.to_pandas().copy()
+        df["development"] = [
+            build_one(
+                doc_name=str(d),
+                canonical_dir=self.canonical_dir,
+                md_dir=self.md_dir,
+                output_root=self.output_root,
+                built_at=self.built_at,
+            )
+            for d in df["doc_name"]
+        ]
+        return DocumentBatch(
+            task_id=task.task_id,
+            dataset_name=task.dataset_name,
+            data=df,
+            _metadata=task._metadata,
+            _stage_perf=task._stage_perf,
+        )
+
+
 __all__ = [
+    "DevelopmentBuildStage",
     "aggregate_developments_jsonl",
     "build_development",
     "build_one",

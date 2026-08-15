@@ -33,19 +33,9 @@ into :data:`DEFAULT_EXTRA_BODY`.
 
 from __future__ import annotations
 
-import base64
-import logging
-import os
 from typing import Any
 
-from packages.parser.base import ParserAlgorithm
-from packages.parser.nemotron import (
-    _is_rate_limit_error,
-    _rasterize_pdf,
-    _rasterize_pdf_page,
-)
-
-logger = logging.getLogger(__name__)
+from packages.parser._openai_vlm import OpenAIVLMParser
 
 
 #: Local vLLM container default base_url. Override via the
@@ -111,6 +101,12 @@ DEFAULT_TOP_P = 0.8
 #: parameter.
 DEFAULT_TOP_K = 20
 
+#: Sampling seed sent to vLLM so that, even at ``temperature=0.7``, a
+#: re-run over the same pages transcribes them identically — the OCR
+#: pass stays reproducible without giving up the quality-tuned sampling
+#: profile. Set to ``None`` to let the server pick a fresh seed per call.
+DEFAULT_SEED = 0
+
 #: Greedy-decoding fallback temperature. Use together with
 #: :data:`GREEDY_EXTRA_BODY` when the Instruct-mode profile produces
 #: hallucinated text on long documents.
@@ -169,7 +165,7 @@ GREEDY_EXTRA_BODY: dict[str, Any] = {
 }
 
 
-class Qwen36OmniClient(ParserAlgorithm):
+class Qwen36OmniClient(OpenAIVLMParser):
     """Per-page OCR + markdown extractor against a local vLLM-hosted
     ``Qwen/Qwen3.6-27B-FP8`` deployment.
 
@@ -177,10 +173,15 @@ class Qwen36OmniClient(ParserAlgorithm):
     :class:`packages.parser.nemotron_omni.NemotronOmniClient` at the
     :class:`packages.parser.stage.PdfParseStage` layer -- same
     :meth:`parse` signature, same return-shape contract, same
-    rasterization + per-page POST + consolidation flow.
+    rasterization + per-page POST + consolidation flow. Unlike the
+    Nemotron client this profile forwards ``top_p`` and ``seed`` to the
+    sampler (see :class:`OpenAIVLMParser`).
     """
 
     runtime = "qwen3_6_omni"
+    _env_prefix = "QWEN3_6_OMNI"
+    _log_tag = "qwen3_6_omni"
+    _default_extra_body = DEFAULT_EXTRA_BODY
 
     def __init__(
         self,
@@ -193,158 +194,27 @@ class Qwen36OmniClient(ParserAlgorithm):
         max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: float = DEFAULT_TEMPERATURE,
         top_p: float = DEFAULT_TOP_P,
+        seed: int | None = DEFAULT_SEED,
         canvas_size: tuple[int, int] = CANVAS_SIZE,
         max_retries: int = DEFAULT_MAX_RETRIES,
         prompt: str = DEFAULT_PROMPT,
         extra_body: dict[str, Any] | None = None,
     ) -> None:
-        from openai import OpenAI  # lazy import (keeps test import cheap)
-
-        base_url = os.environ.get("QWEN3_6_OMNI_BASE_URL", base_url)
-        model = os.environ.get("QWEN3_6_OMNI_MODEL", model)
-
-        self._client = OpenAI(
+        super().__init__(
+            api_key=api_key,
             base_url=base_url,
-            api_key=api_key or "not-needed",
-            max_retries=int(max_retries),
+            model=model,
+            timeout=timeout,
+            dpi=dpi,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            canvas_size=canvas_size,
+            max_retries=max_retries,
+            prompt=prompt,
+            extra_body=extra_body,
+            top_p=top_p,
+            seed=seed,
         )
-        self.model_id = str(model)
-        self._timeout = float(timeout)
-        self._dpi = int(dpi)
-        self._max_tokens = int(max_tokens)
-        self._temperature = float(temperature)
-        self._top_p = float(top_p)
-        self._canvas_size = (int(canvas_size[0]), int(canvas_size[1]))
-        self._max_retries = int(max_retries)
-        self._prompt = str(prompt)
-        merged = dict(DEFAULT_EXTRA_BODY)
-        if extra_body:
-            merged.update(extra_body)
-        self._extra_body = merged
-
-    def parse(
-        self,
-        pdf_bytes: bytes,
-        *,
-        preserve_tables: bool = True,
-    ) -> dict[str, Any]:
-        """Rasterize + invoke vLLM per page; return the consolidated record."""
-        try:
-            page_images = _rasterize_pdf(
-                pdf_bytes, dpi=self._dpi, canvas_size=self._canvas_size,
-            )
-        except Exception as exc:
-            logger.warning(
-                "qwen3_6_omni: PDF_RASTER_FAIL (%s: %s); "
-                "returning empty record so the row is dropped downstream",
-                type(exc).__name__, exc,
-            )
-            return {"pages": [], "markdown": "", "confidence": None}
-        pages: list[dict[str, Any]] = []
-        md_parts: list[str] = []
-
-        for i, png_bytes in enumerate(page_images, start=1):
-            try:
-                page_md = self._parse_image(png_bytes)
-            except Exception as exc:
-                tag = (
-                    "RATE_LIMIT" if _is_rate_limit_error(exc)
-                    else "PAGE_FAIL"
-                )
-                logger.warning(
-                    "qwen3_6_omni: %s page %d failed (%s: %s); "
-                    "continuing with empty page markdown",
-                    tag, i, type(exc).__name__, exc,
-                )
-                page_md = ""
-            blocks = (
-                [{"type": "Text", "text": page_md, "bbox": {}}]
-                if page_md
-                else []
-            )
-            pages.append({"page_number": i, "markdown": page_md, "blocks": blocks})
-            if page_md:
-                md_parts.append(f"## Page {i}\n\n{page_md}")
-
-        return {
-            "pages": pages,
-            "markdown": "\n\n".join(md_parts),
-            "confidence": None,
-        }
-
-    def parse_single_page(
-        self,
-        pdf_bytes: bytes,
-        page_index: int,
-    ) -> dict[str, Any]:
-        """Rasterize and OCR exactly one page of ``pdf_bytes``.
-
-        Entry point for the
-        :class:`packages.parser.hybrid.HybridParser` per-page surgical
-        fallback (Case D in wiki/PARSING.md § 4 -- mixed
-        digital/scanned PDFs where pypdf extracts text from some
-        pages but leaves others empty). Renders only the requested
-        page via :func:`_rasterize_pdf_page`, POSTs it to the
-        configured vLLM endpoint, and returns a single-page record
-        that matches the per-page schema the rest of the parsing
-        chain emits::
-
-            {"page_number": page_index + 1, "markdown": "<ocr text>"}
-
-        ``page_index`` is **zero-based** to align with the
-        ``pages[i]`` indexing used by the splice loop in
-        :class:`HybridParser`. The returned ``page_number`` is
-        one-based to match the rest of the per-page schema (pypdf,
-        the omni clients' :meth:`parse`, etc.).
-
-        Raises:
-            IndexError: ``page_index`` is outside ``[0, n_pages)``.
-            Exception: any rasterization or vLLM error -- the surgical
-                caller catches these, logs a warning, and leaves the
-                page slot empty without failing the whole document.
-        """
-        png_bytes = _rasterize_pdf_page(
-            pdf_bytes,
-            page_index=int(page_index),
-            dpi=self._dpi,
-            canvas_size=self._canvas_size,
-        )
-        page_md = self._parse_image(png_bytes)
-        return {
-            "page_number": int(page_index) + 1,
-            "markdown": page_md,
-        }
-
-    # ------------------------------------------------------ internals
-
-    def _parse_image(self, png_bytes: bytes) -> str:
-        """POST one PNG page to the chat-completions endpoint; return
-        the model's verbatim markdown transcription."""
-        b64 = base64.b64encode(png_bytes).decode("ascii")
-        data_url = f"data:image/png;base64,{b64}"
-
-        completion = self._client.chat.completions.create(
-            model=self.model_id,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": self._prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": data_url},
-                        },
-                    ],
-                }
-            ],
-            max_tokens=self._max_tokens,
-            temperature=self._temperature,
-            top_p=self._top_p,
-            timeout=self._timeout,
-            extra_body=self._extra_body,
-        )
-        content = completion.choices[0].message.content or ""
-        return str(content).strip()
 
 
 __all__ = [
@@ -356,6 +226,7 @@ __all__ = [
     "DEFAULT_MAX_TOKENS",
     "DEFAULT_MODEL",
     "DEFAULT_PROMPT",
+    "DEFAULT_SEED",
     "DEFAULT_TEMPERATURE",
     "DEFAULT_TIMEOUT_S",
     "DEFAULT_TOP_K",

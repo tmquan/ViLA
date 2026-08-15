@@ -184,6 +184,30 @@ class PoliteSession:
         """HTTP POST with rate limit + retry."""
         return self._request("POST", url, **kwargs)
 
+    def _retry_or_raise(
+        self,
+        attempt: int,
+        max_attempts: int,
+        delay: float,
+        log_msg: str,
+        exhausted_exc: BaseException | None = None,
+    ) -> None:
+        """Log one retry, then sleep ``delay`` -- unless the attempt budget
+        is spent, in which case raise.
+
+        Centralizes the log / attempt-check / sleep boilerplate shared by
+        every :meth:`download` retry branch. When ``attempt >= max_attempts``
+        it raises ``exhausted_exc`` if provided, otherwise re-raises the
+        exception currently being handled (bare ``raise``); the latter path
+        therefore must be invoked from inside the relevant ``except`` block.
+        """
+        logger.warning("%s", log_msg)
+        if attempt >= max_attempts:
+            if exhausted_exc is not None:
+                raise exhausted_exc
+            raise
+        time.sleep(delay)
+
     def download(
         self,
         url: str,
@@ -242,7 +266,6 @@ class PoliteSession:
         attempt = 0
         dns_attempt = 0
         tmp_path = dest_path + ".part"
-        last_error: str | None = None
         while True:
             attempt += 1
             self._bucket.acquire()
@@ -261,24 +284,22 @@ class PoliteSession:
                         )
                     if status == 429:
                         wait = float(r.headers.get("Retry-After", delay))
-                        last_error = f"HTTP 429 (Retry-After {wait}s)"
-                        logger.warning(
-                            "download 429 on %s; attempt %d/%d; sleep %.1fs",
-                            url, attempt, max_attempts, wait,
+                        reason = f"HTTP 429 (Retry-After {wait}s)"
+                        self._retry_or_raise(
+                            attempt, max_attempts, wait,
+                            f"download 429 on {url}; attempt "
+                            f"{attempt}/{max_attempts}; sleep {wait:.1f}s",
+                            RuntimeError(f"{url}: {reason} (exhausted)"),
                         )
-                        if attempt >= max_attempts:
-                            raise RuntimeError(f"{url}: {last_error} (exhausted)")
-                        time.sleep(wait)
                         continue
                     if status >= 500:
-                        last_error = f"HTTP {status}"
-                        logger.warning(
-                            "download %d on %s; attempt %d/%d; sleep %.1fs",
-                            status, url, attempt, max_attempts, delay,
+                        reason = f"HTTP {status}"
+                        self._retry_or_raise(
+                            attempt, max_attempts, delay,
+                            f"download {status} on {url}; attempt "
+                            f"{attempt}/{max_attempts}; sleep {delay:.1f}s",
+                            RuntimeError(f"{url}: {reason} (exhausted)"),
                         )
-                        if attempt >= max_attempts:
-                            raise RuntimeError(f"{url}: {last_error} (exhausted)")
-                        time.sleep(delay)
                         continue
 
                     r.raise_for_status()
@@ -292,17 +313,17 @@ class PoliteSession:
                             # page (HTML 200 during WAF interruption);
                             # retry because the real PDF often comes
                             # back on a second attempt.
-                            last_error = (
+                            reason = (
                                 f"unexpected content-type {content_type!r} "
                                 f"(expected {expected_mime!r})"
                             )
-                            logger.warning(
-                                "download mime-mismatch on %s; attempt %d/%d; sleep %.1fs: %s",
-                                url, attempt, max_attempts, delay, last_error,
+                            self._retry_or_raise(
+                                attempt, max_attempts, delay,
+                                f"download mime-mismatch on {url}; attempt "
+                                f"{attempt}/{max_attempts}; sleep {delay:.1f}s: "
+                                f"{reason}",
+                                RuntimeError(f"{url}: {reason} (exhausted)"),
                             )
-                            if attempt >= max_attempts:
-                                raise RuntimeError(f"{url}: {last_error} (exhausted)")
-                            time.sleep(delay)
                             continue
 
                     written = 0
@@ -313,24 +334,22 @@ class PoliteSession:
                                 written += len(chunk)
 
                     if min_bytes and written < min_bytes:
-                        last_error = f"short body ({written} < {min_bytes} bytes)"
-                        logger.warning(
-                            "download too-short on %s; attempt %d/%d; sleep %.1fs",
-                            url, attempt, max_attempts, delay,
-                        )
+                        reason = f"short body ({written} < {min_bytes} bytes)"
                         try:
                             os.unlink(tmp_path)
                         except OSError:
                             pass
-                        if attempt >= max_attempts:
-                            raise RuntimeError(f"{url}: {last_error} (exhausted)")
-                        time.sleep(delay)
+                        self._retry_or_raise(
+                            attempt, max_attempts, delay,
+                            f"download too-short on {url}; attempt "
+                            f"{attempt}/{max_attempts}; sleep {delay:.1f}s",
+                            RuntimeError(f"{url}: {reason} (exhausted)"),
+                        )
                         continue
 
                     os.replace(tmp_path, dest_path)
                     return written
             except requests.RequestException as exc:
-                last_error = repr(exc)
                 # DNS errors don't count toward ``attempt``: they're
                 # almost always a transient resolver failure unrelated
                 # to the upstream server, and we don't want a brief
@@ -339,21 +358,18 @@ class PoliteSession:
                     attempt -= 1
                     dns_attempt += 1
                     dns_delay = self._dns_retry_delay_s
-                    logger.warning(
-                        "download DNS error on %s; dns attempt %d/%d; sleep %.1fs: %s",
-                        url, dns_attempt, self._dns_max_retries, dns_delay, exc,
+                    self._retry_or_raise(
+                        dns_attempt, self._dns_max_retries, dns_delay,
+                        f"download DNS error on {url}; dns attempt "
+                        f"{dns_attempt}/{self._dns_max_retries}; "
+                        f"sleep {dns_delay:.1f}s: {exc}",
                     )
-                    if dns_attempt >= self._dns_max_retries:
-                        raise
-                    time.sleep(dns_delay)
                     continue
-                logger.warning(
-                    "download error on %s; attempt %d/%d; sleep %.1fs: %s",
-                    url, attempt, max_attempts, delay, exc,
+                self._retry_or_raise(
+                    attempt, max_attempts, delay,
+                    f"download error on {url}; attempt "
+                    f"{attempt}/{max_attempts}; sleep {delay:.1f}s: {exc}",
                 )
-                if attempt >= max_attempts:
-                    raise
-                time.sleep(delay)
                 continue
 
     def _request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
