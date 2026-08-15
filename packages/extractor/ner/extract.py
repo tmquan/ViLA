@@ -273,7 +273,7 @@ class NerExtractStage(ProcessingStage[DocumentBatch, DocumentBatch]):
     across a bounded thread pool (``workers``) — the same concurrency the
     module used to run ad-hoc, now a composable
     :class:`ProcessingStage` (cf. the embed stage
-    :class:`packages.datasites.thuvienphapluat_hdpl.components.embed_stage.TVPLQAEmbedStage`,
+    :class:`packages.datasites.thuvienphapluat_hdpl.stages.embedder.TVPLQAEmbedStage`,
     which parallelises its vLLM calls the same way).
 
     Determinism is unchanged: every on-disk artefact is a byte-stable

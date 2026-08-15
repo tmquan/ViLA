@@ -67,7 +67,9 @@ class TVPLQAExtractor(DocumentExtractor):
             "id": record.get("file_id") or str(rec.get("qid") or ""),
             "url": rec.get("url") or url,
             "source": "thuvienphapluat.vn",
-            "question": rec.get("title"),
+            # The article's lead paragraph (sapo) is the person's actual detailed
+            # question; the title is only the topic headline (-> summary).
+            "question": rec.get("sapo") or rec.get("description"),
             "answer": answer,
             "answer_html": rec.get("answer_html"),
             "category": rec.get("category"),               # slug (stable id)
@@ -76,7 +78,7 @@ class TVPLQAExtractor(DocumentExtractor):
             "modified_date": rec.get("modified_time"),
             "author": rec.get("author"),
             "keywords": _keywords(rec.get("keywords")),
-            "summary": rec.get("sapo") or rec.get("description"),
+            "summary": rec.get("title"),   # topic headline (a summary of the Q&A)
             "citations": citations,
             "num_citations": len(citations),
             "content_flags": rec.get("content_flags"),

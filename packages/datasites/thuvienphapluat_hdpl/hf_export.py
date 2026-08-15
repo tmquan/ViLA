@@ -106,7 +106,9 @@ def build_qa_parquet(qa: pd.DataFrame, out: Path) -> int:
     red["id"] = red["id"].astype(str)
     merged = qa.merge(red, on="id", how="left")
     merged["citations"] = merged["citations"].map(_norm_citations)
-    merged.to_parquet(out, index=False)
+    # Small row groups (~10K rows) so the HF viewer can random-access without
+    # exceeding its 300 MB per-scan limit on this wide (answer_html) table.
+    merged.to_parquet(out, index=False, row_group_size=10_000)
     return len(merged)
 
 
@@ -123,7 +125,7 @@ def build_embeddings_parquet(out: Path) -> int:
     df["id"] = df["id"].astype(str)
     for col in ("question_embedding", "answer_embedding"):
         df[col] = df[col].map(lambda v: np.asarray(v, dtype=np.float32))
-    df.to_parquet(out, index=False)
+    df.to_parquet(out, index=False, row_group_size=2_000)  # ~64 MB/group for HF viewer
     return len(df)
 
 
@@ -138,7 +140,7 @@ def build_pages_parquet(qa_ids: list[str], out: Path) -> int:
         for i in qa_ids
         if (PAGES_DIR / f"{i}.html.gz").exists()
     ]
-    pd.DataFrame(rows).to_parquet(out, index=False)
+    pd.DataFrame(rows).to_parquet(out, index=False, row_group_size=2_000)  # ~72 MB/group
     return len(rows)
 
 

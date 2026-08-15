@@ -19,7 +19,7 @@ from pathlib import Path
 import pandas as pd
 from nemo_curator.tasks import DocumentBatch
 
-from packages.datasites.thuvienphapluat_hdpl.components.extract_stage import TVPLQAExtractStage
+from packages.datasites.thuvienphapluat_hdpl.stages.extractor import TVPLQAExtractStage
 
 PAGES = Path("~/data/thuvienphapluat.vn-hdpl/pages").expanduser()
 OUT = Path("~/data/thuvienphapluat.vn-hdpl/extracted").expanduser()

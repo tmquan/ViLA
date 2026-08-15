@@ -24,7 +24,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
-from matplotlib.patches import ConnectionPatch  # noqa: E402
+from matplotlib.collections import LineCollection  # noqa: E402
 
 DATA = Path("~/data/thuvienphapluat.vn-hdpl").expanduser()
 REDUCE_PQ = DATA / "reduce_qa.parquet"
@@ -32,8 +32,14 @@ EXTRACTED = DATA / "extracted"
 OUT_DIR = DATA / "hf"
 
 SEED = 0
-N_TETHERS = 2500          # connecting lines drawn (subsampled; all points shown)
 METHODS = ("pca", "tsne", "umap")
+
+
+def inverse_alpha(n: int, *, ref: int = 509, lo: float = 0.0015, hi: float = 0.6) -> float:
+    """Per-element opacity ∝ 1/n (clamped), so N overplotted elements accumulate
+    into a readable density rather than a solid blob. Tuned so at N≈100K this is
+    ≈0.005 — flows visible but the per-area clusters stay in the foreground."""
+    return float(min(hi, max(lo, ref / max(1, n))))
 
 
 def _configure() -> None:
@@ -87,33 +93,40 @@ def _panel(ax, df, xcol, ycol, colors, title) -> None:
 
 
 def render_method(df: pd.DataFrame, method: str, colors: dict, legend: list[str], out: Path) -> Path:
-    """Two-panel question|answer scatter with tether lines for one method."""
-    fig, (axq, axa) = plt.subplots(1, 2, figsize=(16.5, 8.2), dpi=140)
+    """Two-panel question|answer scatter; ALL Q&A tethered across the panels with
+    per-line opacity ∝ 1/N so the connections read as flow-density, not a blob."""
+    fig, (axq, axa) = plt.subplots(1, 2, figsize=(16.5, 8.6), dpi=140,
+                                   sharex=True, sharey=True)  # one frame -> tethers are geometric
     _panel(axq, df, f"q_{method}_x", f"q_{method}_y", colors, "Questions")
     _panel(axa, df, f"a_{method}_x", f"a_{method}_y", colors, "Answers")
 
-    # Tether a stratified subsample of Q&As across the two panels.
-    rng = np.random.default_rng(SEED)
-    idx = rng.choice(len(df), size=min(N_TETHERS, len(df)), replace=False)
-    for i in idx:
-        row = df.iloc[i]
-        con = ConnectionPatch(
-            xyA=(row[f"q_{method}_x"], row[f"q_{method}_y"]), coordsA=axq.transData,
-            xyB=(row[f"a_{method}_x"], row[f"a_{method}_y"]), coordsB=axa.transData,
-            color=colors[row["area"]], lw=0.35, alpha=0.35, zorder=10,  # in front of points
-        )
-        fig.add_artist(con)
-
     handles = [plt.Line2D([], [], marker="o", ls="", ms=7, color=colors[a], label=a) for a in legend]
     fig.legend(handles=handles, loc="lower center", ncol=6, fontsize=8,
-               frameon=False, bbox_to_anchor=(0.5, -0.03))
+               frameon=False, bbox_to_anchor=(0.5, 0.005))
+    alpha = inverse_alpha(len(df))
     fig.suptitle(
-        f"{method.upper()} of Nemotron-3-Embed-8B Q&A embeddings — "
-        f"question | answer, tethered by Q&A ({N_TETHERS:,} lines shown), coloured by area (all {len(legend)})",
+        f"{method.upper()} of Nemotron-3-Embed-8B Q&A embeddings — question | answer, "
+        f"ALL {len(df):,} Q&A tethered (line α={alpha:.3f} ∝ 1/N), coloured by area (all {len(legend)})",
         fontsize=13, y=0.99,
     )
-    fig.tight_layout(rect=(0, 0.10, 1, 0.97))
-    fig.savefig(out, bbox_inches="tight")
+    fig.tight_layout(rect=(0, 0.12, 1, 0.97))
+    fig.canvas.draw()   # finalize axis transforms before mapping data -> figure coords
+
+    # Every Q&A tethered as ONE LineCollection (drawing 101K ConnectionPatches
+    # would be intractable): endpoints mapped into figure coords, per-line RGBA
+    # carrying the inverse-N alpha.
+    to_fig = fig.transFigure.inverted()
+    p_q = to_fig.transform(axq.transData.transform(df[[f"q_{method}_x", f"q_{method}_y"]].to_numpy()))
+    p_a = to_fig.transform(axa.transData.transform(df[[f"a_{method}_x", f"a_{method}_y"]].to_numpy()))
+    segs = np.stack([p_q, p_a], axis=1)
+    rgba = [(colors[a][0], colors[a][1], colors[a][2], alpha) for a in df["area"]]
+    overlay = fig.add_axes((0.0, 0.0, 1.0, 1.0), zorder=8)
+    overlay.set_axis_off()
+    overlay.set_xlim(0, 1)
+    overlay.set_ylim(0, 1)
+    overlay.add_collection(LineCollection(segs, colors=rgba, linewidths=0.3))
+
+    fig.savefig(out)
     plt.close(fig)
     return out
 

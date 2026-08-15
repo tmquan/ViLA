@@ -22,7 +22,7 @@ from pathlib import Path
 import pandas as pd
 from nemo_curator.tasks import DocumentBatch
 
-from packages.datasites.thuvienphapluat_hdpl.components.embed_stage import TVPLQAEmbedStage
+from packages.datasites.thuvienphapluat_hdpl.stages.embedder import TVPLQAEmbedStage
 
 EXTRACTED = Path("~/data/thuvienphapluat.vn-hdpl/extracted").expanduser()
 OUT_DIR = Path("~/data/thuvienphapluat.vn-hdpl/embed_qa").expanduser()

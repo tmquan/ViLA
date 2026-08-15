@@ -86,13 +86,18 @@ def _stack(weighted: list[tuple[str, float]]) -> dict[str, tuple[float, float]]:
     return out
 
 
-def _ribbon(ax, x0, x1, ytop0, ybot0, ytop1, ybot1, color) -> None:
+def _inverse_alpha(n: int, *, ref: int = 90, lo: float = 0.16, hi: float = 0.55) -> float:
+    """Ribbon opacity ∝ 1/n (clamped), so many overlapping flows stay readable."""
+    return float(min(hi, max(lo, ref / max(1, n))))
+
+
+def _ribbon(ax, x0, x1, ytop0, ybot0, ytop1, ybot1, color, alpha) -> None:
     xm = (x0 + x1) / 2
     verts = [(x0, ytop0), (xm, ytop0), (xm, ytop1), (x1, ytop1),
              (x1, ybot1), (xm, ybot1), (xm, ybot0), (x0, ybot0), (x0, ytop0)]
     codes = [MPath.MOVETO, MPath.CURVE4, MPath.CURVE4, MPath.CURVE4,
              MPath.LINETO, MPath.CURVE4, MPath.CURVE4, MPath.CURVE4, MPath.CLOSEPOLY]
-    ax.add_patch(PathPatch(MPath(verts, codes), facecolor=color, edgecolor="none", alpha=0.45))
+    ax.add_patch(PathPatch(MPath(verts, codes), facecolor=color, edgecolor="none", alpha=alpha))
 
 
 def render(flows: list[tuple[str, str, int]], out: Path) -> Path:
@@ -121,13 +126,15 @@ def render(flows: list[tuple[str, str, int]], out: Path) -> Path:
     fig, ax = plt.subplots(figsize=(15, 11), dpi=140)
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis("off")
 
-    # ribbons, allocated top-down on each node's edge
+    # ribbons, allocated top-down on each node's edge; opacity ∝ 1/#flows
+    ribbon_alpha = _inverse_alpha(len(flows))
     off_a = {a: area_band[a][1] for a in areas}
     off_l = {l: law_band[l][1] for l in laws}
     for a, law, n in sorted(flows, key=lambda f: (-area_w[f[0]], -f[2])):
         h_a = (area_band[a][1] - area_band[a][0]) * (n / area_w[a])
         h_l = (law_band[law][1] - law_band[law][0]) * (n / law_w[law])
-        _ribbon(ax, x_l1, x_r0, off_a[a], off_a[a] - h_a, off_l[law], off_l[law] - h_l, color[a])
+        _ribbon(ax, x_l1, x_r0, off_a[a], off_a[a] - h_a, off_l[law], off_l[law] - h_l,
+                color[a], ribbon_alpha)
         off_a[a] -= h_a
         off_l[law] -= h_l
 
